@@ -12,3 +12,8 @@ CMakeDoxygenDefaults.cmake
 CTestTestfile.cmake
 gTest_version*.cmake
 Makefile
+
+.qt/
+*_autogen/
+*.log
+CTestCostData.txt

@@ -11,6 +11,7 @@
 #include <QtConcurrent/QtConcurrent>
 #include <DSTdisplay/QtFitsPloting.h>
 #include <DSTdisplay/QtFITSviewer.h>
+#include <QMetaObject>
 
 #endif
 
@@ -36,13 +37,12 @@ std::mutex msg_m;
 std::condition_variable msg_cv;
 int finished = -1;
 
-
 using namespace DSL;
 
 typedef const std::vector<std::string> flist;
 typedef std::map<char,std::pair<size_t,size_t> > roi;
 
-class UOption : public DSL::DOption
+class UOption : public DOption
 {
 public:
     
@@ -91,7 +91,7 @@ public:
         AddOption("--scale/-s","scaling factor","Normalisation factor to be used on the images.");
         AddParam("Fits_Filename","FITS file URL and name that will be opened for analyses.");    
         
-        DSL::DOption::prg_name += "FitsViewer";
+        DOption::prg_name += "FitsViewer";
     }
     
     virtual ~UOption(){};
@@ -417,8 +417,6 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
 template<typename T>
 void DrawHistogram(const std::shared_ptr<const FITScube>& in, size_t n_bins, QCPGraph *px_pdf, QCPGraph *px_cdf, QCustomPlot *customPlot)
 {
-    std::lock_guard<std::mutex> lk(io_mutex);
-    
     double max = in->GetMaximum();
     double min = in->GetMinimum();
     
@@ -459,57 +457,96 @@ void DrawHistogram(const std::shared_ptr<const FITScube>& in, size_t n_bins, QCP
     }
     
     const std::valarray<T>* _arr_ = in->GetData<T>();
-    std::valarray<T> array(*_arr_);
+    std::vector<T> array;
+    array.assign(std::begin(*_arr_),std::end(*_arr_));
+    std::sort(array.begin(),array.end());
     
-    switch (UOption::ddraw)
-    {
-        case UOption::drawing_mode::LOG:
-            array[array < 0.] = 0;
-            array = std::log10(array);
-            break;
-            
-        case UOption::drawing_mode::QUAD:
-            array *= array;
-            break;
-            
-        case UOption::drawing_mode::SQRT:
-            array[array < 0.] = 0;
-            array = std::sqrt(array);
-            break;
-            
-        default:
-            break;
-    }
+    //switch (UOption::ddraw)
+    //{
+    //    case UOption::drawing_mode::LOG:
+    //        array[array < 0.] = 0;
+    //        array = std::log10(array);
+    //        break;
+    //        
+    //    case UOption::drawing_mode::QUAD:
+    //        array *= array;
+    //        break;
+    //        
+    //    case UOption::drawing_mode::SQRT:
+    //        array[array < 0.] = 0;
+    //        array = std::sqrt(array);
+    //        break;
+    //        
+    //    default:
+    //        break;
+    //}
     
     double total = static_cast<double>(array.size());
     double iMax  = 0;
+    double this_sum   = 0;
     
-    for(int i =0; i < val.size()-1; i++)
+    for(QVector<double>::const_iterator iBin = val.cbegin(); iBin != val.cend(); iBin++)
     {
-        sum  .push_back(static_cast<double>(((std::valarray<T>) (array[array < static_cast<T>(val[i+1])])).size()));
-        entry.push_back(static_cast<double>(((std::valarray<T>) (array[array >= static_cast<T>(val[i]) && array < static_cast<T>(val[i+1])])).size()));
-        
-        iMax = (entry[entry.size()-1]>iMax)?entry[entry.size()-1]:iMax;
-    }
-    sum  .push_back(static_cast<double>(((std::valarray<T>)array[array <= static_cast<T>(max)]).size()));
-    entry.push_back(static_cast<double>(((std::valarray<T>)array[array >= static_cast<T>(max)]).size()));
-    
-    for(int i = 0; i < sum.size(); i++)
-    {
-        sum[i] = sum[i]/total;
-    }
-    
-    px_pdf->setData(val, entry);
-    px_cdf->setData(val, sum  );
-    
-    px_pdf->valueAxis()->rescale();
-    px_pdf->keyAxis()->rescale();
+        typename std::vector<T>::const_iterator i = array.cbegin();
+        double this_val  = (*iBin);
+        double this_entry = 0.;
 
-    std::lock_guard<std::mutex> dk(msg_m);
+        while(this_val < (*(iBin+1)) && i != array.cend())
+        {
+            switch (UOption::ddraw)
+            {
+                case UOption::drawing_mode::LOG:
+                    this_val=( (*i) > 0 )?log10(*i):0;
+                    break;
+                case UOption::drawing_mode::QUAD:
+                    this_val= (*i)*(*i);
+                    break;
+                case UOption::drawing_mode::SQRT:
+                    this_val=( (*i) > 0 )?sqrt(*i):0;
+                    break;
+                default:
+                    this_val=(*i);
+                    break;
+            }
+
+            if(this_val < (*(iBin+1)))
+            {
+                this_sum++;
+                this_entry++;
+            }
+
+            i++;
+        }
+
+        entry.push_back(this_entry);
+        sum.push_back(this_sum);
+        iMax = (this_entry>iMax)?this_entry:iMax;
+    }
     
-    if(finished == -1)
-        finished = 1;
-    msg_cv.notify_one();
+    //sum  .push_back(static_cast<double>(((std::valarray<T>)array[array <= static_cast<T>(max)]).size()));
+    //entry.push_back(static_cast<double>(((std::valarray<T>)array[array >= static_cast<T>(max)]).size()));
+    
+    auto xVals   = val;
+    auto pdfVals = entry;
+    auto cdfVals = sum;
+
+    QMetaObject::invokeMethod(customPlot, [px_pdf, px_cdf, customPlot,
+                                           xVals   = std::move(xVals),
+                                           pdfVals = std::move(pdfVals),
+                                           cdfVals = std::move(cdfVals)]() mutable {
+        std::lock_guard<std::mutex> lk(io_mutex);
+        px_pdf->setData(xVals, pdfVals);
+        px_cdf->setData(xVals, cdfVals);
+        px_pdf->valueAxis()->rescale();
+        px_pdf->keyAxis()->rescale();
+        customPlot->replot();
+        {
+            std::lock_guard<std::mutex> dk(msg_m);
+            if(finished == -1)
+                finished = 1;
+        }
+        msg_cv.notify_one();
+    }, Qt::QueuedConnection);
 }
 
 QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
@@ -520,17 +557,14 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     QtFITSviewer *mw = new QtFITSviewer();
     mw->setWindowTitle(in->GetName().c_str());
 
-    size_t xsize = std::min(static_cast<size_t>(900),in->Size(1)+200);
-    size_t ysize = std::min(static_cast<size_t>(900),in->Size(2)+200);
+    //size_t xsize = std::min(static_cast<size_t>(900),in->Size(1)+200);
+    //size_t ysize = std::min(static_cast<size_t>(900),in->Size(2)+200);
 
-    mw->setGeometry(400, 250, xsize, ysize);
+    mw->setGeometry(400, 250, 1200, 900);
 
     QCustomPlot *customPlot = mw->GetPlot();
     
     QtDisplay(customPlot,in,opt);
-    mw->SetPlot(customPlot);
-    mw->show();
-    return customPlot;
     
     customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
     QCPAxisRect *image = customPlot->axisRect(0);
@@ -677,6 +711,7 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     auto f = std::bind(mouseHasMove,customPlot,in,x_projection,y_projection);
     QAbstractAnimation::connect(customPlot, &QCustomPlot::mouseMove, f);
     
+    mw->SetPlot(customPlot);
     mw->show();
     return customPlot;
 }
@@ -803,7 +838,6 @@ int main(int argc, char **argv)
         auto c_img = std::const_pointer_cast<const FITScube>(img);
 
         QCustomPlot* plt = Draw(c_img,fOPT.draw());
-        plt->replot();
         
         foreach (QWidget *widget, QApplication::allWidgets())
         {
