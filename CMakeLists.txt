@@ -9,6 +9,8 @@ set(CMAKE_BUILD_DIRECTORY ${CMAKE_BINARY_DIR}/build)
 
 if(DEFINED ENV{DeepSkyROOT})
     set(DeepSkyROOT $ENV{DeepSkyROOT})
+else()
+    set(DeepSkyROOT ${CMAKE_SOURCE_DIR}/..)
 endif()
 
 if(NOT WIN32)
@@ -80,8 +82,7 @@ set(BUILD_SHARED_LIBS "YES")
 #-------------------- GCC specifics
 IF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 	# Linux specific code
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -pipe -fexceptions -fPIC  -m64 -Wno-unknown-pragmas")
-	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -pipe -fexceptions -fPIC  -m64 -Wno-unknown-pragmas")
 
 	set(OperatingSystem "Linux")
 	ADD_DEFINITIONS(-DLinuxx86_64)
@@ -91,7 +92,6 @@ ENDIF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 IF(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 	# Mac OS X specific code
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -m64 -fPIC")
-	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 
 	set(OperatingSystem "Mac OS X")
 	ADD_DEFINITIONS(-DDarwinx86_64)
@@ -102,13 +102,13 @@ if(WITH_DEBUG)
 	message("${Blue}-- DEBUG MODE ACTIVATED${ColourReset}")
 	add_definitions(-D__DEBUG__)
 	set(CMAKE_BUILD_TYPE DEBUG)
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0")
 else(WITH_DEBUG)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 endif(WITH_DEBUG)
 
 message("${Green}-- CXX COMPILER:${ColourReset} ${CMAKE_CXX_COMPILER}")
-message("${Green}-- DEFAULT CXX FLAGES:${ColourReset} ${CMAKE_CXX_FLAGS}")
+message("${Green}-- DEFAULT CXX FLAGS:${ColourReset} ${CMAKE_CXX_FLAGS}")
 
 #-------------------- APPEND GIT VERSION TAG
 # Make a version file containing the current version from git.
@@ -159,6 +159,74 @@ if(!${COMPILER_SUPPORTS_CXX17})
     endif(${Boost_FOUND})
     set(Boost_USE_MULTITHREADED ON)
 endif(!${COMPILER_SUPPORTS_CXX17})
+
+#-------------------- Find QT dependencies. NOTE THAT Qt is optional package
+find_package(Qt6 COMPONENTS Widgets Core Gui PrintSupport Concurrent)
+if(Qt6_FOUND)
+    message("${Blue}-- Qt6 FOUND : ${ColourReset} ${Qt6_VERSION}")
+    include_directories(${Qt6Widgets_INCLUDE_DIRS} ${Qt6Core_INCLUDE_DIRS} ${Qt6Gui_INCLUDE_DIRS} ${Qt6PrintSupport_INCLUDE_DIRS} ${Qt6Concurrent_INCLUDE_DIRS})
+    add_definitions(${Qt6Widgets_DEFINITIONS} ${Qt6Core_DEFINITIONS} ${Qt6Gui_DEFINITIONS} ${Qt6PrintSupport_DEFINITIONS} ${Qt6Concurrent_DEFINITIONS})
+    set(QT_LIBS Qt6::Widgets Qt6::Core Qt6::Gui Qt6::PrintSupport Qt6::Concurrent)
+    add_definitions(-D__WITH_QT__)
+
+    # Enable Qt's code generators
+    set(CMAKE_AUTOMOC ON)
+    set(CMAKE_AUTOUIC ON)
+    set(CMAKE_AUTORCC ON)
+
+else(Qt6_FOUND)
+    message("${Red}-- Qt6 NOT FOUND. GUI will be disabled${ColourReset}")
+    set(QT_LIBS "")
+endif(Qt6_FOUND)
+
+link_directories(${DeepSkyROOT}/lib)
+include_directories(${DeepSkyROOT}/include)
+find_library(DSTCore NAMES DSTCore HINTS ${DeepSkyROOT}/lib)
+if(DSTCore)
+    message("-- ${Green}Found${ColourReset} DSTCore: ${DSTCore}")
+else()
+    message(WARNING "libDSTCore not found; install the library")
+endif()
+
+find_library(DSTmath NAMES DSTmath HINTS ${DeepSkyROOT}/lib)
+if(DSTmath)
+    message("-- ${Green}Found${ColourReset} DSTmath: ${DSTmath}")
+else()
+    message(WARNING "libDSTmath not found; install the library")
+endif()
+
+link_directories(${DeepSkyROOT}/lib)
+find_library(DSTfits NAMES DSTfits HINTS ${DeepSkyROOT}/lib)
+if(DSTfits)
+    message("-- ${Green}Found${ColourReset} DSTfits: ${DSTfits}")
+else()
+    message(WARNING "libDSTfits not found; install the library")
+endif()
+
+find_library(DSTdisplay NAMES DSTdisplay HINTS ${DeepSkyROOT}/lib)
+if(DSTdisplay)
+    message("-- ${Green}Found${ColourReset} DSTdysplay: ${DSTdisplay}")
+else()
+    message(WARNING "libDSTdisplay not found; install the library")
+endif()
+
+find_library(cfitsio NAMES cfitsio HINTS ${DeepSkyROOT}/lib)
+if(cfitsio)
+    include_directories(${DeepSkyROOT}/include/cfitsio)
+    message("-- ${Green}Found${ColourReset} cfitsio: ${cfitsio}")
+else()
+    message(WARNING "libcfitsio not found; install the library")
+endif()
+
+find_library(Minuit2 NAMES Minuit2 HINTS ${DeepSkyROOT}/lib)
+if(Minuit2)
+    include_directories(${DeepSkyROOT}/include/Minuit2)
+    message("-- ${Green}Found${ColourReset} Minuit2: ${Minuit2}")
+else()
+    message(WARNING "libMinuit2 not found; install the library")
+endif()
+
+
 
 #-------------------- LIST SOURCE FILE
 
@@ -221,6 +289,14 @@ if(DOXYGEN_FOUND)
 )
 endif(DOXYGEN_FOUND)
 
+#######################
+add_executable(
+    FitsViewer
+    utilities/FitsViewer/DSTFitsViewer.cxx
+)
+
+target_link_libraries(FitsViewer DSTFits DSTCore DSTdisplay cfitsio Minuit2 ${QT_LIBS})
+
 
 
 #-------------------- ADD DISTCLEAN CUSTOM TARGET
@@ -236,6 +312,7 @@ ${version_file}
 Makefile
 CMakeFiles
 *.cmake
+*_autogen
 ./build/lib
 ./build/exe
 ./build/test
@@ -260,7 +337,7 @@ TARGET  distclean
 #-------------------- Installation proceedure
 if(CMAKE_INSTALL_PREFIX)
     INSTALL(FILES ${CORE_HEADER} DESTINATION include/DSTools)
-    INSTALL(TARGETS DSTools
+    INSTALL(TARGETS DSTools FitsViewer
 		RUNTIME DESTINATION exe
 		LIBRARY DESTINATION lib
 		ARCHIVE DESTINATION lib

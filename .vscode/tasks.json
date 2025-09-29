@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "make FitsViewer",
+            "type": "shell",
+            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make FitsViewer",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}
