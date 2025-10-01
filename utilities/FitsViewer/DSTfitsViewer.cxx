@@ -9,7 +9,6 @@
 #ifdef __WITH_QT__
 
 #include <QtConcurrent/QtConcurrent>
-#include <DSTdisplay/QtFitsPloting.h>
 #include <DSTdisplay/QtFITSviewer.h>
 #include <QMetaObject>
 
@@ -31,11 +30,6 @@ typedef std::thread THREAD;
 
 std::thread _draw_histo;
 std::thread _print_;
-
-std::mutex io_mutex;
-std::mutex msg_m;
-std::condition_variable msg_cv;
-int finished = -1;
 
 using namespace DSL;
 
@@ -188,365 +182,27 @@ UOption::drawing_mode UOption::ddraw = UOption::drawing_mode::LINEAR;
 
 #ifdef __WITH_QT__
 
-template<typename T>
-QSharedPointer< QCPGraphDataContainer > get_x_profile(const std::shared_ptr<const FITScube>& in, const std::slice& s, const std::vector<size_t>& px,std::vector<double>& min_max)
-{
-    min_max.clear(); while(min_max.size() != 2) min_max.push_back(0);
-    
-    QCPGraphDataContainer* data = new QCPGraphDataContainer();
-    const std::valarray<T>* _val_ = in->GetData<T>();
-    std::valarray<T> val = (*_val_)[s];
-    
-    switch (UOption::ddraw)
-    {
-        case UOption::drawing_mode::LOG:
-            val[val < 0.] = 0;
-            val = log10(val);
-            break;
-            
-        case UOption::drawing_mode::QUAD:
-            val *= val;
-            break;
-            
-        case UOption::drawing_mode::SQRT:
-            val[val < 0.] = 0;
-            val = sqrt(val);
-            break;
-            
-        default:
-            break;
-    }
-    
-    for(size_t ix = 0; ix < val.size(); ix++)
-    {
-        double X= in->WorldCoordinates(std::vector<size_t>({ix+px[0],px[1]}))[0];
-        double Y= val[ix];
-
-        min_max[0] = (Y < min_max[0])?Y:min_max[0];
-        min_max[1] = (Y > min_max[1])?Y:min_max[1];
-        data->add(QCPGraphData(X,Y));
-    }
-    
-    if(UOption::ddraw == UOption::drawing_mode::LOG)
-        min_max[0] = static_cast<double>(((std::valarray<T>)val[val>0.]).min())*(1-0.5);
-    
-    return QSharedPointer< QCPGraphDataContainer >(data);
-}
-
-template<typename T>
-QSharedPointer< QCPGraphDataContainer > get_y_profile(const std::shared_ptr<const FITScube>& in, const std::slice& s, const std::vector<size_t>& px,std::vector<double>& min_max)
-{
-    min_max.clear(); while(min_max.size() != 2) min_max.push_back(0);
-    
-    if(s.start()+s.stride()*s.size() >= in->Size())
-        throw std::out_of_range("get_y_profile : stride is out of range");
-    
-    QCPGraphDataContainer* data = new QCPGraphDataContainer();
-    const std::valarray<T>* _val_ = in->GetData<T>();
-    std::valarray<T> val = (*_val_)[s];
-    
-    switch (UOption::ddraw)
-    {
-        case UOption::drawing_mode::LOG:
-            val[val < 0.] = 0;
-            val = log10(val);
-            break;
-            
-        case UOption::drawing_mode::QUAD:
-            val *= val;
-            break;
-            
-        case UOption::drawing_mode::SQRT:
-            val[val < 0.] = 0;
-            val = sqrt(val);
-            break;
-            
-        default:
-            break;
-    }
-    
-    for(size_t ix = 0; ix < val.size(); ix++)
-    {
-        double X= in->WorldCoordinates(std::vector<size_t>({px[0],ix+px[1]}))[1];
-        double Y= val[ix];
-        
-        min_max[0] = (Y < min_max[0])?Y:min_max[0];
-        min_max[1] = (Y > min_max[1])?Y:min_max[1];
-        data->add(QCPGraphData(X,Y));
-    }
-    
-    if(UOption::ddraw == UOption::drawing_mode::LOG)
-        min_max[0] = static_cast<double>(((std::valarray<T>)val[val>0.]).min())*(1-0.5);
-    
-    return QSharedPointer< QCPGraphDataContainer >(data);
-}
 
 void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QCPGraph *x,QCPGraph *y)
 {
-    std::vector<double> WCS(2);
-    std::vector<double> px_coo;
     
-    size_t x_start, x_stop;
-    size_t y_start, y_stop;
-  
-    size_t dx, dy;
-    
-    WCS[0] = plt->xAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).x());
-    WCS[1] = plt->yAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).y());
-    
-    if(WCS[0] < plt->xAxis->range().lower || WCS[0] > plt->xAxis->range().upper)
-    return;
-    
-    if(WCS[1] < plt->yAxis->range().lower || WCS[1] > plt->yAxis->range().upper)
-    return;
-    
-    px_coo  = in->World2Pixel(WCS);
-    size_t px = in->PixelIndex(px_coo);
+    std::vector<double> px_coo({plt->xAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).x()),plt->yAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).y())});
 
-    plt->window()->setStatusTip(QString("[")+QString::number(static_cast<size_t>(px_coo[0]))+QString(";")+QString::number(static_cast<size_t>(px_coo[1]))+QString("] : (")+QString::number(WCS[0])+QString(";")+QString::number(WCS[1])+QString(") I: ")+QString::number(in->FloatValueAtPixel(px)));
-    //plt->statusBar()->showMessage("");
+    if (px_coo[0] < 0 || px_coo[0] >= in->Size(1) ||
+        px_coo[1] < 0 || px_coo[1] >= in->Size(2) )
+        return;
 
-    double img_line_start = in->WorldCoordinates(std::vector<double>({0,px_coo[1]}))[0];
-    double img_line_stop  = in->WorldCoordinates(std::vector<double>({static_cast<double>(in->Size(1)-1),px_coo[1]}))[0];
-    if(img_line_stop < img_line_start)
-        std::swap(img_line_start,img_line_stop);
-    
-    double img_col_start = in->WorldCoordinates(std::vector<double>({px_coo[0],0}))[1];
-    double img_col_stop  = in->WorldCoordinates(std::vector<double>({px_coo[0],static_cast<double>(in->Size(2)-1)}))[1];
-    if(img_col_stop < img_col_start)
-        std::swap(img_col_start,img_col_stop);
-    
-    x_start = in->PixelIndex(in->World2Pixel({std::max(plt->xAxis->range().lower,img_line_start),WCS[1]}));
-    y_start = in->PixelIndex(in->World2Pixel({WCS[0],std::max(plt->yAxis->range().lower,img_col_start)}));
-    
-    x_stop = in->PixelIndex(in->World2Pixel({std::min(plt->xAxis->range().upper       ,img_line_stop),WCS[1]}));
-    y_stop = in->PixelIndex(in->World2Pixel({WCS[0],img_col_stop}));
-    
-    if(x_start > x_stop)
-        std::swap(x_start,x_stop);
-    
-    if(y_start > y_stop)
-        std::swap(y_start,y_stop);
-    
-    dx      = static_cast<size_t>(std::min(std::abs(static_cast<double>(x_stop)-static_cast<double>(x_start)),static_cast<double>(in->Size(1)-1)));
-    dy      = static_cast<size_t>(std::min(std::abs(static_cast<double>(y_stop)-static_cast<double>(y_start)),static_cast<double>(in->Size(2)-1)));
-    
-    std::vector<size_t> coo_x = in->PixelCoordinates(x_start);
-    std::vector<size_t> coo_y = in->PixelCoordinates(y_start);
-    
-    dx = static_cast<size_t>((static_cast<double>(in->Size(1))-1)-coo_x[0]);
-    dy = static_cast<size_t>((static_cast<double>(in->Size(2))-1)-coo_y[1]);
-    
-    std::vector<double> x_range;
-    std::vector<double> y_range;
     try
     {
-        int eqBitPix= in->GetEqBitPerPixel();
-        switch (eqBitPix)
-        {
-            case BYTE_IMG:
-                x->setData(get_x_profile<uint8_t>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<uint8_t>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-
-            case SBYTE_IMG:
-                x->setData(get_x_profile<int8_t>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<int8_t>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-            
-            case USHORT_IMG:
-                x->setData(get_x_profile<uint16_t>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<uint16_t>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-
-            case SHORT_IMG:
-                x->setData(get_x_profile<int16_t>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<int16_t>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-
-            case ULONG_IMG:
-                x->setData(get_x_profile<uint32_t>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<uint32_t>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-
-            case LONG_IMG:
-                x->setData(get_x_profile<int32_t>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<int32_t>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-
-            case ULONGLONG_IMG:
-                x->setData(get_x_profile<uint64_t>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<uint64_t>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-
-            case LONGLONG_IMG:
-                x->setData(get_x_profile<int64_t>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<int64_t>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-
-            case FLOAT_IMG:
-                x->setData(get_x_profile<float>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<float>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-
-            case DOUBLE_IMG:
-                x->setData(get_x_profile<double>(in,std::slice(x_start,dx,1)          ,coo_x, x_range));
-                y->setData(get_y_profile<double>(in,std::slice(y_start,dy,in->Size(1)),coo_y, y_range));
-                break;
-        
-            default:
-                break;
-        }
-
+        QtFITSviewer::QtProfileX(plt, in,static_cast<size_t>(px_coo[1]+0.5),x);
+        QtFITSviewer::QtProfileY(plt, in,static_cast<size_t>(px_coo[0]+0.5),y, true);
     }
-    catch(...)
+    catch(std::out_of_range& e)
     {
-        return;
+        if((DSL::verbose&DSL::verboseLevel::VERBOSE_DEBUG) == DSL::verboseLevel::VERBOSE_DEBUG)
+        std::cerr << "[WARNING] mouseHasMove: " << e.what() << std::endl;
     }
-    
-    x->valueAxis()->setRange(x_range[0],x_range[1]);
-    y->valueAxis()->setRange(y_range[1],y_range[0]);
-    
-    plt->replot();
-    
-    WCS.clear();
-    coo_x.clear();
-    coo_y.clear();
-}
 
-template<typename T>
-void DrawHistogram(const std::shared_ptr<const FITScube>& in, size_t n_bins, QCPGraph *px_pdf, QCPGraph *px_cdf, QCustomPlot *customPlot)
-{
-    double max = in->GetMaximum();
-    double min = in->GetMinimum();
-    
-    switch (UOption::ddraw)
-    {
-        case UOption::drawing_mode::LOG:
-            max=log10(max);
-            min=(min > 0)?log10(min):0;
-            break;
-            
-        case UOption::drawing_mode::QUAD:
-            max *= max;
-            min *= min;
-            break;
-            
-        case UOption::drawing_mode::SQRT:
-            max=sqrt(max);
-            min=(min > 0)?sqrt(min):0;
-            break;
-            
-        default:
-            break;
-    }
-    
-    double SPAN = min/max;
-    
-    QVector<double> val, entry, sum;
-    
-    if(SPAN > 1000)
-    {
-        for(size_t i = 0; i <= n_bins; i++)
-            val.push_back( pow(10.,static_cast<double>(i)/(static_cast<double>(n_bins)-1)*log10(max/min)+log10(min)));
-    }
-    else
-    {
-        for(size_t i = 0; i <= n_bins; i++)
-            val.push_back( static_cast<double>(i)/(static_cast<double>(n_bins)-1)*(max-min)+min);
-    }
-    
-    const std::valarray<T>* _arr_ = in->GetData<T>();
-    std::vector<T> array;
-    array.assign(std::begin(*_arr_),std::end(*_arr_));
-    std::sort(array.begin(),array.end());
-    
-    //switch (UOption::ddraw)
-    //{
-    //    case UOption::drawing_mode::LOG:
-    //        array[array < 0.] = 0;
-    //        array = std::log10(array);
-    //        break;
-    //        
-    //    case UOption::drawing_mode::QUAD:
-    //        array *= array;
-    //        break;
-    //        
-    //    case UOption::drawing_mode::SQRT:
-    //        array[array < 0.] = 0;
-    //        array = std::sqrt(array);
-    //        break;
-    //        
-    //    default:
-    //        break;
-    //}
-    
-    double total = static_cast<double>(array.size());
-    double iMax  = 0;
-    double this_sum   = 0;
-    
-    for(QVector<double>::const_iterator iBin = val.cbegin(); iBin != val.cend(); iBin++)
-    {
-        typename std::vector<T>::const_iterator i = array.cbegin();
-        double this_val  = (*iBin);
-        double this_entry = 0.;
-
-        while(this_val < (*(iBin+1)) && i != array.cend())
-        {
-            switch (UOption::ddraw)
-            {
-                case UOption::drawing_mode::LOG:
-                    this_val=( (*i) > 0 )?log10(*i):0;
-                    break;
-                case UOption::drawing_mode::QUAD:
-                    this_val= (*i)*(*i);
-                    break;
-                case UOption::drawing_mode::SQRT:
-                    this_val=( (*i) > 0 )?sqrt(*i):0;
-                    break;
-                default:
-                    this_val=(*i);
-                    break;
-            }
-
-            if(this_val < (*(iBin+1)))
-            {
-                this_sum++;
-                this_entry++;
-            }
-
-            i++;
-        }
-
-        entry.push_back(this_entry);
-        sum.push_back(this_sum);
-        iMax = (this_entry>iMax)?this_entry:iMax;
-    }
-    
-    //sum  .push_back(static_cast<double>(((std::valarray<T>)array[array <= static_cast<T>(max)]).size()));
-    //entry.push_back(static_cast<double>(((std::valarray<T>)array[array >= static_cast<T>(max)]).size()));
-    
-    auto xVals   = val;
-    auto pdfVals = entry;
-    auto cdfVals = sum;
-
-    QMetaObject::invokeMethod(customPlot, [px_pdf, px_cdf, customPlot,
-                                           xVals   = std::move(xVals),
-                                           pdfVals = std::move(pdfVals),
-                                           cdfVals = std::move(cdfVals)]() mutable {
-        std::lock_guard<std::mutex> lk(io_mutex);
-        px_pdf->setData(xVals, pdfVals);
-        px_cdf->setData(xVals, cdfVals);
-        px_pdf->valueAxis()->rescale();
-        px_pdf->keyAxis()->rescale();
-        customPlot->replot();
-        {
-            std::lock_guard<std::mutex> dk(msg_m);
-            if(finished == -1)
-                finished = 1;
-        }
-        msg_cv.notify_one();
-    }, Qt::QueuedConnection);
 }
 
 QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
@@ -554,17 +210,15 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     if(UOption::ddraw == UOption::drawing_mode::OFF)
         return NULL;
     
-    QtFITSviewer *mw = new QtFITSviewer();
+    QtFITSviewer *mw = new QtFITSviewer(400, 250, 1200, 900);
     mw->setWindowTitle(in->GetName().c_str());
 
     //size_t xsize = std::min(static_cast<size_t>(900),in->Size(1)+200);
     //size_t ysize = std::min(static_cast<size_t>(900),in->Size(2)+200);
 
-    mw->setGeometry(400, 250, 1200, 900);
-
     QCustomPlot *customPlot = mw->GetPlot();
     
-    QtDisplay(customPlot,in,opt);
+    QtFITSviewer::QtDisplay(customPlot,in,opt);
     
     customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
     QCPAxisRect *image = customPlot->axisRect(0);
@@ -654,52 +308,9 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     px_cdf->setPen(QPen(QColor(30, 40, 255, 150)));
     //customPlot->replot();
     
-    int eqBits = in->GetEqBitPerPixel();
-    switch (eqBits)
-    {
-        case BYTE_IMG:
-        _draw_histo= std::thread(DrawHistogram<uint8_t>, in,100, px_pdf, px_cdf, customPlot);
-        break;
 
-        case SBYTE_IMG:
-        _draw_histo= std::thread(DrawHistogram<int8_t>, in,100, px_pdf, px_cdf, customPlot);
-        break;
-
-        case SHORT_IMG:
-        _draw_histo= std::thread(DrawHistogram<int16_t>, in,100, px_pdf, px_cdf, customPlot);
-        break;
-
-        case USHORT_IMG:
-        _draw_histo= std::thread(DrawHistogram<uint16_t>, in,100, px_pdf, px_cdf, customPlot);
-        break;
-
-        case LONG_IMG:
-        _draw_histo= std::thread(DrawHistogram<int32_t>, in,100, px_pdf, px_cdf, customPlot);
-        break;
-
-        case ULONG_IMG:
-        _draw_histo= std::thread(DrawHistogram<uint32_t>, in,100, px_pdf, px_cdf, customPlot);
-        break;
-
-        case LONGLONG_IMG:
-        _draw_histo= std::thread(DrawHistogram<int64_t>, in,100, px_pdf, px_cdf, customPlot);
-        break;
-
-        case ULONGLONG_IMG:
-        _draw_histo= std::thread(DrawHistogram<uint64_t>, in,100, px_pdf, px_cdf, customPlot);
-        break;
-
-        case FLOAT_IMG:
-        _draw_histo= std::thread(DrawHistogram<float>, in,100, px_pdf, px_cdf, customPlot);
-        break;
-
-        case DOUBLE_IMG:
-        _draw_histo= std::thread(DrawHistogram<double>, in,100, px_pdf, px_cdf, customPlot);
-        break;
+    _draw_histo= std::thread([=]() {QtFITSviewer::QtHistogram(customPlot, in, static_cast<size_t>(100), px_pdf, px_cdf);});
     
-        default:
-        break;
-    }
 
     customPlot->connect(image->axis(QCPAxis::atBottom), SIGNAL(rangeChanged(QCPRange)), xproj->axis(QCPAxis::atBottom), SLOT(setRange(QCPRange)));
     
@@ -815,23 +426,23 @@ int main(int argc, char **argv)
 
         if((DSL::verbose & DSL::verboseLevel::VERBOSE_BASIC)==DSL::verboseLevel::VERBOSE_BASIC)
         {
-            msg_m.lock();
+            QtFITS::msg_m.lock();
             std::cout<<"\033[01m=====\033[34m"<< fOPT.GetFiles()[1]<<"\033[0m"<<std::endl
                    <<"\033[31m     |- AVG :\033[0m"<<mean<<" "<<((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"")<<std::endl
                    <<"\033[31m     |- MED :\033[0m"<<median<<" "<<((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"")<<std::endl
                    <<"\033[31m     |- 25% :\033[0m"<<pp25<<" "<<((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"")<<std::endl
                    <<"\033[31m     |- 75% :\033[0m"<<pp75<<" "<<((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"")<<std::endl;
-            msg_m.unlock();
+            QtFITS::msg_m.unlock();
         }
 
         
         if( fOPT.ArrayInfo() )
         {
-            msg_m.lock();
+            QtFITS::msg_m.lock();
             std::cout<<"\033[32m==== "<<in_file[0]<<"["<<fOPT.Header()<<"]\033[0m"<<std::endl;
             std::cout<<" FILE |  NAME | MEAN | MEDIAN | Q1 | Q3 | RMS | MIN | MAX | SUM"<<std::endl;
             std::cout<<fOPT.GetFiles()[0]<<" | "<<img->GetName()<<" | "<<mean<<" | "<<median<<" | "<<pp25<<" | "<<pp75<<" | "<<rms<<" | "<<min<<" | "<<max<<" | "<<sum<<std::endl;
-            msg_m.unlock();
+            QtFITS::msg_m.unlock();
         }
         
         QApplication a(argc, argv);
@@ -852,14 +463,9 @@ int main(int argc, char **argv)
             a.exec();
         
         if(plt!=NULL)
-        {
+        {        
             {
-                std::unique_lock<std::mutex> lk(msg_m);
-                msg_cv.wait(lk, []{return finished != -1;});
-            }
-        
-            {
-                std::lock_guard<std::mutex> lk(io_mutex);
+                std::lock_guard<std::mutex> lk(QtFITS::io_mutex);
                 foreach (QWidget *widget, QApplication::allWidgets())
                 {
                     widget->setGeometry(widget->x(), widget->y(), widget->width()*1.25, widget->height()/((img->Size(2)>=500)?1.25:1));
