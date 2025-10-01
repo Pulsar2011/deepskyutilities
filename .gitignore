@@ -12,6 +12,7 @@ CMakeDoxygenDefaults.cmake
 CTestTestfile.cmake
 gTest_version*.cmake
 Makefile
+CMakeDoxyfile.in  
 
 .qt/
 *_autogen/
