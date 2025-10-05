@@ -36,6 +36,8 @@ using namespace DSL;
 typedef const std::vector<std::string> flist;
 typedef std::map<char,std::pair<size_t,size_t> > roi;
 
+size_t histo_bins=100;
+
 class UOption : public DOption
 {
 public:
@@ -59,12 +61,9 @@ public:
 private:
     int16_t HDU;
     size_t RBIN;
-    size_t NBINS;
     std::string opt_string;
     rmode MODE;
     bool do_Print;
-    double scale;
-    bool doScale;
     bool a_info;
 
 public:
@@ -72,7 +71,7 @@ public:
     static drawing_mode ddraw;
     roi ROI;
     
-    UOption():DOption(),HDU(1),RBIN(0),NBINS(100),opt_string(),MODE(rmode::NONE), do_Print(false),scale(1.),doScale(false),a_info(false),ROI()
+    UOption():DOption(),HDU(1),RBIN(0),opt_string(),MODE(rmode::NONE), do_Print(false),a_info(false),ROI()
     {
         AddDescription("Open a FITS header block and display data.");
         AddOption("--hdu", "int","Header block to be open. If not given, the primary header will be opened");
@@ -82,7 +81,6 @@ public:
         AddOption("--print","Print pixel content to stdout.");
         AddOption("--info","Print statistical information on the array distribution.");
         AddOption("--draw","Disable drawing!");
-        AddOption("--scale/-s","scaling factor","Normalisation factor to be used on the images.");
         AddParam("Fits_Filename","FITS file URL and name that will be opened for analyses.");    
         
         DOption::prg_name += "FitsViewer";
@@ -107,13 +105,7 @@ public:
         else if(!it->compare("--bin") || !it->compare("--bins") || !it->compare("-b"))
         {
             if(std::next(it) != arg.cend()){it++;}else{return false;}
-            NBINS = std::stoi(*it);
-        }
-        else if(!it->compare("--scale") || !it->compare("++scale") || !it->compare("-s") || !it->compare("+s"))
-        {
-            if(std::next(it) != arg.cend()){it++;}else{return false;}
-            scale = std::stod(*it);
-            doScale |= true;
+            histo_bins = std::stoi(*it);
         }
         else if(!it->compare("++opt"))
         {
@@ -167,14 +159,11 @@ public:
     }
     
     inline const size_t&       Rebin() const {return RBIN;}
-    inline const size_t&       N_bins() const {return NBINS;}
     inline const rmode&        Mode()  const {return MODE;}
     inline const int16_t&      Header()const {return HDU;}
     inline const std::string&  draw()  const {return opt_string;}
     inline bool doPrint() const {return do_Print;}
     inline bool ArrayInfo() const {return a_info;}
-    inline const double& Scale() const {return scale;}
-    inline const bool& DoScale() const {return doScale;}
     
 };
 
@@ -309,7 +298,7 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     //customPlot->replot();
     
 
-    _draw_histo= std::thread([=]() {QtFITSviewer::QtHistogram(customPlot, in, static_cast<size_t>(100), px_pdf, px_cdf);});
+    _draw_histo= std::thread([=]() {QtFITSviewer::QtHistogram(customPlot, in, static_cast<size_t>(histo_bins), px_pdf, px_cdf);});
     
 
     customPlot->connect(image->axis(QCPAxis::atBottom), SIGNAL(rangeChanged(QCPRange)), xproj->axis(QCPAxis::atBottom), SLOT(setRange(QCPRange)));
@@ -372,11 +361,6 @@ int main(int argc, char **argv)
     
         FITSmanager ffile(in_file[1]);
         img = ffile.GetImageAtIndex(fOPT.Header());
-        
-        if(fOPT.DoScale())
-        {
-            (*img)/=fOPT.Scale();
-        }
         
         if( fOPT.ROI.size() > 1)
         {
