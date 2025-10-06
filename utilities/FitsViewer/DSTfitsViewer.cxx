@@ -15,6 +15,7 @@
 #endif
 
 #include <DSTCore/OptionManager.h>
+#include <DSTCore/DSS_version.h>
 #include <DSTfits/FITSmanager.h>
 #include <DSTfits/FITSimg.h>
 #include <DSTfits/FITShdu.h>
@@ -37,6 +38,8 @@ typedef const std::vector<std::string> flist;
 typedef std::map<char,std::pair<size_t,size_t> > roi;
 
 size_t histo_bins=100;
+double minZscale=std::numeric_limits<double>::quiet_NaN();
+double maxZscale=std::numeric_limits<double>::quiet_NaN();
 
 class UOption : public DOption
 {
@@ -74,16 +77,20 @@ public:
     UOption():DOption(),HDU(1),RBIN(0),opt_string(),MODE(rmode::NONE), do_Print(false),a_info(false),ROI()
     {
         AddDescription("Open a FITS header block and display data.");
-        AddOption("--hdu", "int","Header block to be open. If not given, the primary header will be opened");
-        AddOption("--opt/++opt","sqrtz/logz/quadz","Define the color ramp used to display the image.");
-        AddOption("--bins/-b","int","Number of bin to display the histograms of the images.");
-        AddOption("--roi","x0 xsize y0 ysize","Define a refgion of interest to be ploted. Other data outside this ROI are disregarded. The ROI shall be given in pixel not in WCS");
+        AddOption("--hdu",DParam::fparameter::uint8,"Header block to be open. If not given, the primary header will be opened");
+        AddOption("--opt/++opt",DParam::fparameter::string,"Define the color ramp used to display the image. Possible value are \033[34m'sqrtz'\033[0m, \033[34m'logz'\033[0m, \033[34m'quadz'\033[0m or \033[34m'linearz'\033[32m (default)\033[0m.");
+        AddOption("--bins/-b",DParam::fparameter::uint16,"Number of bin to display the histograms of the images.");
+        AddOption("--roi",{DParam::fparameter::xoffset,DParam::fparameter::xsize,DParam::fparameter::yoffset,DParam::fparameter::ysize},"Define a refgion of interest to be ploted. Other data outside this ROI are disregarded. The ROI shall be given in pixel not in WCS");
         AddOption("--print","Print pixel content to stdout.");
         AddOption("--info","Print statistical information on the array distribution.");
         AddOption("--draw","Disable drawing!");
+        AddOption("--zscale/-z",{DParam::fparameter::min,DParam::fparameter::max},"Select the min and max value for the color scale.");
         AddParam("Fits_Filename","FITS file URL and name that will be opened for analyses.");    
         
         DOption::prg_name += "FitsViewer";
+
+        if(DSS::gGIT::version() < "v2.0.0")
+            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSS version, please update your DSS installation.");
     }
     
     virtual ~UOption(){};
@@ -124,6 +131,32 @@ public:
             
         }
         else if(!it->compare("--draw"))
+        {
+            UOption::ddraw = UOption::drawing_mode::OFF;
+        }
+        else if(!it->compare("--zscale") || !it->compare("-z"))
+        {
+            if(std::next(it) != arg.cend()){it++;}else{return false;}
+            if(it->find_first_not_of("+-0123456789.eE") != std::string::npos)
+                return false;
+            
+            minZscale = std::stod(*it);
+            
+            if(std::next(it) != arg.cend()){it++;}else{return false;}
+            if(it->find_first_not_of("+-0123456789.eE") != std::string::npos)
+                return false;
+            
+            maxZscale = std::stod(*it);
+            
+            if(minZscale >= maxZscale)
+            {
+                std::cerr<<"[ERROR] UOption::UserParameters: Invalid zscale range ["<<minZscale<<","<<maxZscale<<"]"<<std::endl;
+                return false;
+            }
+            
+            std::cout<<"   \033[34m• Set zscale range to:\033[0m["<<minZscale<<","<<maxZscale<<"]"<<std::endl;
+        }
+        else if(!it->compare("--nodraw"))
         {
             UOption::ddraw = UOption::drawing_mode::OFF;
         }
@@ -296,6 +329,17 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     px_cdf->setLineStyle(QCPGraph::lsLine);
     px_cdf->setPen(QPen(QColor(30, 40, 255, 150)));
     //customPlot->replot();
+
+
+    if(minZscale == minZscale && maxZscale  == maxZscale)
+    {
+        QCPColorScale *colorScale = NULL;
+        if( customPlot->plotLayout()->hasElement (0, 1) )
+        {
+            colorScale = dynamic_cast<QCPColorScale*>(customPlot->plotLayout()->element(0,1));
+            colorScale->setDataRange((QCPRange(minZscale,maxZscale)));
+        }
+    }
     
 
     _draw_histo= std::thread([=]() {QtFITSviewer::QtHistogram(customPlot, in, static_cast<size_t>(histo_bins), px_pdf, px_cdf);});
@@ -350,16 +394,16 @@ int main(int argc, char **argv)
 
         flist in_file = fOPT.GetFiles();
     
-        if(in_file.size() < 2)
+        if(in_file.size() < 1)
             throw std::runtime_error("Not enougth number of argument. Please provide filename to open.");
     
-        if(in_file.size() > 2)
+        if(in_file.size() > 1)
             throw std::runtime_error("Too many argument! I can handle more than 1 file.");
     
         //3- OPEN IMAGE AND HEADER BLOCK
         std::shared_ptr<FITScube> img   = nullptr;
     
-        FITSmanager ffile(in_file[1]);
+        FITSmanager ffile(in_file[0]);
         img = ffile.GetImageAtIndex(fOPT.Header());
         
         if( fOPT.ROI.size() > 1)
