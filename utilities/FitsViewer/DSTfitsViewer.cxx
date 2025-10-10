@@ -16,9 +16,11 @@
 
 #include <DSTCore/OptionManager.h>
 #include <DSTCore/DSS_version.h>
+#include <DSTools/DST_version.h>
 #include <DSTfits/FITSmanager.h>
 #include <DSTfits/FITSimg.h>
 #include <DSTfits/FITShdu.h>
+#include <DSTmath/DSTmath.h>
 
 
 #include <functional>
@@ -30,6 +32,7 @@
 typedef std::thread THREAD;
 
 std::thread _draw_histo;
+std::thread _print_info;
 std::thread _print_;
 
 using namespace DSL;
@@ -87,7 +90,7 @@ public:
         AddOption("--zscale/-z",{DParam::fparameter::min,DParam::fparameter::max},"Select the min and max value for the color scale.");
         AddParam("Fits_Filename","FITS file URL and name that will be opened for analyses.");    
         
-        DOption::prg_name += "FitsViewer";
+        DOption::prg_name += "FitsViewer -- "+DST::gGIT::version();
 
         if(DSS::gGIT::version() < "v2.0.0")
             throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSS version, please update your DSS installation.");
@@ -227,6 +230,160 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
 
 }
 
+void PrintInfo(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
+{
+    if(!in)
+        return;
+
+    std::string unit = "";
+    if(in->HDU().Exists("BUNIT"))
+        unit += in->HDU().GetValueForKey("UNITS");
+    else
+        unit += " ARB. UNIT";
+
+    double mean = in->GetMean();
+    double median = in->GetMedian();
+    double stddev = in->GetStdDev();
+    double min   = in->GetMinimum();
+    double max   = in->GetMaximum();
+    double p05   = in->Getpercentil(0.05);
+    double p25   = in->Getpercentil(0.25);
+    double p75   = in->Getpercentil(0.75);
+    double p95   = in->Getpercentil(0.95);
+    
+    QString info = QString::fromStdString(
+         "Min     : "+DST::to_string(min,3)+" "+unit+"   "
+        +"Max     : "+DST::to_string(max,3)+" "+unit+"   "
+        +"Mean    : "+DST::to_string(mean,3)+" "+unit+"\n"
+        +"5th %   : "+DST::to_string(p05,3)+" "+unit+"   "
+        +"Median  : "+DST::to_string(median,3)+" "+unit+"   "
+        +"95th %  : "+DST::to_string(p95,3)+" "+unit+"\n"
+        +"Stddev  : "+DST::to_string(stddev,3)+" "+unit+"   "
+        +"Kurtosis: "+DST::to_string(in->GetKurtosis(),3)+" "+unit+"   "
+        +"Skewness: "+DST::to_string(in->GetSkewness(),3)+" "+unit+"\n"
+        );
+
+    QMetaObject::invokeMethod(plt, [info,p05,p25,median,p75,p95,mean,plt ]() mutable
+                                            {
+                                                {
+                                                    std::lock_guard<std::mutex> lk(QtFITS::io_mutex);
+                                                    // add the text element to the layout (keeps it in the (1,3) cell)
+
+                                                    QCPTextElement *imgStatElement = new QCPTextElement(plt);
+                                                    imgStatElement->setTextFlags(Qt::AlignLeft|Qt::TextWordWrap);
+                                                    imgStatElement->setText(info);
+
+                                                    imgStatElement->setFont(QFont(QToolTip::font().family(), 12));
+
+                                                    QCPItemStraightLine *p05fLine = new QCPItemStraightLine(plt);
+                                                    p05fLine->setPen(QPen(Qt::blue, 1, Qt::DotLine));
+                                                    p05fLine->point1->setCoords(p05, 0); // point1 is on the line
+                                                    p05fLine->point2->setCoords(p05, 1); //
+
+                                                    QCPItemStraightLine *p95fLine = new QCPItemStraightLine(plt);
+                                                    p95fLine->setPen(QPen(Qt::blue, 1, Qt::DotLine));
+                                                    p95fLine->point1->setCoords(p95, 0); // point1 is on the line
+                                                    p95fLine->point2->setCoords(p95, 1); //
+
+                                                    QCPItemStraightLine *p25fLine = new QCPItemStraightLine(plt);
+                                                    p25fLine->setPen(QPen(Qt::blue, 1, Qt::DashLine));
+                                                    p25fLine->point1->setCoords(p25, 0); // point1 is on the line
+                                                    p25fLine->point2->setCoords(p25, 1); //
+
+                                                    QCPItemStraightLine *p75fLine = new QCPItemStraightLine(plt);
+                                                    p75fLine->setPen(QPen(Qt::blue, 1, Qt::DashLine));
+                                                    p75fLine->point1->setCoords(p75, 0); // point1 is on the line
+                                                    p75fLine->point2->setCoords(p75, 1); //
+
+                                                    QCPItemStraightLine *p50fLine = new QCPItemStraightLine(plt);
+                                                    p50fLine->setPen(QPen(Qt::blue, 2));
+                                                    p50fLine->point1->setCoords(median, 0); // point1 is on the line
+                                                    p50fLine->point2->setCoords(median, 1); //
+
+                                                    QCPItemStraightLine *meanfLine = new QCPItemStraightLine(plt);
+                                                    meanfLine->setPen(QPen(Qt::red, 2));
+                                                    meanfLine->point1->setCoords(mean, 0); // point1 is on the line
+                                                    meanfLine->point2->setCoords(mean, 1); //
+
+                                                    plt->plotLayout()->addElement(1, 3, imgStatElement);
+
+                                                    // Try to locate the histogram axis rect we created at layout (0,3)
+                                                    QCPAxisRect *histoRect = nullptr;
+                                                    QCPLayoutElement *el = plt->plotLayout()->element(0, 3);
+                                                    if (el) {
+                                                        // element at (0,3) is a QCPLayoutGrid (histo_layout). The histo axis rect
+                                                        // was added as grid->element(0,0) in Draw().
+                                                        QCPLayoutGrid *grid = dynamic_cast<QCPLayoutGrid*>(el);
+                                                        if (grid) {
+                                                            QCPLayoutElement *child = grid->element(0, 0);
+                                                            histoRect = dynamic_cast<QCPAxisRect*>(child);
+                                                        } else {
+                                                            // sometimes the element may be directly the axis rect
+                                                            histoRect = dynamic_cast<QCPAxisRect*>(el);
+                                                        }
+                                                    }
+
+                                                    if (histoRect) {
+                                                        // bind the item's positions to the histo axes so the line appears inside that panel
+                                                        auto xAxis = histoRect->axis(QCPAxis::atBottom);
+                                                        auto yAxis = histoRect->axis(QCPAxis::atLeft);
+                                                        if (xAxis && yAxis) {
+                                                            p05fLine->point1->setAxes(xAxis, yAxis);
+                                                            p25fLine->point1->setAxes(xAxis, yAxis);
+                                                            p50fLine->point1->setAxes(xAxis, yAxis);
+                                                            p75fLine->point1->setAxes(xAxis, yAxis);
+                                                            p95fLine->point1->setAxes(xAxis, yAxis);
+                                                            meanfLine->point1->setAxes(xAxis, yAxis);
+                                                            p05fLine->point2->setAxes(xAxis, yAxis);
+                                                            p25fLine->point2->setAxes(xAxis, yAxis);
+                                                            p50fLine->point2->setAxes(xAxis, yAxis);
+                                                            p75fLine->point2->setAxes(xAxis, yAxis);
+                                                            p95fLine->point2->setAxes(xAxis, yAxis);
+                                                            meanfLine->point2->setAxes(xAxis, yAxis);
+                                                            // span the full y-range of the histo panel
+                                                            double ylo = yAxis->range().lower;
+                                                            double yhi = yAxis->range().upper;
+                                                        }
+                                                        // clip the item to that axis rect so it doesn't draw outside the panel
+                                                        p05fLine->setClipToAxisRect(true);
+                                                        p25fLine->setClipToAxisRect(true);
+                                                        p50fLine->setClipToAxisRect(true);
+                                                        p75fLine->setClipToAxisRect(true);
+                                                        p95fLine->setClipToAxisRect(true);
+                                                        meanfLine->setClipToAxisRect(true);
+                                                        p05fLine->setClipAxisRect(histoRect);
+                                                        p25fLine->setClipAxisRect(histoRect);
+                                                        p50fLine->setClipAxisRect(histoRect);
+                                                        p75fLine->setClipAxisRect(histoRect);
+                                                        p95fLine->setClipAxisRect(histoRect);
+                                                        meanfLine->setClipAxisRect(histoRect);
+                                                    } else {
+                                                        // fallback: leave previous behaviour (global coords)
+                                                        p05fLine->setClipToAxisRect(false);
+                                                        p25fLine->setClipToAxisRect(false);
+                                                        p50fLine->setClipToAxisRect(false);
+                                                        p75fLine->setClipToAxisRect(false);
+                                                        p95fLine->setClipToAxisRect(false);
+                                                        meanfLine->setClipToAxisRect(false);
+                                                        
+                                                    }
+
+                                                    // item is parented to plt (created with plt) so no need to add to layout.
+                                                    plt->replot();
+                                                } // io_mutex released here
+                                            
+                                                {
+                                                    std::lock_guard<std::mutex> dk(QtFITS::msg_m);
+                                                    if (!QtFITS::finished)
+                                                         QtFITS::finished |= true;
+                                                    QtFITS::msg_cv.notify_one(); // notify while holding msg_m (or move notify outside if preferred)
+                                                    QtFITS::finished &= false;
+                                                } // msg_m released here
+                                            }
+                                        );
+    
+}
+
 QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
 {
     if(UOption::ddraw == UOption::drawing_mode::OFF)
@@ -343,6 +500,7 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     
 
     _draw_histo= std::thread([=]() {QtFITSviewer::QtHistogram(customPlot, in, static_cast<size_t>(histo_bins), px_pdf, px_cdf);});
+    _print_info = std::thread([=]() {PrintInfo(customPlot,in);});
     
 
     customPlot->connect(image->axis(QCPAxis::atBottom), SIGNAL(rangeChanged(QCPRange)), xproj->axis(QCPAxis::atBottom), SLOT(setRange(QCPRange)));
@@ -589,7 +747,10 @@ int main(int argc, char **argv)
         }
         
         if(plt != NULL)
+        {
             _draw_histo.join();
+            _print_info.join();
+        }
         
         if(fOPT.doPrint() && !printing_is_done)
         {

@@ -295,7 +295,7 @@ add_executable(
     utilities/FitsViewer/DSTFitsViewer.cxx
 )
 
-target_link_libraries(FitsViewer DSTFits DSTCore DSTdisplay cfitsio Minuit2 ${QT_LIBS})
+target_link_libraries(FitsViewer DSTFits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS})
 
 
 
