@@ -11,6 +11,8 @@
 #include <QtConcurrent/QtConcurrent>
 #include <DSTdisplay/QtFITSviewer.h>
 #include <QMetaObject>
+#include <QMainWindow> 
+#include <QStatusBar>  
 
 #endif
 
@@ -217,16 +219,47 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
         px_coo[1] < 0 || px_coo[1] >= in->Size(2) )
         return;
 
+    QString valStr = QString("N/A");
+
     try
     {
         QtFITSviewer::QtProfileX(plt, in,static_cast<size_t>(px_coo[1]+0.5),x);
         QtFITSviewer::QtProfileY(plt, in,static_cast<size_t>(px_coo[0]+0.5),y, true);
+
+        // --- NEW: update main window status bar with pixel coords and pixel value ---
+        // compute integer pixel indices (col=X, row=Y)
+        const size_t ix = static_cast<size_t>(px_coo[0] + 0.5);
+        const size_t iy = static_cast<size_t>(px_coo[1] + 0.5);
+
+        // Placeholder accessor: replace with your FITScube method (example: GetValueAt, At, operator(), ...)
+        double pixVal = 0.0;
+        bool got = false;
+
+        pixVal = in->DoubleValueAtPixel({ix, iy});
+        got = true;
+
+        if(got)
+            valStr = QString::number(pixVal, 'g', 6);
+
+        // find top-level window (the QtFITSviewer is a QMainWindow) and write to its status bar
+        QWidget *top = plt->window();
+        if(top)
+        {
+            QMainWindow *mainWin = qobject_cast<QMainWindow*>(top);
+            if(mainWin && mainWin->statusBar())
+            {
+                QString msg = QString("x=%1  y=%2  val=%3").arg(ix).arg(iy).arg(valStr);
+                mainWin->statusBar()->showMessage(msg);
+            }
+        }
     }
     catch(std::out_of_range& e)
     {
         if((DSL::verbose&DSL::verboseLevel::VERBOSE_DEBUG) == DSL::verboseLevel::VERBOSE_DEBUG)
         std::cerr << "[WARNING] mouseHasMove: " << e.what() << std::endl;
+        valStr = QString("N/A");
     }
+
 
 }
 
@@ -340,9 +373,6 @@ void PrintInfo(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
                                                             p75fLine->point2->setAxes(xAxis, yAxis);
                                                             p95fLine->point2->setAxes(xAxis, yAxis);
                                                             meanfLine->point2->setAxes(xAxis, yAxis);
-                                                            // span the full y-range of the histo panel
-                                                            double ylo = yAxis->range().lower;
-                                                            double yhi = yAxis->range().upper;
                                                         }
                                                         // clip the item to that axis rect so it doesn't draw outside the panel
                                                         p05fLine->setClipToAxisRect(true);
