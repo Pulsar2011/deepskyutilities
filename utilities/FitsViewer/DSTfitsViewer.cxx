@@ -270,7 +270,7 @@ void PrintInfo(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
 
     std::string unit = "";
     if(in->HDU().Exists("BUNIT"))
-        unit += in->HDU().GetValueForKey("UNITS");
+        unit += in->HDU().GetValueForKey("BUNIT");
     else
         unit += " ARB. UNIT";
 
