@@ -44,6 +44,23 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/modules")
 
 message("${BoldYellow}-- CMAKE INSTALL PREFIX : ${ColourReset}" ${CMAKE_INSTALL_PREFIX})
 
+# Add macOS RPATH configuration
+if(APPLE)
+    set(CMAKE_MACOSX_RPATH ON)
+    set(CMAKE_SKIP_BUILD_RPATH FALSE)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+
+    # RPATH when installed: DeepSkyProject/exe -> DeepSkyProject/lib
+    set(CMAKE_INSTALL_RPATH "@executable_path/../lib;@loader_path/../lib")
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
+    # RPATH when running from the build tree
+    list(APPEND CMAKE_BUILD_RPATH
+        "${CMAKE_CURRENT_BINARY_DIR}/build/lib"
+        "${DeepSkyROOT}/lib"
+    )
+endif()
+
 #-------------------- COMPILER
 include(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG("-std=c++23" COMPILER_SUPPORTS_CXX23)
@@ -297,7 +314,11 @@ add_executable(
 
 target_link_libraries(FitsViewer DSTFits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS})
 
-
+# Ensure RPATH is embedded into the executable
+set_target_properties(FitsViewer PROPERTIES
+    BUILD_RPATH "${CMAKE_BUILD_RPATH}"
+    INSTALL_RPATH "${CMAKE_INSTALL_RPATH}"
+)
 
 #-------------------- ADD DISTCLEAN CUSTOM TARGET
 
