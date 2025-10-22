@@ -249,7 +249,6 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
 
     const QCPRange xrange = img->axis(QCPAxis::atBottom)->range();
     const QCPRange yrange = img->axis(QCPAxis::atLeft)->range();
-    //std::vector<double> px_coo({plt->xAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).x()),plt->yAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).y())});
     std::vector<double> px_coo({img->axis(QCPAxis::atBottom)->pixelToCoord(cursor.x()),img->axis(QCPAxis::atLeft)->pixelToCoord(cursor.y())});
 
     if (px_coo[0] < 0 || px_coo[0] >= in->Size(1) || px_coo[0]< xrange.lower || px_coo[0]> xrange.upper ||
