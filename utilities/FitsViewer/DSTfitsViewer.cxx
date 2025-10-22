@@ -238,10 +238,22 @@ std::pair<double,double> getYDataRange(const QCPGraph *plt)
 void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QCPGraph *x,QCPGraph *y)
 {
     
-    std::vector<double> px_coo({plt->xAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).x()),plt->yAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).y())});
+    QCPAxisRect* img = dynamic_cast<QCPAxisRect*>(plt->plotLayout()->element(0,0));
+    if (!img) return;
 
-    if (px_coo[0] < 0 || px_coo[0] >= in->Size(1) ||
-        px_coo[1] < 0 || px_coo[1] >= in->Size(2) )
+    // Only refresh when mouse is inside the image axis rect
+    const QPoint cursor = plt->mapFromGlobal(QCursor::pos());
+    QCPAxisRect* hit = plt->axisRectAt(cursor);
+    if (hit != img)
+        return;
+
+    const QCPRange xrange = img->axis(QCPAxis::atBottom)->range();
+    const QCPRange yrange = img->axis(QCPAxis::atLeft)->range();
+    //std::vector<double> px_coo({plt->xAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).x()),plt->yAxis->pixelToCoord(plt->mapFromGlobal(QCursor::pos()).y())});
+    std::vector<double> px_coo({img->axis(QCPAxis::atBottom)->pixelToCoord(cursor.x()),img->axis(QCPAxis::atLeft)->pixelToCoord(cursor.y())});
+
+    if (px_coo[0] < 0 || px_coo[0] >= in->Size(1) || px_coo[0]< xrange.lower || px_coo[0]> xrange.upper ||
+        px_coo[1] < 0 || px_coo[1] >= in->Size(2) || px_coo[1]< yrange.lower || px_coo[1]> yrange.upper) 
         return;
 
     QString valStr = QString("N/A");
@@ -383,7 +395,7 @@ void PrintInfo(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
                                                     plt->plotLayout()->addElement(1, 3, imgStatElement);
                                                     QCPLayoutElement *ell = plt->plotLayout()->element(1, 3);
                                                     ell->setMinimumSize(100, 50);
-                                                    ell->setMaximumSize(500, 1200);
+                                                    //ell->setMaximumSize(1200, 1200);
                                                     
 
                                                     // Try to locate the histogram axis rect we created at layout (0,3)
@@ -540,7 +552,8 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     yproj->setMaximumSize(100, 1200);
     xproj->setMinimumSize(200, 50);
     xproj->setMaximumSize(1200, 100);
-    histo->setMaximumSize(500, 1200);
+    //histo->setMaximumSize(1200, 1200);
+    histo->setMinimumSize(60, 200);
     
     yproj_layout->addElement(0, 0, yproj);
     xproj_layout->addElement(0, 0, xproj);
