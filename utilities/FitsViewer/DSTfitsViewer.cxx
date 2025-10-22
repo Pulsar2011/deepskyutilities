@@ -209,6 +209,31 @@ UOption::drawing_mode UOption::ddraw = UOption::drawing_mode::LINEAR;
 
 #ifdef __WITH_QT__
 
+std::pair<double,double> getYDataRange(const QCPGraph *plt)
+{
+    
+    const QCPRange visibleX = plt->keyAxis()->range();
+    QSharedPointer<QCPGraphDataContainer> data = plt->data();
+
+    auto itLow  = data->findBegin(visibleX.lower, true);
+    auto itHigh = data->findEnd(visibleX.upper, true);
+
+    double vmin = std::numeric_limits<double>::infinity();
+    double vmax = -std::numeric_limits<double>::infinity();
+
+    for (auto it = itLow; it != itHigh; ++it)
+    {
+        const double v = it->value;
+        if (!std::isfinite(v)) continue;
+        if (v < vmin) vmin = v;
+        if (v > vmax) vmax = v;
+    }
+
+    const double span = vmax - vmin;
+    const double pad = std::max(1e-9, span * 0.05);
+    
+    return std::pair<double,double>(vmin - pad,vmax + pad);
+}
 
 void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QCPGraph *x,QCPGraph *y)
 {
@@ -225,6 +250,23 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
     {
         QtFITSviewer::QtProfileX(plt, in,static_cast<size_t>(px_coo[1]+0.5),x);
         QtFITSviewer::QtProfileY(plt, in,static_cast<size_t>(px_coo[0]+0.5),y, true);
+
+        std::pair<double,double> range_x = getYDataRange(x);
+        std::pair<double,double> range_y = getYDataRange(y);
+
+        const QCPRange current_x = x->valueAxis()->range();
+        const QCPRange target_x(range_x.first, range_x.second);
+
+        const QCPRange current_y = y->valueAxis()->range();
+        const QCPRange target_y(range_y.first, range_y.second);
+
+        // Avoid needless replots if unchanged
+        if (std::abs(current_x.lower - target_x.lower) > 1e-9 || std::abs(current_x.upper - target_x.upper) > 1e-9)
+                x->valueAxis()->setRange(target_x);
+
+        // Avoid needless replots if unchanged
+        if (std::abs(current_y.lower - target_y.lower) > 1e-9 || std::abs(current_y.upper - target_y.upper) > 1e-9)
+                y->valueAxis()->setRange(target_y);
 
         // --- NEW: update main window status bar with pixel coords and pixel value ---
         // compute integer pixel indices (col=X, row=Y)
@@ -339,10 +381,15 @@ void PrintInfo(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
                                                     meanfLine->point2->setCoords(mean, 1); //
 
                                                     plt->plotLayout()->addElement(1, 3, imgStatElement);
+                                                    QCPLayoutElement *ell = plt->plotLayout()->element(1, 3);
+                                                    ell->setMinimumSize(100, 50);
+                                                    ell->setMaximumSize(500, 1200);
+                                                    
 
                                                     // Try to locate the histogram axis rect we created at layout (0,3)
                                                     QCPAxisRect *histoRect = nullptr;
                                                     QCPLayoutElement *el = plt->plotLayout()->element(0, 3);
+                                            
                                                     if (el) {
                                                         // element at (0,3) is a QCPLayoutGrid (histo_layout). The histo axis rect
                                                         // was added as grid->element(0,0) in Draw().
@@ -414,6 +461,45 @@ void PrintInfo(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
     
 }
 
+void onResize(QCustomPlot *plt)
+{
+    QMetaObject::invokeMethod(plt, [plt ]() mutable
+    {
+        {
+            std::lock_guard<std::mutex> lk(QtFITS::io_mutex);
+
+            auto img =  dynamic_cast<QCPAxisRect*>(plt->plotLayout()->element(0,0));
+            QCPAxis *x = img->axis(QCPAxis::atBottom);
+            QCPAxis *y = img->axis(QCPAxis::atLeft);
+            
+            //const int width = plt->window()->width();
+            //const int height = plt->window()->height();
+
+            //img->setMinimumSize(height * 2/3, height * 2/3);
+
+            //auto xproj = plt->plotLayout()->element(1,0);
+            //xproj->setMinimumSize(img->width(), height *1/3);
+
+            //auto yproj = plt->plotLayout()->element(0,2);
+            //yproj->setMinimumSize(height *1/3, img->height());
+
+            //auto hist = plt->plotLayout()->element(0,3);
+            //hist->setMinimumSize(width - (height), img->height());
+
+            y->setScaleRatio(x, 1.0);
+            plt->replot();
+        }
+
+        {
+            std::lock_guard<std::mutex> dk(QtFITS::msg_m);
+            if (!QtFITS::finished)
+                 QtFITS::finished |= true;
+            QtFITS::msg_cv.notify_one(); // notify while holding msg_m (or move notify outside if preferred)
+            QtFITS::finished &= false;
+        } // msg_m released here
+    });
+}
+
 QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
 {
     if(UOption::ddraw == UOption::drawing_mode::OFF)
@@ -421,6 +507,7 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     
     QtFITSviewer *mw = new QtFITSviewer(400, 250, 1200, 900);
     mw->setWindowTitle(in->GetName().c_str());
+    mw->linkResizeEvent(onResize);
 
     //size_t xsize = std::min(static_cast<size_t>(900),in->Size(1)+200);
     //size_t ysize = std::min(static_cast<size_t>(900),in->Size(2)+200);
@@ -448,14 +535,12 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     QCPAxisRect *xproj = new QCPAxisRect(customPlot, false);
     QCPAxisRect *histo = new QCPAxisRect(customPlot, false);
     
-    image->setMaximumSize(850, 850);
-    image->setMinimumSize(100, 100);
-    yproj->setMinimumSize(10 , 100);
-    xproj->setMinimumSize(100, 10);
-    yproj->setMaximumSize(100, 850);
-    xproj->setMaximumSize(850, 100);
-    histo->setMaximumSize(850, 850);
-    histo->setMinimumSize(50, 50);
+    image->setMinimumSize(200, 200);
+    yproj->setMinimumSize(50, 200);
+    yproj->setMaximumSize(100, 1200);
+    xproj->setMinimumSize(200, 50);
+    xproj->setMaximumSize(1200, 100);
+    histo->setMaximumSize(500, 1200);
     
     yproj_layout->addElement(0, 0, yproj);
     xproj_layout->addElement(0, 0, xproj);
@@ -542,6 +627,8 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     
     auto f = std::bind(mouseHasMove,customPlot,in,x_projection,y_projection);
     QAbstractAnimation::connect(customPlot, &QCustomPlot::mouseMove, f);
+
+    image->axis(QCPAxis::atBottom)->setScaleRatio(image->axis(QCPAxis::atLeft),1.0);
     
     mw->SetPlot(customPlot);
     mw->show();
@@ -678,18 +765,18 @@ int main(int argc, char **argv)
          if(plt!=NULL)
             a.exec();
         
-        if(plt!=NULL)
-        {        
-            {
-                std::lock_guard<std::mutex> lk(QtFITS::io_mutex);
-                foreach (QWidget *widget, QApplication::allWidgets())
-                {
-                    widget->setGeometry(widget->x(), widget->y(), widget->width()*1.25, widget->height()/((img->Size(2)>=500)?1.25:1));
-                    widget->update();
-                    plt->replot();
-                }
-            }
-        }
+//        if(plt!=NULL)
+//        {        
+//            {
+//                std::lock_guard<std::mutex> lk(QtFITS::io_mutex);
+//                foreach (QWidget *widget, QApplication::allWidgets())
+//                {
+//                    widget->setGeometry(widget->x(), widget->y(), widget->width()*1.25, widget->height()/((img->Size(2)>=500)?1.25:1));
+//                    widget->update();
+//                    plt->replot();
+//                }
+//            }
+//        }
 
         bool printing_is_done=false;
         if(fOPT.doPrint())
@@ -811,5 +898,3 @@ int main(int argc, char **argv)
     
     return EXIT_SUCCESS;
 }
-
-
