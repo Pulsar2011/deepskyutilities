@@ -34,6 +34,7 @@
 typedef std::thread THREAD;
 
 std::thread _draw_histo;
+std::thread _draw_grid;
 std::thread _print_info;
 std::thread _print_;
 
@@ -511,6 +512,46 @@ void onResize(QCustomPlot *plt)
     });
 }
 
+void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
+{
+    if(!in)
+        return;
+
+    if(in->getNumberOfWCS() < 1)
+        return;
+
+    std::valarray<size_t> piX(in->Nelements());
+    for(size_t k=0; k< in->Nelements(); k++)
+        piX[k] = k;
+    
+    worldVectors world = in->WorldCoordinatesVector(piX);
+
+    // Create FITSimg<double> objects (concrete class), not abstract FITScube
+    auto xCoo = std::make_shared<DSL::FITSimg<double>>(std::vector<size_t>({in->Size(1), in->Size(2)}));
+    auto yCoo = std::make_shared<DSL::FITSimg<double>>(std::vector<size_t>({in->Size(1), in->Size(2)}));
+
+    size_t k = 0;
+    for(worldVectors::const_iterator i = world.cbegin(); i != world.cend(); ++i)
+    {
+        xCoo->SetPixelValue((*i)[0], k);
+        yCoo->SetPixelValue((*i)[1], k);
+        k++;
+    }
+    
+    // Cast to const FITScube shared_ptr (upcast from derived to base)
+    std::shared_ptr<const DSL::FITScube> xCoo_const = xCoo;
+    std::shared_ptr<const DSL::FITScube> yCoo_const = yCoo;
+    
+    std::thread xc = std::thread([=]() {QtFITSviewer::QtContours(plt, xCoo_const, 4);});
+    std::thread yc = std::thread([=]() {QtFITSviewer::QtContours(plt, yCoo_const, 4);});
+
+    xc.join();
+    yc.join();
+    
+    xCoo.reset();
+    yCoo.reset();
+}
+
 QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
 {
     if(UOption::ddraw == UOption::drawing_mode::OFF)
@@ -644,6 +685,9 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     
     mw->SetPlot(customPlot);
     mw->show();
+
+    _draw_grid= std::thread([=]() {DrawWCSgrid(customPlot, in);});
+
     return customPlot;
 }
 
@@ -878,6 +922,7 @@ int main(int argc, char **argv)
         if(plt != NULL)
         {
             _draw_histo.join();
+            _draw_grid.join();
             _print_info.join();
         }
         
