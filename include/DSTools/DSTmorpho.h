@@ -377,6 +377,9 @@ namespace DST
         if(k.size() == 0)
             throw FITSexception(BAD_DIMEN,"DST","folding","Kernel size is zero.["+std::to_string(__LINE__)+"]");
 
+        if(k.sizes().size() != in->GetDimension() || k.sizes().size() < 1)
+            throw FITSexception(BAD_DIMEN,"DST","folding","Kernel missmatch.["+std::to_string(__LINE__)+"]");
+
         static_assert(is_allowed_storage_type_v<T>, "Kernel type not supported.");
         static_assert(is_allowed_storage_type_v<K>, "Image pixel type not supported.");
 

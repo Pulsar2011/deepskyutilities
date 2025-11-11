@@ -303,6 +303,31 @@ class KernelFoldingTest : public ::testing::Test {};
 
 TYPED_TEST_SUITE(KernelFoldingTest, NumericTypes);
 
+TYPED_TEST(KernelFoldingTest, DimensionMatching)
+{
+    using T = TypeParam;
+
+    // Create 5x5 image initialized to zero
+    size_t maxSize = 11;
+    size_t depth = 5;
+    auto img = std::make_shared< FITSimg<T> >(std::vector<size_t>{maxSize,maxSize,depth});
+    auto data_ptr = img->template GetData<T>();
+    (*data_ptr) *= 0;
+
+    for(size_t i = 0; i < maxSize; i+=5)
+    for(size_t j = 0; j < maxSize; j+=5)
+    for(size_t k = 0; k < depth; k++)
+        (*data_ptr)[img->PixelIndex({i,j,k})] = T(1);
+
+    // 3x3 cross kernel: [0,1,0, 1,1,1, 0,1,0]
+    std::valarray<T> kdata = { T(0), T(1), T(0),
+                               T(1), T(1), T(1),
+                               T(0), T(1), T(0) };
+    kernel<T> k(kdata, std::vector<size_t>{3,3});
+
+    // Call folding wrapper
+    EXPECT_ANY_THROW(folding<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1));
+}
 
 TYPED_TEST(KernelFoldingTest, FoldDeltaWithCrossKernel_OneThreads)
 {
