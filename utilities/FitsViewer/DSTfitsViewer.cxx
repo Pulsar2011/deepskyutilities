@@ -295,6 +295,24 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
         if(got)
             valStr = QString::number(pixVal, 'g', 6);
 
+        QString wcs_msg = QString("");
+        if(in->getNumberOfWCS() > 0 && in->GetDimension() == 2)
+        {
+            worldCoords wc = in->WorldCoordinates(std::vector<size_t>({ix, iy}));
+            std::vector< std::string > ctype = in->getWCS().CTYPE(0);
+            std::vector< std::string > cunit = in->getWCS().CUNIT(0);
+
+            std::string xstr = (ctype[0].size() > 0)?ctype[0]:"\u03b1"; 
+            if(xstr.find('-') != std::string::npos) xstr.resize(xstr.find_first_of('-'));
+            std::string ystr = (ctype[1].size() > 0)?ctype[1]:"\u03b4"; 
+            if(ystr.find('-') != std::string::npos) ystr.resize(ystr.find_first_of('-'));
+
+            std::string xUnit = (cunit[0].size() > 0)?" "+cunit[0]:""; if(xUnit == " deg" || xUnit == " DEG" ) xUnit = "\u00b0";
+            std::string yUnit = (cunit[1].size() > 0)?" "+cunit[1]:""; if(yUnit == " deg" || yUnit == " DEG" ) yUnit = "\u00b0";
+
+            wcs_msg = QString("%1=%2%4  %5=%6%7 ").arg(QString::fromStdString(xstr)).arg(wc[0],0,'f',3).arg(QString::fromStdString(xUnit)).arg(QString::fromStdString(ystr)).arg(wc[1],0,'f',3).arg(QString::fromStdString(yUnit));
+        }
+
         // find top-level window (the QtFITSviewer is a QMainWindow) and write to its status bar
         QWidget *top = plt->window();
         if(top)
@@ -302,7 +320,7 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
             QMainWindow *mainWin = qobject_cast<QMainWindow*>(top);
             if(mainWin && mainWin->statusBar())
             {
-                QString msg = QString("x=%1  y=%2  val=%3").arg(ix).arg(iy).arg(valStr);
+                QString msg = QString("[%1 ; %2] ").arg(ix).arg(iy)+wcs_msg+QString("val=%3").arg(valStr);
                 mainWin->statusBar()->showMessage(msg);
             }
         }
