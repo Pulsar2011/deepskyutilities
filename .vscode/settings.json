@@ -87,7 +87,9 @@
         "fstream": "cpp",
         "numbers": "cpp",
         "semaphore": "cpp",
-        "shared_mutex": "cpp"
+        "shared_mutex": "cpp",
+        "stop_token": "cpp",
+        "numeric": "cpp"
     },
     "C_Cpp.errorSquiggles": "enabled"
 }

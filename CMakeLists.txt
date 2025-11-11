@@ -281,9 +281,9 @@ foreach( test_source_file ${TEST_SRC} )
 	)
 
     if(COMPILER_SUPPORTS_CXX17)
-        target_link_libraries( ${tSRC} DSTools gtest gtest_main)
+        target_link_libraries( ${tSRC} DSTools DSTFits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS} gtest gtest_main)
     else(COMPILER_SUPPORTS_CXX17)
-        target_link_libraries( ${tSRC} DSTools ${Boost_LIBRARIES} gtest gtest_main)
+        target_link_libraries( ${tSRC} DSTools DSTFits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
     endif(COMPILER_SUPPORTS_CXX17)
 
 

@@ -19,3 +19,4 @@ install_manifest.txt
 *_autogen/
 *.log
 CTestCostData.txt
+gTest*.cmake
