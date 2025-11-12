@@ -16,5 +16,16 @@
             "MIMode": "lldb",
             "preLaunchTask": "make FitsViewer"
         },
+        {
+            "type": "cppdbg",
+            "request": "launch",
+            "name": "gTest_morpho (LLDB)",
+            "program": "${workspaceRoot}/build/exe/gTest_morpho",
+            "args": [],
+            "env": [],
+            "cwd": "${workspaceRoot}",
+            "MIMode": "lldb",
+            "preLaunchTask": "make gTest_morpho"
+        },
     ]
 }

@@ -7,6 +7,13 @@
             "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make FitsViewer",
             "group": "build",
             "problemMatcher": []
+        },
+        {
+            "label": "make gTest_morpho",
+            "type": "shell",
+            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_morpho",
+            "group": "build",
+            "problemMatcher": []
         }
     ]
 }
