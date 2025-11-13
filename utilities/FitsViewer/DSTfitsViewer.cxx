@@ -538,6 +538,11 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
     if(in->getNumberOfWCS() < 1)
         return;
 
+    if( in->getWCS().CRPIX(0,1) == 0 && in->getWCS().CRPIX(0,2) == 0 &&
+        in->getWCS().CRVAL(0,1) == 0 && in->getWCS().CRVAL(0,2) == 0 &&
+        in->getWCS().CDELT(0,1) == 1 && in->getWCS().CDELT(0,2) == 1)
+        return;
+
     std::valarray<size_t> piX(in->Nelements());
     for(size_t k=0; k< in->Nelements(); k++)
         piX[k] = k;
