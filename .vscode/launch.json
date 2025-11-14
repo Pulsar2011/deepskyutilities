@@ -27,5 +27,16 @@
             "MIMode": "lldb",
             "preLaunchTask": "make gTest_morpho"
         },
+        {
+            "type": "cppdbg",
+            "request": "launch",
+            "name": "gTest_version (LLDB)",
+            "program": "${workspaceRoot}/build/exe/gTest_version",
+            "args": [],
+            "env": [],
+            "cwd": "${workspaceRoot}",
+            "MIMode": "lldb",
+            "preLaunchTask": "make gTest_version"
+        },
     ]
 }

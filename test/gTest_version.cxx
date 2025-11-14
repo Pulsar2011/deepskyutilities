@@ -102,9 +102,19 @@ namespace DST
                 to_test[to_test.size()-k] -= ((to_test[to_test.size()-k]>0)?1:0);
             else if (k > to_test.size())
             {
-                to_test[0] -= ((to_test[0]>0)?1:0);
-                to_test[1] -= ((to_test[1]>0)?1:0); if(to_test[0] < 1) to_test[1] ++;
-                to_test[2] -= ((to_test[2]>0)?1:0); if(to_test[0] < 1) to_test[2] ++;
+                if(to_test[2]>0)
+                    to_test[2] -=1;
+                else if(to_test[1]>0)
+                {
+                    to_test[1] -=1;
+                    to_test[2] +=9;
+                }
+                else if(to_test[0]>0)
+                {
+                    to_test[0] -=1;
+                    to_test[1] +=5;
+                    to_test[2] +=9;
+                }
             }
 
             std::string older = std::string("v")+std::to_string(to_test[0])
