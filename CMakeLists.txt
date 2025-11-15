@@ -118,14 +118,30 @@ option(WITH_DEBUG "Activate debug mode" OFF)
 if(WITH_DEBUG)
 	message("${Blue}-- DEBUG MODE ACTIVATED${ColourReset}")
 	add_definitions(-D__DEBUG__)
-	set(CMAKE_BUILD_TYPE DEBUG)
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0")
+	# Ensure proper CMake build type name and debug flags so lldb can see symbols.
+	# Use -g3 for maximum debug info, -O0 to avoid optimization and -fno-omit-frame-pointer
+	# Avoid adding any -s/--strip flags here.
+	set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+	# Populate the Debug-specific vars used by CMake and toolchains
+	set(CMAKE_C_FLAGS_DEBUG   "${CMAKE_C_FLAGS_DEBUG} -g3 -O0 -fno-omit-frame-pointer")
+	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g3 -O0 -fno-omit-frame-pointer")
+	# Ensure linker doesn't strip in debug mode (leave linker flags untouched or add explicit)
+	set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG}")
+	# Also append to global flags (keeps behaviour consistent with rest of file)
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_DEBUG}")
 else(WITH_DEBUG)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+	# For non-debug keep release-style optimizations but avoid automatic stripping here.
+	set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+	set(CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE} -O3")
+	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_RELEASE}")
 endif(WITH_DEBUG)
 
 message("${Green}-- CXX COMPILER:${ColourReset} ${CMAKE_CXX_COMPILER}")
 message("${Green}-- DEFAULT CXX FLAGS:${ColourReset} ${CMAKE_CXX_FLAGS}")
+message("${Green}-- CMAKE_BUILD_TYPE:${ColourReset} ${CMAKE_BUILD_TYPE}")
+message("${Green}-- CMAKE_CXX_FLAGS_DEBUG:${ColourReset} ${CMAKE_CXX_FLAGS_DEBUG}")
+message("${Green}-- CMAKE_EXE_LINKER_FLAGS_DEBUG:${ColourReset} ${CMAKE_EXE_LINKER_FLAGS_DEBUG}")
 
 #-------------------- APPEND GIT VERSION TAG
 # Make a version file containing the current version from git.
@@ -265,6 +281,13 @@ add_library(
     ${version_file}
 )
 
+
+if(COMPILER_SUPPORTS_CXX23)
+    target_link_libraries( DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS})
+else(COMPILER_SUPPORTS_CXX23)
+    target_link_libraries( DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES})
+endif(COMPILER_SUPPORTS_CXX23)
+
 #-------------------- Configuration des test
 add_subdirectory(googletest   EXCLUDE_FROM_ALL)
 # Make googletest headers available and enable GoogleTest helper which
@@ -280,11 +303,11 @@ foreach( test_source_file ${TEST_SRC} )
 		${test_source_file}
 	)
 
-    if(COMPILER_SUPPORTS_CXX17)
-        target_link_libraries( ${tSRC} DSTools DSTFits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS} gtest gtest_main)
-    else(COMPILER_SUPPORTS_CXX17)
-        target_link_libraries( ${tSRC} DSTools DSTFits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
-    endif(COMPILER_SUPPORTS_CXX17)
+    if(COMPILER_SUPPORTS_CXX23)
+        target_link_libraries( ${tSRC} DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} gtest gtest_main)
+    else(COMPILER_SUPPORTS_CXX23)
+        target_link_libraries( ${tSRC} DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
+    endif(COMPILER_SUPPORTS_CXX23)
 
 
 endforeach( test_source_file ${TEST_SRC} )
@@ -309,7 +332,7 @@ endif(DOXYGEN_FOUND)
 #######################
 add_executable(
     FitsViewer
-    utilities/FitsViewer/DSTFitsViewer.cxx
+    utilities/FitsViewer/DSTfitsViewer.cxx
 )
 
 target_link_libraries(FitsViewer DSTFits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS})

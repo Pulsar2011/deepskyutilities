@@ -30,6 +30,17 @@
         {
             "type": "cppdbg",
             "request": "launch",
+            "name": "gTest_findStars (LLDB)",
+            "program": "${workspaceRoot}/build/exe/gTest_findStars",
+            "args": [],
+            "env": [],
+            "cwd": "${workspaceRoot}",
+            "MIMode": "lldb",
+            "preLaunchTask": "make gTest_findStars"
+        },
+        {
+            "type": "cppdbg",
+            "request": "launch",
             "name": "gTest_version (LLDB)",
             "program": "${workspaceRoot}/build/exe/gTest_version",
             "args": [],
@@ -37,6 +48,6 @@
             "cwd": "${workspaceRoot}",
             "MIMode": "lldb",
             "preLaunchTask": "make gTest_version"
-        },
+        }
     ]
 }

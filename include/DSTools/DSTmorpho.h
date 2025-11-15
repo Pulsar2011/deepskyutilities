@@ -34,13 +34,27 @@ namespace DST
     namespace Morphology
     {
 #pragma region - kernel class
+        enum ktype
+        {
+            MIN,
+            MAX,
+            MEAN,
+            MEDIAN,
+            SUM,
+            RMS,
+            RMSE
+        };
+
         template <typename T>
         class kernel
         {
+
 #pragma region • members
             private:
                 std::valarray<T> fkernel;
                 std::vector<size_t> fsize;
+                ktype ftype;
+
 #pragma endregion
 
             /**
@@ -65,7 +79,7 @@ namespace DST
                  * @param k kernel array
                  * @param s kernel size vector
                  */
-                kernel(const std::valarray<T>& k, const std::vector<size_t>& s):fkernel(k), fsize(s)
+                kernel(const std::valarray<T>& k, const std::vector<size_t>& s, ktype kt = ktype::SUM):fkernel(k), fsize(s),ftype(kt)
                 {
                     if(is_allowed_storage_type_v<T> == false)
                         throw std::invalid_argument("Kernel type not supported.["+std::to_string(__LINE__)+"]");
@@ -79,7 +93,7 @@ namespace DST
                  * @param k kernel array
                  * @param s kernel size vector
                  */
-                kernel(const std::valarray<T>& k, const std::initializer_list<size_t>& s):kernel(k, std::vector<size_t>(s))
+                kernel(const std::valarray<T>& k, const std::initializer_list<size_t>& s, ktype kt = ktype::SUM):kernel(k, std::vector<size_t>(s),kt)
                 {
                     if(is_allowed_storage_type_v<T> == false)
                         throw std::invalid_argument("Kernel type not supported.["+std::to_string(__LINE__)+"]");
@@ -93,7 +107,7 @@ namespace DST
                  * 
                  * @param k Kernel to copy to \c this
                  */
-                kernel(const kernel<T>& k):fkernel(k.fkernel), fsize(k.fsize)
+                kernel(const kernel<T>& k):fkernel(k.fkernel), fsize(k.fsize),ftype(k.ftype)
                 {
                     validityCheck();
                 }
@@ -103,6 +117,15 @@ namespace DST
                  */
                 ~kernel(){fsize.clear();}
 #pragma endregion
+
+#pragma region • accessors
+                const ktype& type() const { return ftype;}
+#pragma endregion
+
+#pragma region • modifiers
+                void setType(const ktype& t) { ftype = t; }
+#pragma endregion
+
 
 #pragma region • methods
                 /**
@@ -510,7 +533,72 @@ namespace DST
                     }
 
                     // perform folding operation
-                    out_data[i] = (tmp * tmpKernel).sum();
+                    std::valarray<U> ttmp = tmp*tmpKernel;
+                    switch(k.type())
+                    {
+                        case ktype::MIN:
+                            out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).min();
+                            break;
+                        
+                        case ktype::MAX:
+                            out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).max();
+                            break;
+                        
+                        case ktype::MEAN:
+                            out_data[i] = (((std::valarray<U>) ttmp[ttmp>0]).size() > 0)?((std::valarray<U>) ttmp[ttmp>0]).sum()/static_cast<U>(((std::valarray<U>) ttmp[ttmp>0]).size()):U(0);
+                            break;
+                        
+                        case ktype::MEDIAN:
+                            {
+                                std::valarray<U> prod = ttmp[ttmp>0];
+                                if(prod.size() == 0)
+                                    out_data[i] = U(0);
+                                else
+                                {
+                                    std::vector<U> vec(std::begin(ttmp), std::end(ttmp));
+                                    std::sort(vec.begin(), vec.end());
+                                    size_t n = vec.size();
+                                    
+                                    if(n % 2 == 0)
+                                        out_data[i] = (vec[n/2 - 1] + vec[n/2]) / U(2);
+                                    else
+                                        out_data[i] = vec[n/2];
+                                }
+                            }
+                            break;
+                        
+                        case ktype::RMS:
+                            {
+                                std::valarray<U> prod = ttmp[ttmp>0];
+                                if(prod.size() == 0)
+                                    out_data[i] = U(0);
+                                else
+                                {
+                                    U sumsq = (prod*prod).sum();
+                                    out_data[i] = std::sqrt( sumsq / static_cast<U>(prod.size()) );
+                                }
+                            }
+                            break;
+
+                        case ktype::RMSE:
+                            {
+                                std::valarray<U> prod = ttmp[ttmp>0];
+                                if(prod.size() == 0)
+                                    out_data[i] = U(0);
+                                else
+                                {
+                                    U meanP = prod.sum()/static_cast<U>(prod.size());
+                                    U sumsq = (prod*prod-meanP*meanP).sum();
+                                    out_data[i] = std::sqrt( sumsq );
+                                }
+                            }
+                            break;
+
+                        case ktype::SUM:
+                        default:
+                            out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).sum();
+                            break;
+                    }
                 }
             }
             else
@@ -597,7 +685,73 @@ namespace DST
                                     tmp[kj] = static_cast<U>((*in_data_ptr)[tgtIndex]);
                             }
 
-                            out_data[i] = (tmp * tmpKernel).sum();
+                            std::valarray<U> ttmp = tmp*tmpKernel;
+
+                            switch(k.type())
+                            {
+                                case ktype::MIN:
+                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).min();
+                                    break;
+
+                                case ktype::MAX:
+                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).max();
+                                    break;
+
+                                case ktype::MEAN:
+                                    out_data[i] = (((std::valarray<U>) ttmp[ttmp>0]).size() > 0)?((std::valarray<U>) ttmp[ttmp>0]).sum()/static_cast<U>(((std::valarray<U>) ttmp[ttmp>0]).size()):U(0);
+                                    break;
+
+                                case ktype::MEDIAN:
+                                    {
+                                        std::valarray<U> prod = ttmp[ttmp>0];
+                                        if(prod.size() == 0)
+                                            out_data[i] = U(0);
+                                        else
+                                        {
+                                            std::vector<U> vec(std::begin(ttmp), std::end(ttmp));
+                                            std::sort(vec.begin(), vec.end());
+                                            size_t n = vec.size();
+
+                                            if(n % 2 == 0)
+                                                out_data[i] = (vec[n/2 - 1] + vec[n/2]) / U(2);
+                                            else
+                                                out_data[i] = vec[n/2];
+                                        }
+                                    }
+                                    break;
+                                
+                                case ktype::RMS:
+                                    {
+                                        std::valarray<U> prod = ttmp[ttmp>0];
+                                        if(prod.size() == 0)
+                                            out_data[i] = U(0);
+                                        else
+                                        {
+                                            U sumsq = (prod*prod).sum();
+                                            out_data[i] = std::sqrt( sumsq / static_cast<U>(prod.size()) );
+                                        }
+                                    }
+                                    break;
+                                
+                                case ktype::RMSE:
+                                    {
+                                        std::valarray<U> prod = ttmp[ttmp>0];
+                                        if(prod.size() == 0)
+                                            out_data[i] = U(0);
+                                        else
+                                        {
+                                            U meanP = prod.sum()/static_cast<U>(prod.size());
+                                            U sumsq = (prod*prod-meanP*meanP).sum();
+                                            out_data[i] = std::sqrt( sumsq );
+                                        }
+                                    }
+                                    break;
+                                
+                                case ktype::SUM:
+                                default:
+                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).sum();
+                                    break;
+                            }
                         }
                     });
                 }

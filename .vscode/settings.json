@@ -89,7 +89,8 @@
         "semaphore": "cpp",
         "shared_mutex": "cpp",
         "stop_token": "cpp",
-        "numeric": "cpp"
+        "numeric": "cpp",
+        "filesystem": "cpp"
     },
     "C_Cpp.errorSquiggles": "enabled"
 }
