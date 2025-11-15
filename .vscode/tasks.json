@@ -16,9 +16,17 @@
             "problemMatcher": []
         },
         {
+
             "label": "make gTest_findStars",
             "type": "shell",
             "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_findStars",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "make gTest_version",
+            "type": "shell",
+            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_version",
             "group": "build",
             "problemMatcher": []
         }
