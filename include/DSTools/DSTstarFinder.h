@@ -127,6 +127,7 @@ namespace DST
 
             private:
                 const std::shared_ptr<FITScube> fsky; //< Pointer to the input image.
+                std::shared_ptr<FITScube> flabel; //< Pointer to the label image.
                 detectionMethod fmethod = detectionMethod::MORPHO; //< Detection method to use.
                 std::map<size_t, Stars> fdetectedStars; //< Map of detected stars with their ID and position.
                 double fthresholdValue; //< Threshold value for THRESHOLD detection method.

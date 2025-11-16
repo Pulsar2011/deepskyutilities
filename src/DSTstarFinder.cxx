@@ -12,6 +12,9 @@
 
 #include <queue>
 #include <set>
+#include <mutex>
+
+std::mutex flabelMutex;
 
 namespace DST
 {
@@ -251,6 +254,7 @@ namespace DST
          */
         starFinder::starFinder(const std::shared_ptr<FITScube>& skyImage):
                                     fsky(skyImage),
+                                    flabel(nullptr),
                                     fmethod(detectionMethod::MORPHO),fdetectedStars(),
                                     fthresholdValue(std::numeric_limits<double>::min()),
                                     fBS(Morphology::kernel<double>::one({3,3})),
@@ -279,6 +283,7 @@ namespace DST
         starFinder::~starFinder()
         {
             fdetectedStars.clear();
+            flabel.reset();
         }
 #pragma endregion
 #pragma region -- modifiers
@@ -504,6 +509,7 @@ namespace DST
 
             // Search stars using watershedalgorithm on the significance map
             _watershedFlooding(iK, fquantumStepQueue, iLayer);
+            iK.reset();
  
         }
 
@@ -785,6 +791,33 @@ namespace DST
                 }
                 labelImg.Write(foutURL+"/label_image.fits",true);
             }
+
+            std::unique_lock<std::mutex> lock(flabelMutex);
+            if(flabel == nullptr)
+            {
+                flabel = std::shared_ptr< FITScube >(new FITSimg<int64_t>(2,{img->Size(1),img->Size(2)}));
+                flabel->SetName("label_image");
+                *(flabel->GetData<int64_t>()) *= 0;
+                for(size_t i=0; i<labels.size(); ++i)
+                {
+                    if(labels[i] < 1)
+                        continue;
+                    (*(flabel->GetData<int64_t>()))[i]=static_cast<int64_t>(labels[i]);
+                }
+            }
+            else
+            {
+                FITSimg<int64_t> labelImg(img->GetDimension(),{img->Size(1),img->Size(2)});
+                *(labelImg.GetData<int64_t>()) *= 0;
+                for(size_t i=0; i<labels.size(); ++i)
+                {
+                    if(labels[i] < 1)
+                        continue;
+                    (*(labelImg.GetData<int64_t>()))[i]=static_cast<int64_t>(labels[i]);
+                }
+                flabel->AddLayer(labelImg);
+            }
+            lock.unlock(); // explicit unlock
         }
 
 
