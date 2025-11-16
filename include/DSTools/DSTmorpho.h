@@ -527,7 +527,7 @@ namespace DST
 
                         // fetch value from input data and promote to U
                         if(msk[tgtIndex])
-                            tmp[kj] = U(0);
+                            tmp[kj] = std::numeric_limits<U>::quiet_NaN();
                         else
                             tmp[kj] = static_cast<U>((*in_data)[tgtIndex]);
                     }
@@ -537,25 +537,25 @@ namespace DST
                     switch(k.type())
                     {
                         case ktype::MIN:
-                            out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).min();
+                            out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).min();
                             break;
                         
                         case ktype::MAX:
-                            out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).max();
+                            out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).max();
                             break;
                         
                         case ktype::MEAN:
-                            out_data[i] = (((std::valarray<U>) ttmp[ttmp>0]).size() > 0)?((std::valarray<U>) ttmp[ttmp>0]).sum()/static_cast<U>(((std::valarray<U>) ttmp[ttmp>0]).size()):U(0);
+                            out_data[i] = (((std::valarray<U>) ttmp[ttmp==ttmp]).size() > 0)?((std::valarray<U>) ttmp[ttmp==ttmp]).sum()/static_cast<U>(((std::valarray<U>) ttmp[ttmp==ttmp]).size()):U(0);
                             break;
                         
                         case ktype::MEDIAN:
                             {
-                                std::valarray<U> prod = ttmp[ttmp>0];
+                                std::valarray<U> prod = ttmp[ttmp==ttmp];
                                 if(prod.size() == 0)
                                     out_data[i] = U(0);
                                 else
                                 {
-                                    std::vector<U> vec(std::begin(ttmp), std::end(ttmp));
+                                    std::vector<U> vec(std::begin(prod), std::end(prod));
                                     std::sort(vec.begin(), vec.end());
                                     size_t n = vec.size();
                                     
@@ -569,7 +569,7 @@ namespace DST
                         
                         case ktype::RMS:
                             {
-                                std::valarray<U> prod = ttmp[ttmp>0];
+                                std::valarray<U> prod = ttmp[ttmp==ttmp];
                                 if(prod.size() == 0)
                                     out_data[i] = U(0);
                                 else
@@ -582,7 +582,7 @@ namespace DST
 
                         case ktype::RMSE:
                             {
-                                std::valarray<U> prod = ttmp[ttmp>0];
+                                std::valarray<U> prod = ttmp[ttmp==ttmp];
                                 if(prod.size() == 0)
                                     out_data[i] = U(0);
                                 else
@@ -596,7 +596,7 @@ namespace DST
 
                         case ktype::SUM:
                         default:
-                            out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).sum();
+                            out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).sum();
                             break;
                     }
                 }
@@ -680,7 +680,7 @@ namespace DST
 
                                 size_t tgtIndex = in_shared->PixelIndex(tgtCoords);
                                 if(msk[tgtIndex])
-                                    tmp[kj] = U(0);
+                                    tmp[kj] = std::numeric_limits<U>::quiet_NaN();
                                 else
                                     tmp[kj] = static_cast<U>((*in_data_ptr)[tgtIndex]);
                             }
@@ -690,28 +690,28 @@ namespace DST
                             switch(k.type())
                             {
                                 case ktype::MIN:
-                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).min();
+                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).min();
                                     break;
-
+                                
                                 case ktype::MAX:
-                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).max();
+                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).max();
                                     break;
-
+                                
                                 case ktype::MEAN:
-                                    out_data[i] = (((std::valarray<U>) ttmp[ttmp>0]).size() > 0)?((std::valarray<U>) ttmp[ttmp>0]).sum()/static_cast<U>(((std::valarray<U>) ttmp[ttmp>0]).size()):U(0);
+                                    out_data[i] = (((std::valarray<U>) ttmp[ttmp==ttmp]).size() > 0)?((std::valarray<U>) ttmp[ttmp==ttmp]).sum()/       static_cast<U>(((std::valarray<U>) ttmp[ttmp==ttmp]).size()):U(0);
                                     break;
-
+                                
                                 case ktype::MEDIAN:
                                     {
-                                        std::valarray<U> prod = ttmp[ttmp>0];
+                                        std::valarray<U> prod = ttmp[ttmp==ttmp];
                                         if(prod.size() == 0)
                                             out_data[i] = U(0);
                                         else
                                         {
-                                            std::vector<U> vec(std::begin(ttmp), std::end(ttmp));
+                                            std::vector<U> vec(std::begin(prod), std::end(prod));
                                             std::sort(vec.begin(), vec.end());
                                             size_t n = vec.size();
-
+                                            
                                             if(n % 2 == 0)
                                                 out_data[i] = (vec[n/2 - 1] + vec[n/2]) / U(2);
                                             else
@@ -722,7 +722,7 @@ namespace DST
                                 
                                 case ktype::RMS:
                                     {
-                                        std::valarray<U> prod = ttmp[ttmp>0];
+                                        std::valarray<U> prod = ttmp[ttmp==ttmp];
                                         if(prod.size() == 0)
                                             out_data[i] = U(0);
                                         else
@@ -735,7 +735,7 @@ namespace DST
                                 
                                 case ktype::RMSE:
                                     {
-                                        std::valarray<U> prod = ttmp[ttmp>0];
+                                        std::valarray<U> prod = ttmp[ttmp==ttmp];
                                         if(prod.size() == 0)
                                             out_data[i] = U(0);
                                         else
@@ -749,7 +749,7 @@ namespace DST
                                 
                                 case ktype::SUM:
                                 default:
-                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp>0]).sum();
+                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).sum();
                                     break;
                             }
                         }
@@ -2001,7 +2001,7 @@ namespace DST
                     break;
             }
 
-            throw FITSexception(BAD_DIMEN,"DST","bTopHat","Unsupported pixel type.["+std::to_string(__LINE__)+"]");
+            throw FITSexception(BAD_DIMEN,"DST","gradiant","Unsupported pixel type.["+std::to_string(__LINE__)+"]");
         }
 #pragma endregion
     }

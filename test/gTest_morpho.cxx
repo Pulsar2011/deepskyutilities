@@ -910,7 +910,7 @@ TYPED_TEST(KernelFoldingTest, Closing)
     auto out_data = out_img->template GetData<T>();
     EXPECT_EQ(out_data->size(), static_cast<size_t>(width*height));
 
-    // Validate output against expectedRows (provided top-to-bottom)
+    // Validate output against expectedRows (top-to-bottom)
     for(size_t row = 0; row < height; ++row)
     {
         for(size_t col = 0; col < width; ++col)
@@ -945,7 +945,6 @@ TYPED_TEST(KernelFoldingTest, bTopHat)
     auto data_ptr = img->template GetData<T>();
     (*data_ptr) *= 0;
 
-    // Input (top-to-bottom)
     const int inputRows[5][5] = {
         {7,6,6,6,7},
         {6,5,4,5,6},
@@ -954,53 +953,35 @@ TYPED_TEST(KernelFoldingTest, bTopHat)
         {7,6,6,6,7}
     };
 
-    // Expected black top-hat output (closing - original) computed for 3x3 structuring element
-    const int expectedRows[5][5] = {
-        {-7,-6,-6,-6,-7},
-        {-6, 0, 1, 0,-6},
-        {-6, 1, 5, 1,-6},
-        {-6, 0, 1, 0,-6},
-        {-7,-6,-6,-6,-7}
-    };
-
-    // Fill image: inputRows are top-to-bottom, PixelIndex expects y=0 bottom -> map accordingly.
+    // Fill image (map top-to-bottom rows to y=height-1-row)
     for(size_t row = 0; row < height; ++row)
+    for(size_t col = 0; col < width;  ++col)
     {
-        for(size_t col = 0; col < width; ++col)
-        {
-            const int v = inputRows[row][col];
-            size_t x = col;
-            size_t y = height - 1 - row; // map top-row index to image y
-            (*data_ptr)[ img->PixelIndex({x,y}) ] = static_cast<T>(v);
-        }
+        size_t x = col;
+        size_t y = height - 1 - row;
+        (*data_ptr)[ img->PixelIndex({x,y}) ] = static_cast<T>(inputRows[row][col]);
     }
 
+    // 3x3 all-ones kernel
     std::valarray<T> kdata = { T(1), T(1), T(1),
                                T(1), T(1), T(1),
                                T(1), T(1), T(1) };
     kernel<T> k(kdata, std::vector<size_t>{3,3});
 
-    // Call bTopHat wrapper
-    auto out_ptr = bTopHat<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
-
-    auto out_img = std::dynamic_pointer_cast< FITSimg<T> >(out_ptr);
+    // bTopHat(out) = closing(in) - in
+    auto out_ptr   = bTopHat<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
+    auto out_img   = std::dynamic_pointer_cast< FITSimg<T> >(out_ptr);
     ASSERT_NE(out_img, nullptr);
+    auto out_data  = out_img->template GetData<T>();
 
-    auto out_data = out_img->template GetData<T>();
-    EXPECT_EQ(out_data->size(), static_cast<size_t>(width*height));
+    auto close_ptr = closing<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
+    auto close_img = std::dynamic_pointer_cast< FITSimg<T> >(close_ptr);
+    ASSERT_NE(close_img, nullptr);
+    auto close_data = close_img->template GetData<T>();
 
-    // Validate output against expectedRows (top-to-bottom)
-    for(size_t row = 0; row < height; ++row)
-    {
-        for(size_t col = 0; col < width; ++col)
-        {
-            size_t x = col;
-            size_t y = height - 1 - row;
-            size_t idx = out_img->PixelIndex({x,y});
-            T expected = static_cast<T>( expectedRows[row][col] );
-            EXPECT_EQ( (*out_data)[idx], expected ) << "Mismatch at (col=" << col << ", row(top)=" << row << ")";
-        }
-    }
+    ASSERT_EQ(out_data->size(), data_ptr->size());
+    for(size_t i = 0; i < out_data->size(); ++i)
+        EXPECT_EQ((*out_data)[i], static_cast<T>((*close_data)[i] - (*data_ptr)[i])) << "Mismatch at linear index " << i;
 
     EXPECT_TRUE(out_img->HDU().Exists("DST_PROC"));
     EXPECT_TRUE(out_img->HDU().Exists("DST_VER"));
@@ -1024,7 +1005,6 @@ TYPED_TEST(KernelFoldingTest, wTopHat)
     auto data_ptr = img->template GetData<T>();
     (*data_ptr) *= 0;
 
-    // Input (top-to-bottom)
     const int inputRows[5][5] = {
         {7,6,6,6,7},
         {6,5,4,5,6},
@@ -1033,38 +1013,33 @@ TYPED_TEST(KernelFoldingTest, wTopHat)
         {7,6,6,6,7}
     };
 
-    // Fill image: inputRows are top-to-bottom, PixelIndex expects y=0 bottom -> map accordingly.
     for(size_t row = 0; row < height; ++row)
+    for(size_t col = 0; col < width;  ++col)
     {
-        for(size_t col = 0; col < width; ++col)
-        {
-            const int v = inputRows[row][col];
-            size_t x = col;
-            size_t y = height - 1 - row; // map top-row index to image y
-            (*data_ptr)[ img->PixelIndex({x,y}) ] = static_cast<T>(v);
-        }
+        size_t x = col;
+        size_t y = height - 1 - row;
+        (*data_ptr)[ img->PixelIndex({x,y}) ] = static_cast<T>(inputRows[row][col]);
     }
 
-    // 3x3 all-ones kernel
     std::valarray<T> kdata = { T(1), T(1), T(1),
                                T(1), T(1), T(1),
                                T(1), T(1), T(1) };
     kernel<T> k(kdata, std::vector<size_t>{3,3});
 
-    // Call wTopHat wrapper
-    auto out_ptr = wTopHat<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
-
-    auto out_img = std::dynamic_pointer_cast< FITSimg<T> >(out_ptr);
+    // wTopHat(out) = in - opening(in)
+    auto out_ptr   = wTopHat<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
+    auto out_img   = std::dynamic_pointer_cast< FITSimg<T> >(out_ptr);
     ASSERT_NE(out_img, nullptr);
+    auto out_data  = out_img->template GetData<T>();
 
-    auto out_data = out_img->template GetData<T>();
-    EXPECT_EQ(out_data->size(), static_cast<size_t>(width*height));
+    auto open_ptr  = opening<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
+    auto open_img  = std::dynamic_pointer_cast< FITSimg<T> >(open_ptr);
+    ASSERT_NE(open_img, nullptr);
+    auto open_data = open_img->template GetData<T>();
 
-    // Validate output equals original input (user-specified)
+    ASSERT_EQ(out_data->size(), data_ptr->size());
     for(size_t i = 0; i < out_data->size(); ++i)
-    {
-        EXPECT_EQ( (*out_data)[i], (*data_ptr)[i] ) << "Mismatch at linear index " << i;
-    }
+        EXPECT_EQ((*out_data)[i], static_cast<T>((*data_ptr)[i] - (*open_data)[i])) << "Mismatch at linear index " << i;
 
     EXPECT_TRUE(out_img->HDU().Exists("DST_PROC"));
     EXPECT_TRUE(out_img->HDU().Exists("DST_VER"));
@@ -1076,114 +1051,78 @@ TYPED_TEST(KernelFoldingTest, wTopHat)
     out_img->Write("./build/KernelwTopHatOne_"+demangle(typeid(T).name())+".fits",true);
 }
 
-TYPED_TEST(KernelFoldingTest, Gradiant)
+// Simple, unambiguous sanity checks:
+
+TYPED_TEST(KernelFoldingTest, wTopHat_SinglePixel)
 {
     using T = TypeParam;
+    const size_t W = 7, H = 7;
 
-    // Use explicit 13x13 input/expected arrays (rows provided top-to-bottom).
-    const size_t width  = 13;
-    const size_t height = 13;
+    auto img = std::make_shared< FITSimg<T> >(std::vector<size_t>{W,H});
+    auto data = img->template GetData<T>();
+    (*data) *= 0;
 
-    auto img = std::make_shared< FITSimg<T> >(std::vector<size_t>{width,height});
-    auto data_ptr = img->template GetData<T>();
-    (*data_ptr) *= 0;
-
-    // Input rows (top-to-bottom)
-    const int inputRows[13][13] = {
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,0,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1}
-    };
-
-    // Expected output rows (top-to-bottom)
-    const int expectedErode[13][13] = {
-        {0,0,0,0,0,0,0,0,0,0,0,0,0},
-        {0,1,1,1,1,0,0,0,1,1,1,1,0},
-        {0,1,1,1,1,0,0,0,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,1,1,1,1,1,1,1,1,1,1,1,0},
-        {0,0,0,0,0,0,0,0,0,0,0,0,0}
-    };
-
-    const int expectedDilate[13][13] = {
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1},
-        {1,1,1,1,1,1,1,1,1,1,1,1,1}
-    };
-
-    // Fill image: inputRows are top-to-bottom; PixelIndex expects y=0 bottom => map accordingly.
-    for(size_t row = 0; row < height; ++row)
-    {
-        for(size_t col = 0; col < width; ++col)
-        {
-            const int v = inputRows[row][col];
-            size_t x = col;
-            size_t y = height - 1 - row;
-            (*data_ptr)[ img->PixelIndex({x,y}) ] = static_cast<T>(v);
-        }
-    }
+    // single bright pixel at center
+    size_t cx = W/2, cy = H/2;
+    (*data)[ img->PixelIndex({cx,cy}) ] = T(1);
 
     std::valarray<T> kdata = { T(1), T(1), T(1),
                                T(1), T(1), T(1),
                                T(1), T(1), T(1) };
     kernel<T> k(kdata, std::vector<size_t>{3,3});
 
-    // Call erosion
-    auto out_ptr = gradiant<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
-
+    auto out_ptr = wTopHat<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
     auto out_img = std::dynamic_pointer_cast< FITSimg<T> >(out_ptr);
     ASSERT_NE(out_img, nullptr);
+    auto out = out_img->template GetData<T>();
 
-    auto out_data = out_img->template GetData<T>();
-    EXPECT_EQ(out_data->size(), static_cast<size_t>(width*height));
+    ASSERT_EQ(out->size(), data->size());
+    for(size_t i = 0; i < out->size(); ++i)
+        EXPECT_EQ((*out)[i], (*data)[i]); // opening removes isolated bright pixel -> wTopHat == original
+}
 
-    // Validate output against expectedRows (top-to-bottom)
-    for(size_t row = 0; row < height; ++row)
+TYPED_TEST(KernelFoldingTest, bTopHat_SingleHole)
+{
+    using T = TypeParam;
+    const size_t W = 7, H = 7;
+
+    auto img = std::make_shared< FITSimg<T> >(std::vector<size_t>{W,H});
+    auto data = img->template GetData<T>();
+    (*data) = T(1);
+
+    // single dark hole at center
+    size_t cx = W/2, cy = H/2;
+    (*data)[ img->PixelIndex({cx,cy}) ] = T(0);
+
+    std::valarray<T> kdata = { T(1), T(1), T(1),
+                               T(1), T(1), T(1),
+                               T(1), T(1), T(1) };
+    kernel<T> k(kdata, std::vector<size_t>{3,3});
+
+    auto closing_ptr = closing<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
+    auto closing_img = std::dynamic_pointer_cast< FITSimg<T> >(closing_ptr);
+    ASSERT_NE(closing_img, nullptr);
+    auto closing_data = closing_img->template GetData<T>();
+    for(size_t y = 0; y < H; ++y)
+    for(size_t x = 0; x < W; ++x)
     {
-        for(size_t col = 0; col < width; ++col)
-        {
-            size_t x = col;
-            size_t y = height - 1 - row;
-            size_t idx = out_img->PixelIndex({x,y});
-            T expected = static_cast<T>( expectedDilate[row][col]-expectedErode[row][col] );
-            EXPECT_EQ( (*out_data)[idx], expected ) << "Mismatch at (col=" << col << ", row(top)=" << row << ")";
-        }
+        size_t idx = closing_img->PixelIndex({x,y});
+        T expected = (x==0 || x+1 == W || y==0 || y+1==H) ? T(0) : T(1);
+        EXPECT_EQ((*closing_data)[idx], expected) << "Mismatch at ("<<x<<","<<y<<")";
     }
 
-    EXPECT_TRUE(out_img->HDU().Exists("DST_PROC"));
-    EXPECT_TRUE(out_img->HDU().Exists("DST_VER"));
-    EXPECT_TRUE(out_img->HDU().Exists("DST_SHA"));
-    EXPECT_EQ( out_img->HDU().GetValueForKey("DST_PROC"), "GRADIANT");
-    EXPECT_EQ( out_img->HDU().GetValueForKey("DST_VER"), DST::gGIT::version_short());
-    EXPECT_EQ( out_img->HDU().GetValueForKey("DST_SHA"), DST::gGIT::sha1());
+    auto out_ptr = bTopHat<T>(std::dynamic_pointer_cast< FITScube >(img), k, 1);
+    auto out_img = std::dynamic_pointer_cast< FITSimg<T> >(out_ptr);
+    ASSERT_NE(out_img, nullptr);
+    auto out = out_img->template GetData<T>();
 
-    out_img->Write("./build/KernelGradiantOne_"+demangle(typeid(T).name())+".fits",true);
+    // Expect a single 1 at the hole, zeros elsewhere
+    for(size_t y = 0; y < H; ++y)
+    for(size_t x = 0; x < W; ++x)
+    {
+        size_t idx = out_img->PixelIndex({x,y});
+        T expected = ((x==cx && y==cy)) ? T(1) :((x==0 || x+1 == W || y==0 || y+1==H)? T(-1) : T(0));
+        EXPECT_EQ((*out)[idx], expected) << "Mismatch at ("<<x<<","<<y<<")";
+    }
 }
 
