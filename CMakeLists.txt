@@ -260,6 +260,12 @@ else()
 endif()
 
 
+find_library(matplot NAMES matplot HINTS ${DeepSkyROOT}/lib)
+if(matplot)
+    message("-- ${Green}Found${ColourReset} matplot++: ${matplot}")
+else()
+    message(WARNING "libmatplot not found; install the library")
+endif()
 
 #-------------------- LIST SOURCE FILE
 
@@ -283,9 +289,9 @@ add_library(
 
 
 if(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS})
+    target_link_libraries( DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 matplot ${QT_LIBS})
 else(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES})
+    target_link_libraries( DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 matplot ${QT_LIBS} ${Boost_LIBRARIES})
 endif(COMPILER_SUPPORTS_CXX23)
 
 #-------------------- Configuration des test

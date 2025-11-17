@@ -32,7 +32,7 @@
             "request": "launch",
             "name": "gTest_findStars (LLDB)",
             "program": "${workspaceRoot}/build/exe/gTest_findStars",
-            "args": [],
+            "args": ["--gtest_filter=StarFinderTest.FindStarsCube"],
             "env": [],
             "cwd": "${workspaceRoot}",
             "MIMode": "lldb",

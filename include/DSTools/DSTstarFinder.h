@@ -29,6 +29,8 @@
 #include <DSTmath/DSM_version.h>
 #include <DSTmath/DSTgeo.h>
 
+
+
 #include "DSTmorpho.h"
 
 
@@ -64,6 +66,7 @@ namespace DST
                 double fTotalFlux;          //< Total flux of the star
                 double fSNR;                //< Signal to noise ratio of the star
                 double fBackground;         //< Background level around the star
+                std::string finURL;
 
             public:
                 Stars();
@@ -103,6 +106,13 @@ namespace DST
                 inline const double&                            totalFlux() const {return fTotalFlux;}
                 inline const double&                            SNR() const {return fSNR;}
                 inline const double&                            background() const {return fBackground;}
+                inline const evalType&                          evalMethod() const {return fevalMethod;}
+
+                const std::string evalMethodString() const;
+#pragma endregion
+#pragma region -- Dumper
+                void dump(std::ostream& os = std::cout, bool _header_=true) const;
+#pragma endregion
         };
 #pragma endregion
 
@@ -143,35 +153,38 @@ namespace DST
                 void _findStarsMorpho(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsThreshold(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsSNR(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
-                void _watershedFlooding(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
+                void _watershedFlooding(const std::shared_ptr<FITScube>&, const double&, const double&, const size_t& iLayer=0);
                 void _evalStellarPropertiesMoment(Stars& star);
                 std::vector<size_t> _getNeighborIndices(const size_t& pixIdx, const size_t& w, const size_t& h) const;
                 std::vector<point>  _floodingPlateau(const size_t&, std::valarray<size_t>&, const std::shared_ptr<FITScube>, const double&, const size_t&);
 
             public:
 
-#pragma region • constructors / destructor
+#pragma region -- constructors / destructor
                 starFinder(const std::shared_ptr<FITScube>& skyImage);
                 ~starFinder();
 #pragma endregion
-#pragma region • modifiers
+#pragma region -- modifiers
                 inline void setDetectionMethod(const detectionMethod& m) {fmethod = m;}
                 inline void clearDetectedStars() {fdetectedStars.clear();}
                 inline void setThresholdValue(const double& v) {fthresholdValue = v;}
                 void setOutputUrl(const std::string& url);
 #pragma endregion
-#pragma region • accessors
+#pragma region -- accessors
                 inline const std::map<size_t, Stars>& detectedStars() const {return fdetectedStars;}
                 inline const detectionMethod& detectionMethod() const {return fmethod;}
                 std::string detectionMethodString() const;
 #pragma endregion
-#pragma region • processing
+#pragma region -- processing
                 void findStars(double quantizationStep=1e3);
                 void findStars(const enum detectionMethod& method, double quantizationStep=1e3);
                 void measureStars();
                 void measureStar(const size_t& starID);
                 void EvalStellarProperties(const size_t&, const enum Stars::evalType& method);
                 void EvalStellarProperties(Stars&, const enum Stars::evalType& method);
+#pragma endregion
+#pragma region -- ploting
+                void plot(size_t iL=0, bool  hold=false) const;
 #pragma endregion
         };
 #pragma endregion

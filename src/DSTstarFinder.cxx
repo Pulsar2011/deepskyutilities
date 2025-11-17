@@ -8,11 +8,16 @@
 //  but not for commercial purposes.
 //  Licence text: https://creativecommons.org/licenses/by-nc/4.0/
 
-#include "DSTstarFinder.h"
+#include <DSTools/DSTstarFinder.h>
 
 #include <queue>
 #include <set>
 #include <mutex>
+
+#include <matplot/matplot.h>
+
+namespace mp = matplot;
+
 
 std::mutex flabelMutex;
 
@@ -40,7 +45,8 @@ namespace DST
         fangle(std::numeric_limits<double>::quiet_NaN()),
         fTotalFlux(std::numeric_limits<double>::quiet_NaN()),
         fSNR(std::numeric_limits<double>::quiet_NaN()),
-        fBackground(std::numeric_limits<double>::quiet_NaN())
+        fBackground(std::numeric_limits<double>::quiet_NaN()),
+        finURL()
     { }
 
     Stars::Stars(const size_t& id, const pixelCoords& pos): Stars(id)
@@ -241,6 +247,67 @@ namespace DST
     }
 
 #pragma endregion
+
+#pragma region -- Accessor
+    /** 
+     * @details Get the evaluation method as string
+     * @return \c std::string Evaluation method string
+     */
+    const std::string Stars::evalMethodString() const
+    {
+        switch (fevalMethod)
+        {
+            case evalType::MOMENT:
+                return "MOMENT";
+            case evalType::GAUSS:
+                return "GAUSS-FIT";
+            case evalType::GAUSS2D:
+                return "2D-GAUSS-FIT";
+            case evalType::MOFFAT:
+                return "MOFFAT-FIT";
+            case evalType::MOFFAT2D:
+                return "2D-MOFFAT-FIT";
+            default:
+                return "UNKNOWN";
+        }
+    }
+#pragma endregion
+
+#pragma region -- Dumper
+    /**
+     * @brief Printout stellar properties
+     * @details Print to the given output stream the stellar properties
+     * 
+     * @param os 
+     */
+    void Stars::dump(std::ostream& os, bool _header_) const
+    {
+        bool is3D = false;
+        if(fposition.size() >=3)
+            is3D = true;
+
+        if(_header_)
+            os << "#ID ; X ; Y ; "<<((is3D)?"Z ; ":"")<<"Maxima ; Maxima_X ; Maxima_Y ; FWHM_X ; FWHM_Y ; Angle(rad) ; TotalFlux ; SNR ; Background ; EvalMethods" << std::endl;
+
+        os << fID << " ; "
+              << fposition.X() << " ; "
+              << fposition.Y() << " ; "
+              << ((is3D)? std::to_string(static_cast<size_t>(fposition.Z()))+" ; " : "")
+              << fMaxima << " ; "
+              << fMaximaPosition.X() << " ; "
+              << fMaximaPosition.Y() << " ; "
+              << ( (fFWHM.size()>=2) ? fFWHM.X() : std::numeric_limits<double>::quiet_NaN() ) << " ; "
+              << ( (fFWHM.size()>=2) ? fFWHM.Y() : std::numeric_limits<double>::quiet_NaN() ) << " ; "
+              << fangle << " ; "
+              << fTotalFlux << " ; "
+              << fSNR << " ; "
+              << fBackground<<" ; "
+              << evalMethodString()<<" ; "
+              << finURL
+              << std::endl;
+    }
+#pragma endregion
+
 #pragma endregion
 
 #pragma region - Algorithms 
@@ -375,13 +442,13 @@ namespace DST
                     switch (fmethod)
                     {
                         case detectionMethod::MORPHO:
-                            _findStarsMorpho(layer,quantizationStep);
+                            _findStarsMorpho(layer,quantizationStep,layerIdx);
                             break;
                         case detectionMethod::THRESHOLD:
-                            _findStarsThreshold(layer,quantizationStep);
+                            _findStarsThreshold(layer,quantizationStep,layerIdx);
                             break;
                         case detectionMethod::SNR:
-                            _findStarsSNR(layer,quantizationStep);
+                            _findStarsSNR(layer,quantizationStep,layerIdx);
                             break;
                         default:
                             layer.reset();
@@ -403,6 +470,12 @@ namespace DST
             // Wait for remaining tasks
             for(auto& future : futures)
                 future.get();
+
+            if(foutURL != "")
+            {
+                flabel->SetName("label_image");
+                flabel->Write(foutURL+"/label_image.fits",true);
+            }
 
                         // Perform basicStellar properties assesment
             for(std::map<size_t, Stars>::iterator it=fdetectedStars.begin(); it!=fdetectedStars.end(); ++it)
@@ -505,10 +578,10 @@ namespace DST
             iS.reset();
             iN.reset();
 
-            fthresholdValue = iK->Getpercentil(fthresholdValue);
+            double threshold = iK->Getpercentil(fthresholdValue);
 
             // Search stars using watershedalgorithm on the significance map
-            _watershedFlooding(iK, fquantumStepQueue, iLayer);
+            _watershedFlooding(iK, threshold, fquantumStepQueue, iLayer);
             iK.reset();
  
         }
@@ -567,7 +640,7 @@ namespace DST
 
             // The second step consists in searching for connected components above the threshold value using a watershed algorithm.
 
-            _watershedFlooding(smoothedImage, fquantumStepQueue,iLayer);
+            _watershedFlooding(smoothedImage, fthresholdValue, fquantumStepQueue,iLayer);
 
             smoothedImage.reset();
         }
@@ -671,7 +744,7 @@ namespace DST
             // The third step consists in grouping connected pixels above the SNR threshold into star candidates using a watershed algorithm.
 
 
-            _watershedFlooding(snrMap, fquantumStepQueue, iLayer);
+            _watershedFlooding(snrMap, fthresholdValue, fquantumStepQueue, iLayer);
             snrMap.reset();
         }
 
@@ -679,7 +752,7 @@ namespace DST
          * @brief Watershed flooding algorithm to detect stars
          * 
          */
-        void starFinder::_watershedFlooding(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+        void starFinder::_watershedFlooding(const std::shared_ptr<FITScube>& img, const double& _thresh,  const double& fquantumStepQueue, const size_t& iLayer)
         {
             if(img == nullptr)
                 throw FITSexception(BAD_DIMEN,"DST","starFinder::_watershedFlooding","Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
@@ -695,10 +768,10 @@ namespace DST
 
             if((verbose & verboseLevel::VERBOSE_BASIC)== verboseLevel::VERBOSE_BASIC)
             {
-                std::cout << "DST::starFinder::_watershedFlooding: Starting watershed flooding on layer "<<iLayer<<" with max value "<<maxVal<<" and threshold value "<<fthresholdValue<<"."<<std::endl;
+                std::cout << "DST::starFinder::_watershedFlooding: Starting watershed flooding on layer "<<iLayer<<" with max value "<<maxVal<<" and threshold value "<<_thresh<<"."<<std::endl;
             }
 
-            for(double threshold=maxVal; threshold >= fthresholdValue; threshold-=fquantumStepQueue)
+            for(double threshold=maxVal; threshold >= _thresh; threshold-=fquantumStepQueue)
             {
                 // Find pixels above the current threshold
                 std::vector<size_t> pixelIndices;
@@ -749,17 +822,28 @@ namespace DST
 
                     if(neighborLabels.empty())
                     {
-                        // New star detected
-                        size_t newLabel = fdetectedStars.size() + 1;
-                        labels[pixIdx] = newLabel;
-                        fdetectedStars.insert(std::pair<size_t,Stars>(newLabel,Stars(newLabel)));
+                        size_t newLabel = 0;
+                        {
+                            std::lock_guard<std::mutex> lock(flabelMutex); 
+
+                            // New star detected
+                            newLabel += fdetectedStars.size() + 1;
+                            labels[pixIdx] = newLabel;
+                        
+                            fdetectedStars.insert(std::pair<size_t,Stars>(newLabel,Stars(newLabel)));
+                        }
+
                         std::vector<point> belong2Star = _floodingPlateau(pixIdx, labels, img, threshold, newLabel);
                         if(is3D)
                         {
                             for(std::vector<point>::iterator p=belong2Star.begin(); p!=belong2Star.end(); ++p)
                                 p->SetZ(static_cast<double>(iLayer));
                         }
-                        fdetectedStars[newLabel].addPixel(belong2Star);
+
+                        {
+                            std::lock_guard<std::mutex> lock(flabelMutex); 
+                            fdetectedStars[newLabel].addPixel(belong2Star);
+                        }
 
                     }
                     else if(neighborLabels.size() == 1)
@@ -773,49 +857,49 @@ namespace DST
                             for(std::vector<point>::iterator p=belong2Star.begin(); p!=belong2Star.end(); ++p)
                                 p->SetZ(static_cast<double>(iLayer));
                         }
-                        fdetectedStars[existingLabel].addPixel(belong2Star);
+
+                        {
+                            std::lock_guard<std::mutex> lock(flabelMutex); 
+                            fdetectedStars[existingLabel].addPixel(belong2Star);
+                        }
                     }
                 }
-            }
-
-            if(foutURL != "")
-            {
-                FITSimg<int64_t> labelImg(img->GetDimension(),{img->Size(1),img->Size(2)});
-                labelImg.SetName("label_image_layer_"+std::to_string(iLayer));
-                *(labelImg.template GetData<int64_t>()) *= 0;
-                for(size_t i=0; i<labels.size(); ++i)
-                {
-                    if(labels[i] <= 0)
-                        continue;
-                    (*(labelImg.GetData<int64_t>()))[i]=static_cast<int64_t>(labels[i]);
-                }
-                labelImg.Write(foutURL+"/label_image.fits",true);
             }
 
             std::unique_lock<std::mutex> lock(flabelMutex);
             if(flabel == nullptr)
             {
-                flabel = std::shared_ptr< FITScube >(new FITSimg<int64_t>(2,{img->Size(1),img->Size(2)}));
+                size_t iS = 0;
+                if(!is3D)
+                {
+                    flabel = std::shared_ptr< FITScube >(new FITSimg<int64_t>(2,{img->Size(1),img->Size(2)}));
+                    iS=0;
+                }
+                else
+                {
+                    flabel = std::shared_ptr< FITScube >(new FITSimg<int64_t>(3,{img->Size(1),img->Size(2),fsky->Size(3)}));
+                    iS=iLayer*img->Size(1)*img->Size(2);
+                }
+                
                 flabel->SetName("label_image");
                 *(flabel->GetData<int64_t>()) *= 0;
                 for(size_t i=0; i<labels.size(); ++i)
                 {
                     if(labels[i] < 1)
                         continue;
-                    (*(flabel->GetData<int64_t>()))[i]=static_cast<int64_t>(labels[i]);
+
+                    (*(flabel->GetData<int64_t>()))[i+iS]=static_cast<int64_t>(labels[i]);
                 }
             }
             else
             {
-                FITSimg<int64_t> labelImg(img->GetDimension(),{img->Size(1),img->Size(2)});
-                *(labelImg.GetData<int64_t>()) *= 0;
+                size_t iS = (!is3D) ? 0 : iLayer*img->Size(1)*img->Size(2);
                 for(size_t i=0; i<labels.size(); ++i)
                 {
                     if(labels[i] < 1)
                         continue;
-                    (*(labelImg.GetData<int64_t>()))[i]=static_cast<int64_t>(labels[i]);
+                    (*(flabel->GetData<int64_t>()))[i+iS]=static_cast<int64_t>(labels[i]);
                 }
-                flabel->AddLayer(labelImg);
             }
             lock.unlock(); // explicit unlock
         }
@@ -1002,7 +1086,112 @@ namespace DST
                 star.setMaximaPosition(point::pointFromVector<size_t>(fsky->PixelCoordinates(maxIndex)));
             }
         }
+
+#pragma region -- ploting
+
+        /**
+         * @brief Plot detected stars on the input image
+         * @param starColor Color of the star markers
+         * @param starSize Size of the star markers
+         */
+        void starFinder::plot(size_t iL, bool hold) const
+        {
+            if(fsky == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST","starFinder::show","Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
+            
+            if(fsky->GetDimension() == 3 && iL >= fsky->Size(3))
+                throw std::out_of_range("DST::starFinder::show: Layer index out of range.["+std::to_string(__LINE__)+"]");
+
+            typedef std::vector<double> plot_line;
+            typedef std::vector<plot_line> img_array;
+            
+            const size_t W = fsky->Size(1);
+            const size_t H = fsky->Size(2);
+            const size_t layer = (fsky->GetDimension() >= 2) ? iL : 0;
+            const size_t start = layer * W * H;
+
+            mp::vector_1d x = mp::iota(0, 1, static_cast<double>(W-1));
+            mp::vector_1d y = mp::iota(0, 1, static_cast<double>(H-1));
+            auto [X, Y] = mp::meshgrid(x, y);
+            
+            img_array iC(H, plot_line(W));
+            img_array Z(H, plot_line(W));
+            for(size_t y = 0; y < H; ++y)
+            {
+                const size_t row_base = start + y * W;
+                for(size_t x = 0; x < W; ++x)
+                {
+                    double v = fsky->DoubleValueAtPixel(row_base + x);
+                    double iLabel = flabel->DoubleValueAtPixel(row_base + x);
+                    if(!std::isfinite(iLabel)) iLabel = 0.0; // guard against NaN/Inf confusing gnuplot
+                    if(!std::isfinite(v))       v = 0.0; // guard against NaN/Inf confusing gnuplot
+                    Z[y][x] = v;
+                    iC[y][x] = iLabel;
+                }
+            }
+
+            // Isolate in a brand-new figure to avoid multiplot
+            auto fig = mp::figure(true);          // new session
+            fig->position({20,20,800,800});
+            fig->font("Helvetica");
+            fig->font_size(12);
+            fig->title("Stars candidates - Layer "+std::to_string(layer)+" - Method: "+detectionMethodString());
+            auto ax  = fig->current_axes();
+            ax->font_size(18);
+            ax->font("Helvetica");
+            ax->xlabel("X [pixels]");
+            ax->ylabel("Y [pixels]");
+            ax->title_font_size_multiplier(2);
+            ax->line_width(2);
+            ax->hold(true);                      // ensure single axes, no overlays
+
+            ax->image(0,W-1,0,H-1,Z);
+            ax->contour(X, Y, iC, 1)->line_width(1).color("red");
+            mp::colormap(mp::palette::gray());
+            mp::gca()->color_box_range(fsky->GetMinimum()*(1-0.05),fsky->GetMaximum()*(1+0.05));
+            
+            std::vector<double> starX;
+            std::vector<double> starY;
+
+            std::vector<double> maxX;
+            std::vector<double> maxY;
+
+            for(std::map<size_t, Stars>::const_iterator it=fdetectedStars.cbegin(); it!=fdetectedStars.cend(); ++it)
+            {
+                const point& starPos = it->second.position();
+                const point& maxPos  = it->second.maximaPosition();
+                if(fsky->GetDimension() == 3 && static_cast<size_t>(starPos.Z()) != layer)
+                    continue;
+
+                starX.push_back(starPos.X());
+                starY.push_back(starPos.Y());
+                maxX.push_back(maxPos.X());
+                maxY.push_back(maxPos.Y());
+            }
+            
+            ax->scatter(starX, starY)
+                    ->marker_style(mp::line_spec::marker_style::cross)
+                    .marker_size(8)
+                    .color("red");
+
+            ax->scatter(maxX, maxY)
+                    ->marker_style(mp::line_spec::marker_style::plus_sign)
+                    .marker_size(8)
+                    .color("yellow");
+
+            ax->hold(false);
+
+            if(hold)
+                fig->show();
+            else
+                fig->draw(); 
+        }
+#pragma endregion
     }
 #pragma endregion
+
+
     
 } // namespace name
+#pragma endregion
+#pragma endregion

@@ -231,6 +231,8 @@ TEST(StarFinderTest, FindStarsBySegmentation)
     
     // Expect at least 50% of true stars to be matched
     EXPECT_GT(matched, true_catalog.size() / 2);
+
+    EXPECT_NO_THROW(finder.plot());
 }
 
 
@@ -358,3 +360,72 @@ TEST(StarFinderTest, FindStarsByThreshold)
     EXPECT_GT(matched, true_catalog.size() / 2);
 }
 
+TEST(StarFinderTest, FindStarsCube)
+{
+    // Generate synthetic star field with known catalog
+    std::vector<DST::Stars> true_catalog;
+    const unsigned int seed = 12345;
+    auto img1 = TestUtils::generateStarField(
+        true_catalog,
+        512,    // width
+        512,    // height
+        50,     // number of stars
+        0.7,    // sigma
+        10.0,   // min intensity
+        1000.0, // max intensity
+        5.0,    // background
+        8.0,    // noise sigma
+        seed);
+
+    auto img2 = TestUtils::generateStarField(
+        true_catalog,
+        512,    // width
+        512,    // height
+        50,     // number of stars
+        0.7,    // sigma
+        10.0,   // min intensity
+        1000.0, // max intensity
+        5.0,    // background
+        8.0,    // noise sigma
+        seed+385);
+
+    auto img3 = TestUtils::generateStarField(
+        true_catalog,
+        512,    // width
+        512,    // height
+        50,     // number of stars
+        0.7,    // sigma
+        10.0,   // min intensity
+        1000.0, // max intensity
+        5.0,    // background
+        8.0,    // noise sigma
+        seed+976);
+
+    img1->AddLayer(*img2);
+    img1->AddLayer(*img3);
+
+    std::shared_ptr<FITScube> img = img1;
+
+    img->Write("./build/test_output/synthetic_star_field.fits",true);
+    
+    // Create star finder
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    
+    // Run star detection
+    verbose = verboseLevel::VERBOSE_BASIC;
+    finder.setThresholdValue(0.998);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+    
+    // Check that stars were found
+    const auto& detectedStars = finder.detectedStars();
+
+    for(std::map<size_t,Stars>::const_iterator star=detectedStars.cbegin(); star!=detectedStars.cend(); ++star)
+    {
+        star->second.dump(std::cout);
+    }
+
+    EXPECT_NO_THROW(finder.plot(0));
+    EXPECT_NO_THROW(finder.plot(1));
+    EXPECT_NO_THROW(finder.plot(2));
+}
