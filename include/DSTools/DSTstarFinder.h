@@ -169,11 +169,19 @@ namespace DST
                 inline void clearDetectedStars() {fdetectedStars.clear();}
                 inline void setThresholdValue(const double& v) {fthresholdValue = v;}
                 void setOutputUrl(const std::string& url);
+
+                void switchfBSkernel(DST::Morphology::kernel<double>& k) {fBS = k;}
+                void switchfBEkernel(DST::Morphology::kernel<double>& k) {fBE = k;}
+                void switchfBMkernel(DST::Morphology::kernel<double>& k) {fBM = k;}
 #pragma endregion
 #pragma region -- accessors
                 inline const std::map<size_t, Stars>& detectedStars() const {return fdetectedStars;}
                 inline const detectionMethod& detectionMethod() const {return fmethod;}
                 std::string detectionMethodString() const;
+
+                const DST::Morphology::kernel<double>& getfBSkernel() const {return fBS;}
+                const DST::Morphology::kernel<double>& getfBEkernel() const {return fBE;}
+                const DST::Morphology::kernel<double>& getfBMkernel() const {return fBM;}
 #pragma endregion
 #pragma region -- processing
                 void findStars(double quantizationStep=1e3);

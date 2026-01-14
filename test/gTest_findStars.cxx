@@ -171,6 +171,29 @@ TEST(StarFinderTest, SyntheticImageGeneration)
 
 }
 
+TEST(StarFinderTest,switchKernels)
+{
+    std::shared_ptr<DSL::FITScube> img = std::shared_ptr<DSL::FITScube>(new DSL::FITSimg<int32_t>({512,512}));
+    DST::algorithms::starFinder finder(img);
+
+    DST::Morphology::kernel<double> newBS = DST::Morphology::kernel<double>::one({2,2})  ; DST::Morphology::kernel<double> testBS = newBS;
+    DST::Morphology::kernel<double> newBE = DST::Morphology::kernel<double>::one({13,13}); DST::Morphology::kernel<double> testBE = newBE;
+    DST::Morphology::kernel<double> newBM = DST::Morphology::kernel<double>::one({3,3})  ; DST::Morphology::kernel<double> testBM = newBM;
+
+    finder.switchfBSkernel(newBS);
+    finder.switchfBEkernel(newBE);
+    finder.switchfBMkernel(newBM);
+
+    const DST::Morphology::kernel<double>& currentBS = finder.getfBSkernel();
+    const DST::Morphology::kernel<double>& currentBE = finder.getfBEkernel();
+    const DST::Morphology::kernel<double>& currentBM = finder.getfBMkernel();
+
+    EXPECT_EQ(currentBS.size(), testBS.size()); for(size_t i=0; i<currentBS.size(); ++i) EXPECT_NEAR(currentBS.data()[i], testBS.data()[i],1e-6);
+    EXPECT_EQ(currentBE.size(), testBE.size()); for(size_t i=0; i<currentBE.size(); ++i) EXPECT_NEAR(currentBE.data()[i], testBE.data()[i],1e-6);
+    EXPECT_EQ(currentBM.size(), testBM.size()); for(size_t i=0; i<currentBM.size(); ++i) EXPECT_NEAR(currentBM.data()[i], testBM.data()[i],1e-6);
+
+}
+
 TEST(StarFinderTest, FindStarsBySegmentation)
 {
     // Generate synthetic star field with known catalog
