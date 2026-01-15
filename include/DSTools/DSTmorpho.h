@@ -985,8 +985,9 @@ namespace DST
                             tmp[kj] = static_cast<U>((*in_data)[tgtIndex]);
                     }
 
-                    // perform folding operation
-                    out_data[i] = (tmp * tmpKernel).max();
+                    // flat dilation: max( tmp [ kernel ]) over footprint, ignoring NaNs
+                    const std::valarray<U> vals = tmp[ tmpKernel > U(0) ];
+                    out_data[i] = (vals.size() > 0) ? vals.max() : U(0);
                 }
             }
             else
@@ -1074,7 +1075,11 @@ namespace DST
                                     tmp[kj] = static_cast<U>((*in_data_ptr)[tgtIndex]);
                             }
 
-                            out_data[i] = (tmp * tmpKernel).max();
+                            {
+                                // non-flat dilation: max( tmp  ) over footprint, ignoring NaNs
+                                const std::valarray<U> vals = tmp[ tmpKernel > U(0) ];
+                                out_data[i] = (vals.size() > 0) ? vals.max() : U(0);
+                            }
                         }
                     });
                 }
@@ -1309,8 +1314,11 @@ namespace DST
                             tmp[kj] = static_cast<U>((*in_data)[tgtIndex]);
                     }
 
-                    // perform folding operation
-                    out_data[i] = (tmp * tmpKernel).min();
+                    {
+                        // perform folding operation
+                        const std::valarray<U> vals = tmp[ tmpKernel > U(0) ];  // footprint  
+                        out_data[i] = (vals.size() > 0) ? vals.min() : U(0);
+                    }
                 }
             }
             else
@@ -1398,7 +1406,10 @@ namespace DST
                                     tmp[kj] = static_cast<U>((*in_data_ptr)[tgtIndex]);
                             }
 
-                            out_data[i] = (tmp * tmpKernel).min();
+                            {
+                                const std::valarray<U> vals = tmp[ tmpKernel > U(0) ];  // footprint
+                                out_data[i] = (vals.size() > 0) ? vals.min() : U(0);
+                            }
                         }
                     });
                 }
