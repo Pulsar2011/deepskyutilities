@@ -971,7 +971,7 @@ namespace DST
 
                         if(outside)
                         {
-                            tmp[kj] = U(0);
+                            tmp[kj] = std::numeric_limits<U>::lowest();
                             continue;
                         }
 
@@ -1063,7 +1063,7 @@ namespace DST
 
                                 if(outside)
                                 {
-                                    tmp[kj] = U(0);
+                                    tmp[kj] = std::numeric_limits<U>::lowest();
                                     continue;
                                 }
 
@@ -1300,7 +1300,7 @@ namespace DST
 
                         if(outside)
                         {
-                            tmp[kj] = U(0);
+                            tmp[kj] = std::numeric_limits<U>::max();
                             continue;
                         }
 
@@ -1394,7 +1394,7 @@ namespace DST
 
                                 if(outside)
                                 {
-                                    tmp[kj] = U(0);
+                                    tmp[kj] = std::numeric_limits<U>::max();
                                     continue;
                                 }
 

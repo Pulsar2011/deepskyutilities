@@ -559,15 +559,33 @@ namespace DST
             }
 
             // Compute significance map
-            *(iK.get()) -= *(iS.get());
-            double minVal = std::min(iK->GetMinimum(),iS->GetMinimum());
-            *(iK.get()) -=  minVal; 
+            //*(iK.get()) -= *(iS.get());
+            //double minVal = std::min(iK->GetMinimum(),iS->GetMinimum());
+            //*(iK.get()) -=  minVal; 
 
-            for(size_t i=0; i<iK->Nelements(); ++i)
+            double lowestValue = std::numeric_limits<double>::max();
+            for(size_t iElem = 0; iElem < iK->Nelements(); ++iElem)
             {
-                if(iS->DoubleValueAtPixel(i) <= std::numeric_limits<double>::min())
-                    (*(iK->GetData<double>()))[i] *= 0;
+                if(iK->Masked(iElem) || iS->Masked(iElem))
+                    continue;
+
+                double valK = iK->DoubleValueAtPixel(iElem);
+                double valS = iS->DoubleValueAtPixel(iElem);
+                double val = std::min(valK,valS);
+                iK->SetPixelValue((double) (valK - val),iElem);
+
+                if(valK - val < lowestValue)
+                    lowestValue = valK - val;
             }
+
+            *(iK.get()) -=  lowestValue; 
+
+
+            //for(size_t i=0; i<iK->Nelements(); ++i)
+            //{
+            //    if(iS->DoubleValueAtPixel(i) <= std::numeric_limits<double>::min())
+            //        (*(iK->GetData<double>()))[i] *= 0;
+            //}
 
             if(foutURL != "")
             {
