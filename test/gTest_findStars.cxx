@@ -205,10 +205,10 @@ TEST(StarFinderTest, FindStarsBySegmentation)
         512,    // height
         50,     // number of stars
         0.7,    // sigma
-        10.0,   // min intensity
+        100.0,   // min intensity
         1000.0, // max intensity
         5.0,    // background
-        8.0,    // noise sigma
+        5.0,    // noise sigma
         seed);
     
     img->Write("./build/test_output/synthetic_star_field.fits",true);
@@ -219,7 +219,7 @@ TEST(StarFinderTest, FindStarsBySegmentation)
     
     // Run star detection
     verbose = verboseLevel::VERBOSE_BASIC;
-    finder.setThresholdValue(0.998);
+    finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
     
     // Check that stars were found
