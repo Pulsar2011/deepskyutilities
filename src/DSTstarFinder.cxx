@@ -271,6 +271,7 @@ namespace DST
                 return "UNKNOWN";
         }
     }
+
 #pragma endregion
 
 #pragma region -- Dumper
@@ -396,6 +397,123 @@ namespace DST
                     return "UNKNOWN";
             }
         }
+
+    /** 
+     * @details Get the list of identified stars
+     */
+    DSL::FITStable starFinder::detectedStars() const
+    {
+        return detectedStars("DETECTED.STARS");
+    }
+
+    /** 
+     * @details Get the list of identified stars
+     * @param tblName Name of the output FITStable
+     * @return \c DSL::FITStable Table containing the list of detected stars
+     */
+    DSL::FITStable starFinder::detectedStars(const std::string& tblName) const
+    {
+
+        std::string pixel_units = "ADU";
+        if(fsky->HDU().Exists("BUNIT"))
+        {
+            pixel_units = fsky->HDU().GetValueForKey("BUNIT");
+        }
+
+        std::vector<std::string> wcsCoord;
+        std::vector<std::string> wcsUnits;
+        size_t k=1;
+        while(fsky->HDU().Exists("CTYPE"+std::to_string(k)))
+        {
+            wcsCoord.push_back(fsky->HDU().GetValueForKey("CTYPE"+std::to_string(k)));
+
+            if(fsky->HDU().Exists("CUNIT"+std::to_string(k)))
+                wcsUnits.push_back(fsky->HDU().GetValueForKey("CUNIT"+std::to_string(k)));
+            else
+                wcsUnits.push_back("");
+            
+                k++;
+        }
+
+        DSL::FITStable table(tblName);
+        FITScolumn<uint64_t>  ID      ("ID", tulonglong, "", 0);
+        FITScolumn<std::vector<double>> coo    ("coord_px", tdouble, "pixels", 1);
+        FITScolumn<std::vector<double>> coo_max("maxcoord_px", tdouble, "pixels", 2);
+
+        std::vector< FITScolumn<double> > wcsColumns;
+        for(size_t i=0; i<wcsCoord.size(); i++)
+            wcsColumns.push_back( FITScolumn<double>( wcsCoord[i], tdouble, wcsUnits[i], static_cast<int>(3+i) ) );
+
+        FITScolumn<double>       maxima        ("maxima", tdouble, "", 4);
+        FITScolumn<double>       FWHM_X        ("FWHM_X", tdouble, "pixels", 5);
+        FITScolumn<double>       FWHM_Y        ("FWHM_Y", tdouble, "pixels", 6);
+        FITScolumn<double>       angle         ("angle", tdouble, "radians", 7);
+        FITScolumn<double>       TotalFlux     ("TotalFlux", tdouble, pixel_units, 8);
+        FITScolumn<double>       SNR           ("SNR", tdouble, "", 9);
+        FITScolumn<double>       Background    ("Background", tdouble, "", 10);
+        FITScolumn<std::string>  EvalMethod    ("EvalMethod", tstring, "", 11);
+        FITScolumn<uint32_t>     n_pixels      ("n_pixels", tuint, "", 12);
+        FITScolumn<std::string>  source        ("source", tstring, "", 13);
+
+        table.InsertColumn(std::make_shared< FITScolumn<uint64_t> >(ID));
+        table.InsertColumn(std::make_shared< FITScolumn<std::vector<double>> >(coo));
+        table.InsertColumn(std::make_shared< FITScolumn<std::vector<double>> >(coo_max));
+
+        for(size_t i=0; i<wcsColumns.size(); i++)
+            table.InsertColumn(std::make_shared< FITScolumn<double> >(wcsColumns[i]));
+        
+        table.InsertColumn(std::make_shared< FITScolumn<double> >(maxima));
+        table.InsertColumn(std::make_shared< FITScolumn<double> >(FWHM_X));
+        table.InsertColumn(std::make_shared< FITScolumn<double> >(FWHM_Y));
+        table.InsertColumn(std::make_shared< FITScolumn<double> >(angle));
+        table.InsertColumn(std::make_shared< FITScolumn<double> >(TotalFlux));
+        table.InsertColumn(std::make_shared< FITScolumn<double> >(SNR));
+        table.InsertColumn(std::make_shared< FITScolumn<double> >(Background));
+        table.InsertColumn(std::make_shared< FITScolumn<std::string> >(EvalMethod));
+        table.InsertColumn(std::make_shared< FITScolumn<uint32_t> >(n_pixels));
+        table.InsertColumn(std::make_shared< FITScolumn<std::string> >(source));
+
+        for(const auto& [id, star] : fdetectedStars)
+        {
+            size_t newRow = table.push_back("ID", static_cast<uint64_t>(star.ID()));
+
+            DSL::FITSform::doubleVector pos;
+            for(size_t dim = 0; dim < star.position().size(); dim++)
+                pos.push_back(star.position()[dim]);
+            table.updateAt("coord_px", newRow, pos);
+
+            DSL::FITSform::doubleVector maxpos;
+            for(size_t dim = 0; dim < star.maximaPosition().size(); dim++)
+                maxpos.push_back(star.maximaPosition()[dim]);
+            table.updateAt("maxcoord_px", newRow, maxpos);
+
+            // WCS coordinates
+            if(wcsColumns.size() > 0)
+            {
+                worldCoords wcsPos = fsky->WorldCoordinates(star.position().GetPoint());
+                for(size_t i=0; i<wcsColumns.size(); i++)
+                {
+                    if(i < wcsPos.size())
+                        table.updateAt(wcsColumns[i].getName(), newRow, wcsPos[i]);
+                }
+            }
+
+
+            table.updateAt("maxima", newRow, star.maxima());
+            table.updateAt("FWHM_X", newRow, (star.FWHM().size()>=1)? star.FWHM().X() : std::numeric_limits<double>::quiet_NaN());
+            table.updateAt("FWHM_Y", newRow, (star.FWHM().size()>=2)? star.FWHM().Y() : std::numeric_limits<double>::quiet_NaN());
+            table.updateAt("angle", newRow, star.angle());
+            table.updateAt("TotalFlux", newRow, star.totalFlux());
+            table.updateAt("SNR", newRow, star.SNR());
+            table.updateAt("Background", newRow, star.background());
+            table.updateAt("EvalMethod", newRow, star.evalMethodString());
+            table.updateAt("n_pixels", newRow, static_cast<uint32_t>(star.FilledPixels().size()));
+            table.updateAt("source", newRow, star.srcFile());
+        }
+
+        return table;
+    }
+
 #pragma endregion
 #pragma region -- processing
         /**

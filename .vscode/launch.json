@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "cppdbg",
+            "type": "lldb-dap",
             "request": "launch",
             "name": "FITSviewer (LLDB)",
             "program": "${workspaceRoot}/build/exe/FitsViewer",
@@ -17,7 +17,7 @@
             "preLaunchTask": "make FitsViewer"
         },
         {
-            "type": "cppdbg",
+            "type": "lldb-dap",
             "request": "launch",
             "name": "gTest_morpho (LLDB)",
             "program": "${workspaceRoot}/build/exe/gTest_morpho",
@@ -28,18 +28,18 @@
             "preLaunchTask": "make gTest_morpho"
         },
         {
-            "type": "cppdbg",
+            "type": "lldb-dap",
             "request": "launch",
             "name": "gTest_findStars (LLDB)",
             "program": "${workspaceRoot}/build/exe/gTest_findStars",
-            "args": ["--gtest_filter=StarFinderTest.FindStarsCube"],
+            "args": [],
             "env": [],
             "cwd": "${workspaceRoot}",
             "MIMode": "lldb",
             "preLaunchTask": "make gTest_findStars"
         },
         {
-            "type": "cppdbg",
+            "type": "lldb-dap",
             "request": "launch",
             "name": "gTest_version (LLDB)",
             "program": "${workspaceRoot}/build/exe/gTest_version",
