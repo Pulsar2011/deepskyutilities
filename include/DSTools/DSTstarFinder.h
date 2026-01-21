@@ -26,6 +26,7 @@
 
 #include <DSTfits/FITSdata.h>
 #include <DSTfits/FITSimg.h>
+#include <DSTfits/FITStable.h>
 #include <DSTmath/DSM_version.h>
 #include <DSTmath/DSTgeo.h>
 
@@ -84,6 +85,9 @@ namespace DST
                 void setPosition(const pixelCoords& );
                 void setPosition(const point& );
 
+                void setWorldCoordinates(const worldCoords& );
+                void setWorldCoordinates(const point& );
+
                 void setMaxima(const double& );
                 void setMaximaPosition(const pixelCoords& );
                 void setMaximaPosition(const point& );
@@ -96,11 +100,11 @@ namespace DST
                 void setEvalMethod(const evalType& method);
 #pragma endregion
 #pragma region -- Accessors
-                inline const size_t& ID()                       const {return fID;}
-                inline const std::vector<point>& FilledPixels() const {return fpixels;}
-                inline const point& position()                  const {return fposition;}
-                inline const double& maxima()                   const {return fMaxima;}
-                inline const point& maximaPosition()            const {return fMaximaPosition;}
+                inline const size_t&                            ID() const {return fID;}
+                inline const std::vector<point>&                FilledPixels() const {return fpixels;}
+                inline const point&                             position() const {return fposition;}
+                inline const double&                            maxima() const {return fMaxima;}
+                inline const point&                             maximaPosition() const {return fMaximaPosition;}
                 inline const point&                             FWHM() const {return fFWHM;}
                 inline const double&                            angle() const {return fangle;}
                 inline const double&                            totalFlux() const {return fTotalFlux;}
@@ -109,6 +113,7 @@ namespace DST
                 inline const evalType&                          evalMethod() const {return fevalMethod;}
 
                 const std::string evalMethodString() const;
+                inline const std::string&                       srcFile() const {return finURL;}
 #pragma endregion
 #pragma region -- Dumper
                 void dump(std::ostream& os = std::cout, bool _header_=true) const;
@@ -175,7 +180,9 @@ namespace DST
                 void switchfBMkernel(DST::Morphology::kernel<double>& k) {fBM = k;}
 #pragma endregion
 #pragma region -- accessors
-                inline const std::map<size_t, Stars>& detectedStars() const {return fdetectedStars;}
+                FITStable detectedStars(const std::string& tblName) const;
+                FITStable detectedStars() const;
+                //inline const std::map<size_t, Stars>& detectedStars() const {return fdetectedStars;}
                 inline const detectionMethod& detectionMethod() const {return fmethod;}
                 std::string detectionMethodString() const;
 

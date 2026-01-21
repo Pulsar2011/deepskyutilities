@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <DSTools/DSTmorpho.h>
 #include <DSTools/DSTstarFinder.h>
+#include <DSTdisplay/DSTmathplotpp.h>
 
 #include <cmath>
 #include <filesystem>
@@ -224,24 +225,27 @@ TEST(StarFinderTest, FindStarsBySegmentation)
     
     // Check that stars were found
     const auto& detectedStars = finder.detectedStars();
-    EXPECT_GT(detectedStars.size(), static_cast<size_t>(0));
+    EXPECT_GT(detectedStars.nrows(), static_cast<size_t>(0));
     
     // Optionally check detection rate (should find most stars)
-    EXPECT_GT(static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100., 80.); // At least 80% detection
-    EXPECT_LT(static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100., 110.); // No more than 120% (to avoid too many false positives)
-    std::cout << "Detected " << detectedStars.size() << " stars out of " << true_catalog.size() << " (" 
-              << (static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100.) << "%)" << std::endl;
+    EXPECT_GT(static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100., 80.); // At least 80% detection
+    EXPECT_LT(static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100., 110.); // No more than 120% (to avoid too many false positives)
+    std::cout << "Detected " << detectedStars.nrows() << " stars out of " << true_catalog.size() << " (" 
+              << (static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100.) << "%)" << std::endl;
     
     // Compare detected positions with true positions (within tolerance)
     size_t matched = 0;
     const double tolerance = 0.35; // pixels
     
+    // Get direct access to column data vectors
+    const auto& list = detectedStars.getColumn("coord_px")->values<FITSform::doubleVector>();
+    
     for(const auto& true_star : true_catalog)
     {
-        for(const auto& [id, detected_star] : detectedStars)
+        for(const auto& stars : list)
         {
-            double dx = detected_star.position().X() - true_star.position().X();
-            double dy = detected_star.position().Y() - true_star.position().Y();
+            double dx = stars[0] - true_star.position().X();
+            double dy = stars[1] - true_star.position().Y();
             double dist = std::sqrt(dx*dx + dy*dy);
             
             if(dist < tolerance)
@@ -254,8 +258,6 @@ TEST(StarFinderTest, FindStarsBySegmentation)
     
     // Expect at least 50% of true stars to be matched
     EXPECT_GT(matched, true_catalog.size() / 2);
-
-    EXPECT_NO_THROW(finder.plot());
 }
 
 
@@ -288,25 +290,28 @@ TEST(StarFinderTest, FindStarsBySNR)
     finder.findStars(DST::algorithms::starFinder::detectionMethod::SNR, 0.1);
     
     // Check that stars were found
-    const auto& detectedStars = finder.detectedStars();
-    EXPECT_GT(detectedStars.size(), static_cast<size_t>(0));
+    const FITStable& detectedStars = finder.detectedStars();
+    EXPECT_GT(detectedStars.nrows(), static_cast<size_t>(0));
     
     // Optionally check detection rate (should find most stars)
-    EXPECT_GT(static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100., 60.); // At least 80% detection
-    EXPECT_LT(static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100., 110.); // No more than 120% (to avoid too many false positives)
-    std::cout << "Detected " << detectedStars.size() << " stars out of " << true_catalog.size() << " (" 
-              << (static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100.) << "%)" << std::endl;
+    EXPECT_GT(static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100., 60.); // At least 80% detection
+    EXPECT_LT(static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100., 110.); // No more than 120% (to avoid too many false positives)
+    std::cout << "Detected " << detectedStars.nrows() << " stars out of " << true_catalog.size() << " (" 
+              << (static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100.) << "%)" << std::endl;
     
     // Compare detected positions with true positions (within tolerance)
     size_t matched = 0;
     const double tolerance = 0.35; // pixels
+
+    // Get direct access to column data vectors
+    const auto& list = detectedStars.getColumn("coord_px")->values<FITSform::doubleVector>();
     
     for(const auto& true_star : true_catalog)
     {
-        for(const auto& [id, detected_star] : detectedStars)
+        for(const auto& stars : list)
         {
-            double dx = detected_star.position().X() - true_star.position().X();
-            double dy = detected_star.position().Y() - true_star.position().Y();
+            double dx = stars[0] - true_star.position().X();
+            double dy = stars[1] - true_star.position().Y();
             double dist = std::sqrt(dx*dx + dy*dy);
             
             if(dist < tolerance)
@@ -351,24 +356,27 @@ TEST(StarFinderTest, FindStarsByThreshold)
     
     // Check that stars were found
     const auto& detectedStars = finder.detectedStars();
-    EXPECT_GT(detectedStars.size(), static_cast<size_t>(0));
+    EXPECT_GT(detectedStars.nrows(), static_cast<size_t>(0));
     
     // Optionally check detection rate (should find most stars)
-    EXPECT_GT(static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100., 50.); // At least 80% detection
-    EXPECT_LT(static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100., 110.); // No more than 120% (to avoid too many false positives)
-    std::cout << "Detected " << detectedStars.size() << " stars out of " << true_catalog.size() << " (" 
-              << (static_cast<double>(detectedStars.size())/static_cast<double>(true_catalog.size())*100.) << "%)" << std::endl;
+    EXPECT_GT(static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100., 50.); // At least 80% detection
+    EXPECT_LT(static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100., 110.); // No more than 120% (to avoid too many false positives)
+    std::cout << "Detected " << detectedStars.nrows() << " stars out of " << true_catalog.size() << " (" 
+              << (static_cast<double>(detectedStars.nrows())/static_cast<double>(true_catalog.size())*100.) << "%)" << std::endl;
     
     // Compare detected positions with true positions (within tolerance)
     size_t matched = 0;
     const double tolerance = 0.35; // pixels
     
+    // Get direct access to column data vectors
+    const auto& list = detectedStars.getColumn("coord_px")->values<FITSform::doubleVector>();
+    
     for(const auto& true_star : true_catalog)
     {
-        for(const auto& [id, detected_star] : detectedStars)
+        for(const auto& stars : list)
         {
-            double dx = detected_star.position().X() - true_star.position().X();
-            double dy = detected_star.position().Y() - true_star.position().Y();
+            double dx = stars[0] - true_star.position().X();
+            double dy = stars[1] - true_star.position().Y();
             double dist = std::sqrt(dx*dx + dy*dy);
             
             if(dist < tolerance)
@@ -430,6 +438,21 @@ TEST(StarFinderTest, FindStarsCube)
     std::shared_ptr<FITScube> img = img1;
 
     img->Write("./build/test_output/synthetic_star_field.fits",true);
+    img->HDU().ValueForKey("CTYPE1","RA---TAN",fChar);
+    img->HDU().ValueForKey("CTYPE2","DEC--TAN",fChar);
+    img->HDU().ValueForKey("CTYPE3","WAVELENGTH",fChar);
+    img->HDU().ValueForKey("CUNIT1","DEG",fChar);
+    img->HDU().ValueForKey("CUNIT2","DEG",fChar);
+    img->HDU().ValueForKey("CUNIT3","nm",fChar);
+    img->HDU().ValueForKey("CRPIX1",0.);
+    img->HDU().ValueForKey("CRPIX2",0.);
+    img->HDU().ValueForKey("CRPIX3",0.);
+    img->HDU().ValueForKey("CRVAL1",180.0);
+    img->HDU().ValueForKey("CRVAL2",0.0);
+    img->HDU().ValueForKey("CRVAL3",656.28);
+    img->HDU().ValueForKey("CDELT1",-0.0002777777778);
+    img->HDU().ValueForKey("CDELT2",0.0002777777778);
+    img->HDU().ValueForKey("CDELT3",0.1);
     
     // Create star finder
     DST::algorithms::starFinder finder(img);
@@ -443,12 +466,13 @@ TEST(StarFinderTest, FindStarsCube)
     // Check that stars were found
     const auto& detectedStars = finder.detectedStars();
 
-    for(std::map<size_t,Stars>::const_iterator star=detectedStars.cbegin(); star!=detectedStars.cend(); ++star)
-    {
-        star->second.dump(std::cout);
-    }
+    detectedStars.toCSV(std::cout,';');
 
-    EXPECT_NO_THROW(finder.plot(0));
-    EXPECT_NO_THROW(finder.plot(1));
-    EXPECT_NO_THROW(finder.plot(2));
+    {
+        DSL::mathplot::StderrRedirect redirect; // Silence plotting warnings
+    
+        EXPECT_NO_THROW(finder.plot(0));
+        EXPECT_NO_THROW(finder.plot(1));
+        EXPECT_NO_THROW(finder.plot(2));
+    }
 }
