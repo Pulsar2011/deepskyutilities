@@ -473,10 +473,10 @@ namespace DST
                     // (this allows 2D kernel applied to last two axes of N-D image)
                     for(size_t kj = 0; kj < k.data().size(); ++kj)
                     {
-                        // decode linear kernel index into multi-index (kernel coordinates)
+                        // decode linear kernel index into multi-index (row-major: axis 0 fastest)
                         size_t rem = kj;
                         std::vector<size_t> kIdx(kDim);
-                        for(ptrdiff_t ka = static_cast<ptrdiff_t>(kDim) - 1; ka >= 0; --ka)
+                        for(size_t ka = 0; ka < kDim; ++ka)
                         {
                             kIdx[ka] = rem % kSizes[ka];
                             rem /= kSizes[ka];
@@ -635,7 +635,7 @@ namespace DST
                             {
                                 size_t remk = kj;
                                 std::vector<size_t> kIdx(kDim);
-                                for(ptrdiff_t ka = static_cast<ptrdiff_t>(kDim) - 1; ka >= 0; --ka)
+                                for(size_t ka = 0; ka < kDim; ++ka)
                                 {
                                     kIdx[ka] = remk % kSizes[ka];
                                     remk /= kSizes[ka];
@@ -926,10 +926,10 @@ namespace DST
                     // (this allows 2D kernel applied to last two axes of N-D image)
                     for(size_t kj = 0; kj < k.data().size(); ++kj)
                     {
-                        // decode linear kernel index into multi-index (kernel coordinates)
+                        // decode linear kernel index into multi-index (row-major: axis 0 fastest)
                         size_t rem = kj;
                         std::vector<size_t> kIdx(kDim);
-                        for(ptrdiff_t ka = static_cast<ptrdiff_t>(kDim) - 1; ka >= 0; --ka)
+                        for(size_t ka = 0; ka < kDim; ++ka)
                         {
                             kIdx[ka] = rem % kSizes[ka];
                             rem /= kSizes[ka];
@@ -1024,7 +1024,7 @@ namespace DST
                             {
                                 size_t remk = kj;
                                 std::vector<size_t> kIdx(kDim);
-                                for(ptrdiff_t ka = static_cast<ptrdiff_t>(kDim) - 1; ka >= 0; --ka)
+                                for(size_t ka = 0; ka < kDim; ++ka)
                                 {
                                     kIdx[ka] = remk % kSizes[ka];
                                     remk /= kSizes[ka];

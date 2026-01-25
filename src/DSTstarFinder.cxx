@@ -15,6 +15,7 @@
 #include <mutex>
 
 #include <matplot/matplot.h>
+#include <cmath>
 
 namespace mp = matplot;
 
@@ -689,6 +690,15 @@ namespace DST
 
                 double valK = iK->DoubleValueAtPixel(iElem);
                 double valS = iS->DoubleValueAtPixel(iElem);
+                // Guard against non-finite values propagating into significance map
+                if(!(std::isfinite(valK) && std::isfinite(valS)))
+                {
+                    iK->SetPixelValue(std::numeric_limits<double>::lowest(), iElem);
+                    std::valarray<bool> mask = iK->GetMask();
+                    mask[iElem] = true;
+                    iK->MaskPixels(mask);
+                    continue;
+                }
                 double val = std::min(valK,valS);
                 iK->SetPixelValue((double) (valK - val),iElem);
 
@@ -696,6 +706,9 @@ namespace DST
                     lowestValue = valK - val;
             }
 
+            // If no valid pixels updated lowestValue, avoid subtracting max()
+            if(lowestValue == std::numeric_limits<double>::max())
+                lowestValue = std::numeric_limits<double>::lowest();
             *(iK.get()) -=  lowestValue; 
 
 
