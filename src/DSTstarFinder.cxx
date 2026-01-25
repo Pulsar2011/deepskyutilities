@@ -708,7 +708,7 @@ namespace DST
 
             // If no valid pixels updated lowestValue, avoid subtracting max()
             if(lowestValue == std::numeric_limits<double>::max())
-                lowestValue = std::numeric_limits<double>::lowest();
+                lowestValue = 0.0;
             *(iK.get()) -=  lowestValue; 
 
 
