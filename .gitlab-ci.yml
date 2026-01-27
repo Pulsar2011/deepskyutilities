@@ -1,0 +1,126 @@
+# You can override the included template(s) by including variable overrides
+# SAST customization: https://docs.gitlab.com/ee/user/application_security/sast/#customizing-the-sast-settings
+# Secret Detection customization: https://docs.gitlab.com/ee/user/application_security/secret_detection/#customizing-settings
+# Note that environment variables can be set in several places
+# See https://docs.gitlab.com/ee/ci/variables/#priority-of-environment-variables
+image:
+  name: gcc:13-bookworm
+
+stages:
+- .pre
+- build
+- test
+- deploy
+
+variables:
+  GIT_SUBMODULE_STRATEGY: normal
+  DEBIAN_FRONTEND: noninteractive
+
+before_script:
+  - apt-get update
+  - apt-get install -y cmake make git
+  - apt-get install -y libgsl-dev qt6-base-dev
+  - apt-get install -y doxygen graphviz pkg-config libblas-dev liblapack-dev
+  - apt-get install -y build-essential clang pkg-config autoconf automake libtool ca-certificates libfftw3-dev
+  - apt-get install -y gdb libboost-filesystem-dev libboost-chrono-dev libboost-thread-dev libboost-regex-dev npm 
+  - apt-get install -y libpthread-stubs0-dev patchelf
+
+deps:
+  stage: .pre
+  script:
+    # Try using wget to download the repository archive instead of git clone
+    - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskyfits.git
+    - cd deepskyfits
+    - git submodule update --init --recursive
+    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
+    - cmake -DCMAKE_INSTALL_PREFIX=/usr/local -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - make -j 2
+    # Repeat make because sometime it fail when waiting for unfinish compilation of others src.
+    - make -j 2
+    - make install
+    - cd ..
+    - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskydisplay.git
+    - cd deepskydisplay
+    - git submodule update --init --recursive
+    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
+    - cmake -DCMAKE_INSTALL_PREFIX=/usr/local -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - make -j 2
+    - make install
+    - cd ..
+    - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskysys
+    - cd deepskysys
+    - git submodule update --init --recursive
+    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
+    - cmake -DCMAKE_INSTALL_PREFIX=/usr/local -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - make -j 2
+    - make install
+    - cd ..
+    - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskymath
+    - cd deepskymath
+    - git submodule update --init --recursive
+    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
+    - cmake -DCMAKE_INSTALL_PREFIX=/usr/local -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - make -j 2
+    - make install
+    - cd ..
+  artifacts:
+    expire_in: 24 hrs
+    paths:
+      - /usr/local/lib/libDSTfits*
+      - /usr/local/include/DSTfits
+      - /usr/local/lib/libDSTdiplay*
+      - /usr/local/include/DSTdisplay
+      - /usr/local/lib/libDSTCore*
+      - /usr/local/include/DSTCore
+      - /usr/local/lib/libDSTmath*
+      - /usr/local/include/DSTmath
+      - /usr/local/lib/libwcs*
+      - /usr/local/lib/libMinuit*
+      - /usr/local/lib/libcfitsio*
+      - /usr/local/lib/libmatplot
+      - /usr/local/include/Minuit2
+      - /usr/local/include/wcslib
+      - /usr/local/include/Matplot
+      - /usr/local/include/cfitsio
+
+
+
+build:
+  stage: build
+  needs:
+    - job: deps
+      artifacts: true
+  script:
+  - mkdir -p build
+  - cd build
+  - cmake -Wno-dev -DCMAKE_THREAD_LIBS_INIT="-lpthread" -DCMAKE_HAVE_THREADS_LIBRARY=1 -DCMAKE_USE_PTHREADS_INIT=1 ..
+  - make -j "$(nproc --all)"
+  artifacts:
+    expire_in: 2 hrs
+    paths:
+    - build
+
+test:
+  stage: test
+  needs:
+    - job: build
+      artifacts: true
+  script:
+  - cd build
+  - ctest --output-on-failure
+
+create-pages:
+  stage: deploy
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - mkdir public
+    - npm install mathjax@2
+    - cmake .
+    - make doc
+    - mv doc/html/* ./public
+    - mv node_modules/mathjax ./public/mathjax
+    - ls public
+  pages:
+    expire_in: 1 week
