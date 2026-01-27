@@ -6,6 +6,9 @@
 image:
   name: gcc:13-bookworm
 
+variables:
+  DeepSkyROOT: "/usr/local"
+
 stages:
 - .pre
 - build
