@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <limits>
+#include <cmath>
 #include <thread>                 // added for std::thread
 #include <future>                 // added for std::async / std::future
 
@@ -42,7 +43,15 @@ namespace DST
             MEDIAN,
             SUM,
             RMS,
-            RMSE
+            RMSE,
+            DILATE,
+            ERODE,
+            OPEN,
+            CLOSE,
+            WHITE_TOPHAT,
+            BLACK_TOPHAT,
+            CORRELATE,
+            nCORRELATE
         };
 
         template <typename T>
@@ -124,6 +133,14 @@ namespace DST
 
 #pragma region • modifiers
                 void setType(const ktype& t) { ftype = t; }
+
+                inline void setWeightAt(const size_t& i, const T& v)
+                {
+                    if(i >= fkernel.size())
+                        throw std::out_of_range("Index out of range.[" +std::to_string(__LINE__)+"]");
+
+                    fkernel[i] = v;
+                }
 #pragma endregion
 
 
@@ -415,6 +432,24 @@ namespace DST
         template <typename T, typename K>
         std::shared_ptr<FITScube> folding(const std::shared_ptr< FITSimg<K> >& in, const kernel<T>& k, size_t nThreads)
         {
+
+            if(k.type() == ktype::DILATE)
+                return dilation<T>(in,k,nThreads);
+            else if(k.type() == ktype::ERODE)
+                return erosion<T>(in,k,nThreads);
+            else if( k.type() == ktype::OPEN )
+                return opening<T>(in,k,nThreads);
+            else if( k.type() == ktype::CLOSE )
+                return closing<T>(in,k,nThreads);
+            else if( k.type() == ktype::WHITE_TOPHAT )
+                return wTopHat<T>(in,k,nThreads);
+            else if( k.type() == ktype::BLACK_TOPHAT )
+                return bTopHat<T>(in,k,nThreads);
+            else if( k.type() == ktype::CORRELATE )
+                return correlate<T>(in,k,nThreads);
+            else if( k.type() == ktype::nCORRELATE )
+                return correlate<T>(in,k,nThreads, true);
+
             if(in == nullptr)
                 throw FITSexception(BAD_DIMEN,"DST","folding","Input FITSimg<K> pointer is null.["+std::to_string(__LINE__)+"]");
 
@@ -840,6 +875,236 @@ namespace DST
             throw FITSexception(BAD_DIMEN,"DST","folding","Unsupported pixel type.["+std::to_string(__LINE__)+"]");
         }
 #pragma endregion
+
+#pragma region - correlate function
+
+        /**
+         * @brief Correlate an image with a floating kernel (weighted sum).
+         *
+         * Computes, for each pixel p (kernel centered on p):
+         *   out(p) = sum_x in(p+x) * k(x)
+         *
+         * If normalize=true, divides by the sum of absolute kernel weights actually used
+         * (i.e., excluding masked pixels and pixels outside image bounds).
+         *
+         * @param in Input image
+         * @param k Kernel weights and shape
+         * @param nThreads Number of threads to use
+         * @param normalize If true, normalizes by sum(|w|) over valid samples
+         */
+        template <typename T, typename K>
+        std::shared_ptr<FITScube> correlate(const std::shared_ptr< FITSimg<K> >& in, const kernel<T>& k, size_t nThreads = 1, bool normalize = false)
+        {
+            if(in == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST","correlate","Input FITSimg<K> pointer is null.["+std::to_string(__LINE__)+"]");
+
+            if(k.size() == 0)
+                throw FITSexception(BAD_DIMEN,"DST","correlate","Kernel size is zero.["+std::to_string(__LINE__)+"]");
+
+            if(k.sizes().size() != in->GetDimension() || k.sizes().size() < 1)
+                throw FITSexception(BAD_DIMEN,"DST","correlate","Kernel missmatch.["+std::to_string(__LINE__)+"]");
+
+            static_assert(is_allowed_storage_type_v<T>, "Kernel type not supported.");
+            static_assert(is_allowed_storage_type_v<K>, "Image pixel type not supported.");
+
+            using U = typename kernel<T>::template promote_with<K>;
+            static_assert(is_allowed_storage_type_v<U>, "Promoted pixel type not supported.");
+
+            std::valarray<U> out_data(U(0), in->Nelements());
+            const std::valarray<K>* in_data = in->template GetData<K>();
+            const std::valarray<bool> msk = in->GetMask();
+
+            // Promote kernel weights into U
+            std::valarray<U> tmpKernel(U(0), k.data().size());
+            if(tmpKernel.size() != k.data().size())
+                throw std::invalid_argument("Kernel size missmatche.["+std::to_string(__LINE__)+"]");
+            for(size_t i = 0; i < k.data().size(); ++i)
+                tmpKernel[i] = static_cast<U>(k.data()[i]);
+
+            const std::vector<size_t> kSizes = k.sizes();
+            const size_t kDim = kSizes.size();
+            const size_t imgDim = in->GetDimension();
+
+            std::vector<ptrdiff_t> kCenter(kDim);
+            for(size_t a = 0; a < kDim; ++a)
+                kCenter[a] = static_cast<ptrdiff_t>(kSizes[a] / 2);
+
+            auto absU = [](U v) -> U
+            {
+                if(v < U(0))
+                    return U(-v);
+                return v;
+            };
+
+            auto processRange = [&](size_t start, size_t end)
+            {
+                for(size_t i = start; i < end; ++i)
+                {
+                    const std::vector<size_t> pxCoords = in->PixelCoordinates(i);
+                    U acc = U(0);
+                    U wsum = U(0);
+
+                    for(size_t kj = 0; kj < k.data().size(); ++kj)
+                    {
+                        size_t remk = kj;
+                        std::vector<size_t> kIdx(kDim);
+                        for(size_t ka = 0; ka < kDim; ++ka)
+                        {
+                            kIdx[ka] = remk % kSizes[ka];
+                            remk /= kSizes[ka];
+                        }
+
+                        bool outside = false;
+                        std::vector<size_t> tgtCoords = pxCoords;
+
+                        for(size_t ka = 0; ka < kDim; ++ka)
+                        {
+                            const ptrdiff_t offset = static_cast<ptrdiff_t>(kIdx[ka]) - kCenter[ka];
+                            const size_t imgAxis = imgDim - kDim + ka;
+
+                            if(imgAxis >= imgDim)
+                            {
+                                outside = true;
+                                break;
+                            }
+
+                            ptrdiff_t tgt = static_cast<ptrdiff_t>(pxCoords[imgAxis]) + offset;
+                            if(tgt < 0)
+                            {
+                                outside = true;
+                                break;
+                            }
+
+                            const size_t tgt_sz = in->Size(imgAxis+1);
+                            if(static_cast<size_t>(tgt) >= tgt_sz)
+                            {
+                                outside = true;
+                                break;
+                            }
+
+                            tgtCoords[imgAxis] = static_cast<size_t>(tgt);
+                        }
+
+                        if(outside)
+                            continue;
+
+                        const size_t tgtIndex = in->PixelIndex(tgtCoords);
+                        if(msk[tgtIndex])
+                            continue;
+
+                        const U w = tmpKernel[kj];
+                        const U v = static_cast<U>((*in_data)[tgtIndex]);
+                        acc += v * w;
+
+                        if(normalize)
+                        {
+                            const U aw = absU(w);
+                            if(aw == aw) // ignore NaN weights
+                                wsum += aw;
+                        }
+                    }
+
+                    if(normalize)
+                    {
+                        if(wsum != U(0))
+                            acc /= wsum;
+                        else
+                            acc = U(0);
+                    }
+
+                    out_data[i] = acc;
+                }
+            };
+
+            if(nThreads <= 1)
+            {
+                processRange(0, in_data->size());
+            }
+            else
+            {
+                const size_t N = in_data->size();
+                const size_t nT = std::min(nThreads, N);
+
+                std::vector<std::thread> workers;
+                workers.reserve(nT);
+
+                const size_t base = N / nT;
+                const size_t rem = N % nT;
+
+                for(size_t t = 0; t < nT; ++t)
+                {
+                    const size_t start = t * base + std::min(t, rem);
+                    const size_t len = base + (t < rem ? 1 : 0);
+                    const size_t end = start + len;
+                    workers.emplace_back([&, start, end]() { processRange(start, end); });
+                }
+                for(auto& th : workers) th.join();
+            }
+
+            std::vector<size_t> out_data_shape;
+            for(size_t d = 0; d < in->GetDimension(); d++)
+                out_data_shape.push_back(in->Size(d+1));
+
+            FITSimg<U>* outImg = new FITSimg<U>(out_data_shape);
+            *(outImg->template GetData<U>()) += out_data;
+
+            for(FITSDictionary::const_iterator it = in->HDU().begin(); it != in->HDU().end(); ++it)
+            {
+                if(!outImg->HDU().Exists(it->first))
+                    outImg->HDU().ValueForKey(it->first, it->second.value(), it->second.type(), it->second.comment());
+            }
+
+            outImg->HDU().ValueForKey("DST_PROC","CORRELATE",key_type::fChar,"Processing history keyword");
+            outImg->HDU().ValueForKey("DST_NORM", normalize ? "T" : "F", key_type::fChar, "Correlation normalization flag");
+            outImg->HDU().ValueForKey("DST_VER",DST::gGIT::version_short(),key_type::fChar,"DST framwork version library");
+            outImg->HDU().ValueForKey("DST_SHA",DST::gGIT::sha1(),key_type::fChar,"DST framwork GIT identifier");
+
+            return std::shared_ptr<FITScube>(outImg);
+        }
+
+        /**
+         * @brief Correlate a dynamically-typed FITScube with a floating kernel.
+         */
+        template <typename T>
+        std::shared_ptr<FITScube> correlate(const std::shared_ptr<FITScube>& in, const kernel<T>& k, size_t nThreads = 1, bool normalize = false)
+        {
+            if(in == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST","correlate","Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
+
+            if(k.size() == 0)
+                throw FITSexception(BAD_DIMEN,"DST","correlate","Kernel size is zero.["+std::to_string(__LINE__)+"]");
+
+            switch(in->GetEqBitPerPixel())
+            {
+                case SBYTE_IMG:
+                    return correlate<T, int8_t> (std::dynamic_pointer_cast< FITSimg< int8_t> >(in), k, nThreads, normalize);
+                case BYTE_IMG:
+                    return correlate<T, uint8_t>(std::dynamic_pointer_cast< FITSimg< uint8_t> >(in), k, nThreads, normalize);
+                case SHORT_IMG:
+                    return correlate<T,int16_t> (std::dynamic_pointer_cast< FITSimg<int16_t> >(in), k, nThreads, normalize);
+                case USHORT_IMG:
+                    return correlate<T,uint16_t>(std::dynamic_pointer_cast< FITSimg<uint16_t> >(in), k, nThreads, normalize);
+                case LONG_IMG:
+                    return correlate<T,int32_t> (std::dynamic_pointer_cast< FITSimg<int32_t> >(in), k, nThreads, normalize);
+                case ULONG_IMG:
+                    return correlate<T,uint32_t>(std::dynamic_pointer_cast< FITSimg<uint32_t> >(in), k, nThreads, normalize);
+                case LONGLONG_IMG:
+                    return correlate<T,int64_t> (std::dynamic_pointer_cast< FITSimg<int64_t> >(in), k, nThreads, normalize);
+                case ULONGLONG_IMG:
+                    return correlate<T,uint64_t>(std::dynamic_pointer_cast< FITSimg<uint64_t> >(in), k, nThreads, normalize);
+                case FLOAT_IMG:
+                    return correlate<T,float>   (std::dynamic_pointer_cast< FITSimg<float> >(in), k, nThreads, normalize);
+                case DOUBLE_IMG:
+                    return correlate<T,double>  (std::dynamic_pointer_cast< FITSimg<double> >(in), k, nThreads, normalize);
+                default:
+                    break;
+            }
+
+            throw FITSexception(BAD_DIMEN,"DST","correlate","Unsupported pixel type.["+std::to_string(__LINE__)+"]");
+        }
+
+#pragma endregion
+
 #pragma region - dilation function
 
         /**

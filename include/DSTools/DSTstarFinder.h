@@ -181,8 +181,11 @@ namespace DST
                 void setOutputUrl(const std::string& url);
 
                 void switchfBSkernel(DST::Morphology::kernel<double>& k) {fBS = k;}
+                void switchfBSkernelType(const DST::Morphology::ktype& t) {fBS.setType(t);}
                 void switchfBEkernel(DST::Morphology::kernel<double>& k) {fBE = k;}
+                void switchfBEkernelType(const DST::Morphology::ktype& t) {fBE.setType(t);}
                 void switchfBMkernel(DST::Morphology::kernel<double>& k) {fBM = k;}
+                void switchfBMkernelType(const DST::Morphology::ktype& t) {fBM.setType(t);}
 #pragma endregion
 #pragma region -- accessors
                 FITStable detectedStars(const std::string& tblName) const;
