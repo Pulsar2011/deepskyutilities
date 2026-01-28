@@ -569,6 +569,9 @@ namespace DST
                         case detectionMethod::SNR:
                             _findStarsSNR(layer,quantizationStep,layerIdx);
                             break;
+                        case detectionMethod::CUSTOM:
+                            _findStarsCustom(layer,quantizationStep,layerIdx);
+                            break;
                         default:
                             layer.reset();
                             throw std::invalid_argument("DST::starFinder::findStars: Unknown detection method.["+std::to_string(__LINE__)+"]");
@@ -610,6 +613,8 @@ namespace DST
             }
 
         }
+
+
 #pragma endregion
 #pragma region -- private methods
         /**
@@ -895,6 +900,26 @@ namespace DST
 
             _watershedFlooding(snrMap, fthresholdValue, fquantumStepQueue, iLayer);
             snrMap.reset();
+        }
+
+        void starFinder::_findStarsCustom(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+        {
+            std::shared_ptr<FITScube> customMap = _customPreprocessing(img, iLayer);
+            if(customMap == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFinder","_findStarsCustom","Custom preprocessing returned a null FITScube pointer.["+std::to_string(__LINE__)+"]");
+
+            if(foutURL != "")
+            {
+                customMap->Write(foutURL+"/userSignificance_map.fits",true);
+            }
+
+            _watershedFlooding(customMap, fthresholdValue, fquantumStepQueue, iLayer);
+            customMap.reset();
+        }
+
+        std::shared_ptr<FITScube> starFinder::_customPreprocessing(const std::shared_ptr<FITScube>& img, const size_t& iLayer)
+        {
+            throw std::invalid_argument("DST::starFinder::_customPreprocessing: Custom preprocessing require to be implemented in derived class.["+std::to_string(__LINE__)+"]");
         }
 
         /**

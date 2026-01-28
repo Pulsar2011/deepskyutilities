@@ -137,7 +137,8 @@ namespace DST
                 {
                     MORPHO,
                     THRESHOLD,
-                    SNR
+                    SNR,
+                    CUSTOM
                 };
 
             private:
@@ -152,16 +153,20 @@ namespace DST
                 DST::Morphology::kernel<double> fBE;
                 DST::Morphology::kernel<double> fBM;
 
-                std::string foutURL;
-                bool is3D;
-
                 void _findStarsMorpho(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsThreshold(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsSNR(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
+                void _findStarsCustom(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _watershedFlooding(const std::shared_ptr<FITScube>&, const double&, const double&, const size_t& iLayer=0);
                 void _evalStellarPropertiesMoment(Stars& star);
                 std::vector<size_t> _getNeighborIndices(const size_t& pixIdx, const size_t& w, const size_t& h) const;
                 std::vector<point>  _floodingPlateau(const size_t&, std::valarray<size_t>&, const std::shared_ptr<FITScube>, const double&, const size_t&);
+
+            protected:
+                std::string foutURL;
+                bool is3D;
+
+                virtual std::shared_ptr<FITScube> _customPreprocessing(const std::shared_ptr<FITScube>&,const size_t& iLayer=0);
 
             public:
 
