@@ -555,6 +555,103 @@ TYPED_TEST(KernelFoldingTest, FoldDeltaWithCrossKernel_3D)
     out_img->Write("./build/KernelFolding3D_"+demangle(typeid(T).name())+".fits",true);
 }
 
+TEST(MorphologyCorrelateTest, OnesKernel_NoNormalize_And_Normalize)
+{
+    // Build a simple deterministic 5x5 image: value = x + 10*y (y=0 bottom)
+    const size_t w = 5;
+    const size_t h = 5;
+    auto img = std::make_shared< FITSimg<double> >(std::vector<size_t>{w,h});
+    auto data_ptr = img->template GetData<double>();
+    (*data_ptr) *= 0.0;
+
+    for(size_t y = 0; y < h; ++y)
+    for(size_t x = 0; x < w; ++x)
+        (*data_ptr)[img->PixelIndex({x,y})] = static_cast<double>(x) + 10.0*static_cast<double>(y);
+
+    // 3x3 ones kernel
+    std::valarray<double> kdata = {
+        1,1,1,
+        1,1,1,
+        1,1,1
+    };
+    kernel<double> k(kdata, std::vector<size_t>{3,3});
+
+    // Correlate without normalization: central pixel should be 3x3 sum
+    auto out_sum_ptr = correlate<double>(std::dynamic_pointer_cast<FITScube>(img), k, 1, false);
+    auto out_sum_img = std::dynamic_pointer_cast< FITSimg<double> >(out_sum_ptr);
+    ASSERT_NE(out_sum_img, nullptr);
+
+    const size_t cx = 2;
+    const size_t cy = 2;
+    double expected_sum = 0.0;
+    for(int dy = -1; dy <= 1; ++dy)
+    for(int dx = -1; dx <= 1; ++dx)
+        expected_sum += (*data_ptr)[img->PixelIndex({static_cast<size_t>(cx+dx), static_cast<size_t>(cy+dy)})];
+
+    EXPECT_DOUBLE_EQ((*out_sum_img->GetData<double>())[out_sum_img->PixelIndex({cx,cy})], expected_sum);
+    EXPECT_TRUE(out_sum_img->HDU().Exists("DST_PROC"));
+    EXPECT_EQ(out_sum_img->HDU().GetValueForKey("DST_PROC"), "CORRELATE");
+    EXPECT_TRUE(out_sum_img->HDU().Exists("DST_NORM"));
+    EXPECT_EQ(out_sum_img->HDU().GetValueForKey("DST_NORM"), "F");
+
+    // Correlate with normalization: central pixel should be 3x3 mean (divide by 9)
+    auto out_mean_ptr = correlate<double>(std::dynamic_pointer_cast<FITScube>(img), k, 1, true);
+    auto out_mean_img = std::dynamic_pointer_cast< FITSimg<double> >(out_mean_ptr);
+    ASSERT_NE(out_mean_img, nullptr);
+    EXPECT_DOUBLE_EQ((*out_mean_img->GetData<double>())[out_mean_img->PixelIndex({cx,cy})], expected_sum / 9.0);
+    EXPECT_EQ(out_mean_img->HDU().GetValueForKey("DST_NORM"), "T");
+
+    // Border behavior with normalization: only overlapping pixels count
+    const size_t bx = 0;
+    const size_t by = 0;
+    double border_sum = 0.0;
+    double border_count = 0.0;
+    for(int dy = -1; dy <= 1; ++dy)
+    for(int dx = -1; dx <= 1; ++dx)
+    {
+        const int tx = static_cast<int>(bx) + dx;
+        const int ty = static_cast<int>(by) + dy;
+        if(tx < 0 || ty < 0 || tx >= static_cast<int>(w) || ty >= static_cast<int>(h))
+            continue;
+        border_sum += (*data_ptr)[img->PixelIndex({static_cast<size_t>(tx), static_cast<size_t>(ty)})];
+        border_count += 1.0;
+    }
+    EXPECT_DOUBLE_EQ((*out_mean_img->GetData<double>())[out_mean_img->PixelIndex({bx,by})], border_sum / border_count);
+}
+
+TEST(MorphologyCorrelateTest, NormalizeSkipsMaskedPixels)
+{
+    const size_t w = 5;
+    const size_t h = 5;
+    auto img = std::make_shared< FITSimg<double> >(std::vector<size_t>{w,h});
+    auto data_ptr = img->template GetData<double>();
+    (*data_ptr) *= 0.0;
+
+    for(size_t y = 0; y < h; ++y)
+    for(size_t x = 0; x < w; ++x)
+        (*data_ptr)[img->PixelIndex({x,y})] = 1.0;
+
+    // Mask one neighbor in the 3x3 around the center
+    const size_t cx = 2;
+    const size_t cy = 2;
+    img->MaskPixels({img->PixelIndex({cx+1, cy})});
+
+    std::valarray<double> kdata = {
+        1,1,1,
+        1,1,1,
+        1,1,1
+    };
+    kernel<double> k(kdata, std::vector<size_t>{3,3});
+
+    auto out_ptr = correlate<double>(std::dynamic_pointer_cast<FITScube>(img), k, 1, true);
+    auto out_img = std::dynamic_pointer_cast< FITSimg<double> >(out_ptr);
+    ASSERT_NE(out_img, nullptr);
+
+    // With all ones, normalized correlation is the mean of valid samples.
+    // 3x3 neighborhood would have 9 samples, but one is masked => 8 valid => expected mean = 1.
+    EXPECT_DOUBLE_EQ((*out_img->GetData<double>())[out_img->PixelIndex({cx,cy})], 1.0);
+}
+
 TYPED_TEST(KernelFoldingTest, Dilation)
 {
     using T = TypeParam;

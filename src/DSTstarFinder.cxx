@@ -347,6 +347,10 @@ namespace DST
             std::valarray<double> bmData(1,13*13);
             bmData[std::gslice(2+2*13,{13-4,13-4},{1,13})] = 0;
             fBM *= bmData;
+
+            fBS.setType(Morphology::ktype::OPEN);
+            fBE.setType(Morphology::ktype::ERODE);
+            fBM.setType(Morphology::ktype::DILATE);
         }
 
         starFinder::~starFinder()
@@ -612,6 +616,7 @@ namespace DST
         }
 #pragma endregion
 #pragma region -- private methods
+
         /**
          * @brief Find stars using morphological operators
          * 
@@ -640,7 +645,8 @@ namespace DST
                     if(nThreads == 0)
                         nThreads = 1;
 
-                    std::shared_ptr<FITScube> iK = Morphology::opening<double>(img, fBS,nThreads);
+
+                    std::shared_ptr<FITScube> iK = Morphology::folding<double>(img, fBS,nThreads);
                     iK->MaskPixels(img->GetMask());
                     return iK;
                 });
@@ -654,7 +660,7 @@ namespace DST
                     if(nThreads == 0)
                         nThreads = 1;
 
-                    std::shared_ptr<FITScube> iN = Morphology::dilation<double>(img, fBM,nThreads);
+                    std::shared_ptr<FITScube> iN = Morphology::folding<double>(img, fBM,nThreads);
                     iN->MaskPixels(img->GetMask());
                     return iN;
                 });
@@ -663,7 +669,7 @@ namespace DST
             std::shared_ptr<FITScube> iK = futureIK.get();
             std::shared_ptr<FITScube> iN = futureIN.get();
 
-            std::shared_ptr<FITScube> iS = Morphology::erosion<double>(iN, fBE, maxThreads);
+            std::shared_ptr<FITScube> iS = Morphology::folding<double>(iN, fBE, maxThreads);
             iS->MaskPixels(img->GetMask());
 
             if(foutURL != "")
@@ -694,15 +700,13 @@ namespace DST
                 if(!(std::isfinite(valK) && std::isfinite(valS)))
                 {
                     iK->SetPixelValue(std::numeric_limits<double>::lowest(), iElem);
-                    std::valarray<bool> mask = iK->GetMask();
-                    mask[iElem] = true;
-                    iK->MaskPixels(mask);
+                    iK->MaskPixels({iElem});
                     continue;
                 }
                 double val = std::min(valK,valS);
                 iK->SetPixelValue((double) (valK - val),iElem);
 
-                if(valK - val < lowestValue)
+                if((valK - val) < lowestValue)
                     lowestValue = valK - val;
             }
 
