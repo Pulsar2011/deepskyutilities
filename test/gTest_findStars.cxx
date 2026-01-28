@@ -391,6 +391,31 @@ TEST(StarFinderTest, FindStarsByThreshold)
     EXPECT_GT(matched, true_catalog.size() / 2);
 }
 
+TEST(StarFinderTest, FindStarsCustom)
+{
+    // Generate synthetic star field with known catalog
+    std::vector<DST::Stars> true_catalog;
+    const unsigned int seed = 12345;
+    auto img = TestUtils::generateStarField(
+        true_catalog,
+        512,    // width
+        512,    // height
+        50,     // number of stars
+        0.7,    // sigma
+        10.0,   // min intensity
+        1000.0, // max intensity
+        5.0,    // background
+        8.0,    // noise sigma
+        seed);
+
+        // Create star finder
+    DST::algorithms::starFinder finder(img);
+    EXPECT_ANY_THROW(finder.findStars(DST::algorithms::starFinder::detectionMethod::CUSTOM, 0.1));
+
+}
+
+    
+
 TEST(StarFinderTest, FindStarsCube)
 {
     // Generate synthetic star field with known catalog
