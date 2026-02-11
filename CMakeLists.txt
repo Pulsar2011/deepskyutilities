@@ -121,19 +121,19 @@ IF(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # macOS specific code with architecture distinction
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
         # Apple Silicon (ARM64)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -fPIC -flto=thin -mcpu=native -mtune=native -ffp-contract=on -fomit-frame-pointer")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -fPIC -mcpu=native -mtune=native -ffp-contract=on")
         set(OperatingSystem "Mac OS X")
         ADD_DEFINITIONS(-DDarwin -DDarwinarm64)
         set(CMAKE_OSX_ARCHITECTURES "arm64")
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
         # Apple Intel (x86_64)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -m64 -fPIC -flto=thin -mcpu=native -mtune=native -ffp-contract=on -fomit-frame-pointer")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -m64 -fPIC -mcpu=native -mtune=native -ffp-contract=on")
         set(OperatingSystem "Mac OS X")
         ADD_DEFINITIONS(-DDarwin -DDarwinx86_64)
         set(CMAKE_OSX_ARCHITECTURES "x86_64")
     else()
         # Fallback
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -fPIC -flto=thin -mcpu=native -mtune=native -ffp-contract=on -fomit-frame-pointer")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -fPIC -mcpu=native -mtune=native -ffp-contract=on")
         set(OperatingSystem "Mac OS X")
         ADD_DEFINITIONS(-DDarwin)
     endif()
@@ -146,16 +146,22 @@ if(WITH_DEBUG)
 	# Ensure proper CMake build type name and debug flags so lldb can see symbols.
 	# Use -g3 for maximum debug info, -O0 to avoid optimization and -fno-omit-frame-pointer
 	# Avoid adding any -s/--strip flags here.
+	# Disable LTO in debug mode to preserve debug symbols
+	set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 	set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
 	# Populate the Debug-specific vars used by CMake and toolchains
-	set(CMAKE_C_FLAGS_DEBUG   "${CMAKE_C_FLAGS_DEBUG} -g3 -O0 -fno-omit-frame-pointer -fsanitize=address -fno-omit-frame-pointer -g")
-	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g3 -O0 -fno-omit-frame-pointer -fsanitize=address -fno-omit-frame-pointer -g")
+	set(CMAKE_C_FLAGS_DEBUG   "${CMAKE_C_FLAGS_DEBUG} -g3 -O0 -fno-omit-frame-pointer -fsanitize=address")
+	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g3 -O0 -fno-omit-frame-pointer -fsanitize=address")
 	# Ensure linker doesn't strip in debug mode (leave linker flags untouched or add explicit)
 	set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG}")
 	# Also append to global flags (keeps behaviour consistent with rest of file)
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_DEBUG}")
 else(WITH_DEBUG)
 	# For non-debug keep release-style optimizations but avoid automatic stripping here.
+	# Re-enable LTO for Release builds on macOS
+	if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin -fomit-frame-pointer")
+	endif()
 	set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 	set(CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE} -O3")
 	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
