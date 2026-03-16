@@ -298,6 +298,9 @@ else()
     message(WARNING "libmatplot not found; install the library")
 endif()
 
+GET_DIRECTORY_PROPERTY(include_dir_list INCLUDE_DIRECTORIES)
+MESSAGE("${Green}INCLUDE DIRS${ColourReset} ${include_dir_list}")
+
 #-------------------- LIST SOURCE FILE
 
 file(GLOB CORE_SRC "src/*.cxx")
