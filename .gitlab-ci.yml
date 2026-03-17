@@ -41,7 +41,8 @@ deps:
     - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
     - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
-    # Repeat make because sometime it fail when waiting for unfinish compilation of others src.
+    # Repeat make because sometime it fail when waiting for unfinish compilation of others src. I also need to repeat cmake because it seems to ignore some of the header at first run
+    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     - make install
 
