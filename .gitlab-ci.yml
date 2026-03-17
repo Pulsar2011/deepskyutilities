@@ -6,10 +6,6 @@
 image:
   name: gcc:13-bookworm
 
-variables:
-  GIT_SUBMODULE_STRATEGY: normal
-  DEBIAN_FRONTEND: noninteractive
-
 stages:
 - .pre
 - build
@@ -19,6 +15,7 @@ stages:
 variables:
   GIT_SUBMODULE_STRATEGY: normal
   DEBIAN_FRONTEND: noninteractive
+  GIT_DEPTH: "0"
 
 before_script:
   - apt-get update
@@ -28,52 +25,50 @@ before_script:
   - apt-get install -y build-essential clang pkg-config autoconf automake libtool ca-certificates libfftw3-dev
   - apt-get install -y gdb libboost-filesystem-dev libboost-chrono-dev libboost-thread-dev libboost-regex-dev npm 
   - apt-get install -y libpthread-stubs0-dev patchelf
+  - apt-get install -y gnuplot-nox libcairo2 libpango-1.0-0 libpangocairo-1.0-0
 
 deps:
   stage: .pre
   script:
-    - export DSP=$(pwd)/deepskyproject   # chemin absolu, une seule fois
-    - mkdir -p ${DSP}
+    - export DeepSkyROOT=$(pwd)/deepskyproject   # chemin absolu, une seule fois
+    - mkdir -p ${DeepSkyROOT}
 
     # Try using wget to download the repository archive instead of git clone
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskyfits.git
     - cd deepskyfits && git submodule update --init --recursive
     - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
-    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - cmake -DCMAKE_INSTALL_PREFIX=${DeepSkyROOT} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     # Repeat make because sometime it fail when waiting for unfinish compilation of others src. I also need to repeat cmake because it seems to ignore some of the header at first run
-    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - cmake -DCMAKE_INSTALL_PREFIX=${DeepSkyROOT} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     - make install
 
-    - cd ..
-    - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskydisplay.git
-    - cd deepskydisplay
-    - git submodule update --init --recursive
-    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
-    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
-    - make -j 2
-    - make install
-
-    - cd ..
+    - cd -
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskysys
-    - cd deepskysys
-    - git submodule update --init --recursive
+    - cd deepskysys && git submodule update --init --recursive
     - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
-    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - cmake -DCMAKE_INSTALL_PREFIX=${DeepSkyROOT} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     - make install
 
-    - cd ..
+    - cd -
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskymath
-    - cd deepskymath
-    - git submodule update --init --recursive
+    - cd deepskymath && git submodule update --init --recursive
     - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
-    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - cmake -DCMAKE_INSTALL_PREFIX=${DeepSkyROOT} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - make -j 2
+    - make install
+
+    - cd -
+    - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskydisplay.git
+    - cd deepskydisplay && git submodule update --init --recursive
+    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
+    - cmake -DCMAKE_INSTALL_PREFIX=${DeepSkyROOT} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     - make install
     
-    - cd ..
+    - cd -
   artifacts:
     expire_in: 24 hrs
     paths:
@@ -87,6 +82,7 @@ build:
     - job: deps
       artifacts: true
   script:
+  - git fetch --tags --force
   - export DeepSkyROOT=$(pwd)/deepskyproject   # absolu
   - mkdir -p build && cd build
   - cmake -Wno-dev -DCMAKE_THREAD_LIBS_INIT="-lpthread" -DCMAKE_HAVE_THREADS_LIBRARY=1 -DCMAKE_USE_PTHREADS_INIT=1 ..
@@ -106,14 +102,18 @@ test:
   script:
   - export DeepSkyROOT=$(pwd)/deepskyproject
   - cd build
-  - ctest --output-on-failure
+  - ctest --output-on-failure --test-dir .
 
 create-pages:
   stage: deploy
   needs:
     - job: build
       artifacts: true
+    - job: deps
+      artifacts: true
   script:
+    - export DeepSkyROOT=$(pwd)/deepskyproject
+    - export LD_LIBRARY_PATH=${DeepSkyROOT}/lib:${LD_LIBRARY_PATH}
     - mkdir public
     - npm install mathjax@2
     - cmake .
