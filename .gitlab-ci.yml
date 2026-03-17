@@ -7,7 +7,8 @@ image:
   name: gcc:13-bookworm
 
 variables:
-  DeepSkyROOT: "/usr/local"
+  GIT_SUBMODULE_STRATEGY: normal
+  DEBIAN_FRONTEND: noninteractive
 
 stages:
 - .pre
@@ -31,60 +32,51 @@ before_script:
 deps:
   stage: .pre
   script:
+    - export DSP=$(pwd)/deepskyproject   # chemin absolu, une seule fois
+    - mkdir -p ${DSP}
+
     # Try using wget to download the repository archive instead of git clone
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskyfits.git
-    - cd deepskyfits
-    - git submodule update --init --recursive
+    - cd deepskyfits && git submodule update --init --recursive
     - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
-    - cmake -DCMAKE_INSTALL_PREFIX=/usr/local -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     # Repeat make because sometime it fail when waiting for unfinish compilation of others src.
     - make -j 2
     - make install
+
     - cd ..
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskydisplay.git
     - cd deepskydisplay
     - git submodule update --init --recursive
     - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
-    - cmake -DCMAKE_INSTALL_PREFIX=/usr/local -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     - make install
+
     - cd ..
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskysys
     - cd deepskysys
     - git submodule update --init --recursive
     - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
-    - cmake -DCMAKE_INSTALL_PREFIX=/usr/local -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     - make install
+
     - cd ..
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskymath
     - cd deepskymath
     - git submodule update --init --recursive
     - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
-    - cmake -DCMAKE_INSTALL_PREFIX=/usr/local -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
+    - cmake -DCMAKE_INSTALL_PREFIX=${DSP} -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     - make install
+    
     - cd ..
   artifacts:
     expire_in: 24 hrs
     paths:
-      - /usr/local/lib/libDSTfits*
-      - /usr/local/include/DSTfits
-      - /usr/local/lib/libDSTdiplay*
-      - /usr/local/include/DSTdisplay
-      - /usr/local/lib/libDSTCore*
-      - /usr/local/include/DSTCore
-      - /usr/local/lib/libDSTmath*
-      - /usr/local/include/DSTmath
-      - /usr/local/lib/libwcs*
-      - /usr/local/lib/libMinuit*
-      - /usr/local/lib/libcfitsio*
-      - /usr/local/lib/libmatplot
-      - /usr/local/include/Minuit2
-      - /usr/local/include/wcslib
-      - /usr/local/include/Matplot
-      - /usr/local/include/cfitsio
+      - deepskyproject/
 
 
 
@@ -94,21 +86,24 @@ build:
     - job: deps
       artifacts: true
   script:
-  - mkdir -p build
-  - cd build
+  - export DeepSkyROOT=$(pwd)/deepskyproject   # absolu
+  - mkdir -p build && cd build
   - cmake -Wno-dev -DCMAKE_THREAD_LIBS_INIT="-lpthread" -DCMAKE_HAVE_THREADS_LIBRARY=1 -DCMAKE_USE_PTHREADS_INIT=1 ..
   - make -j "$(nproc --all)"
   artifacts:
     expire_in: 2 hrs
     paths:
-    - build
+    - build/
 
 test:
   stage: test
   needs:
     - job: build
       artifacts: true
+    - job: deps
+      artifacts: true
   script:
+  - export DeepSkyROOT=$(pwd)/deepskyproject
   - cd build
   - ctest --output-on-failure
 
