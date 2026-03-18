@@ -22,3 +22,6 @@ CTestCostData.txt
 gTest*.cmake
 LastTest*
 CTestCheckpoint*
+*.spv
+
+.DS_Store

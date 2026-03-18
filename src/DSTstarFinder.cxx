@@ -21,6 +21,34 @@ namespace mp = matplot;
 
 
 std::mutex flabelMutex;
+/// Serializes concurrent GPU folding calls — the Vulkan backend is not thread-safe.
+std::mutex fgpuMutex;
+
+// -----------------------------------------------------------------------
+//  File-static GPU helpers
+// -----------------------------------------------------------------------
+
+/// Convert a kernel<From> to kernel<To> element-wise (for GPU dispatch).
+template<typename To, typename From>
+static DST::Morphology::kernel<To>
+convertKernel(const DST::Morphology::kernel<From>& k)
+{
+    std::valarray<To> w(k.size());
+    for(size_t i = 0; i < k.size(); ++i)
+        w[i] = static_cast<To>(k.data()[i]);
+    return DST::Morphology::kernel<To>(w, k.sizes(), k.type());
+}
+
+/// Returns true when the image's pixel storage type is GPU-eligible.
+/// Uses GetEqBitPerPixel() which reflects the effective type after
+/// BSCALE/BZERO (via cfitsio fits_get_img_equivtype).
+/// double (DOUBLE_IMG=-64), int64 (LONGLONG_IMG=64), uint64 (ULONGLONG_IMG=80)
+/// are NOT GPU-eligible; all others (int8/16/32 + float) are.
+static bool isGPUEligible(const std::shared_ptr<DSL::FITScube>& img)
+{
+    int bpp = img->GetEqBitPerPixel();
+    return bpp != DOUBLE_IMG && bpp != LONGLONG_IMG && bpp != ULONGLONG_IMG;
+}
 
 namespace DST
 {
@@ -329,6 +357,7 @@ namespace DST
                                     fBS(Morphology::kernel<double>::one({3,3})),
                                     fBE(Morphology::kernel<double>::one({9,9})),
                                     fBM(Morphology::kernel<double>::one({13,13})),
+                                    fbackend_(DST::GPU::Backend::create()),
                                     foutURL(""),
                                     is3D(false)
         {
@@ -640,42 +669,52 @@ namespace DST
                 throw FITSexception(BAD_DIMEN,"DST","starFinder::_findStarsMorpho","Input FITScube must be 2D.["+std::to_string(__LINE__)+"]");
 
             // Apply morphological opening to enhance star-like features
-            // Compute iK and iN in parallel
-            std::future<std::shared_ptr<FITScube>> futureIK = std::async(std::launch::async, [&img, this]()
-                {
-                    size_t nThreads = std::thread::hardware_concurrency();
-                    if(nThreads > 2)
-                        nThreads = (nThreads - 2)/2;
-                    
-                    if(nThreads == 0)
-                        nThreads = 1;
+            const bool gpuOk = fbackend_->available() && isGPUEligible(img);
 
+            std::shared_ptr<FITScube> iK, iN, iS;
 
-                    std::shared_ptr<FITScube> iK = Morphology::folding<double>(img, fBS,nThreads);
-                    iK->MaskPixels(img->GetMask());
-                    return iK;
-                });
+            if(gpuOk)
+            {
+                // GPU path: the Vulkan backend is NOT thread-safe. When findStars() processes
+                // a 3D cube with multiple concurrent threads, all GPU calls must be serialized.
+                std::lock_guard<std::mutex> gpuLock(fgpuMutex);
+                auto kBS_f = convertKernel<float>(fBS);
+                iK = Morphology::GPU::folding<float>(img, kBS_f, *fbackend_);
+                iK->MaskPixels(img->GetMask());
 
-            std::future<std::shared_ptr<FITScube>> futureIN = std::async(std::launch::async, [&img, this]()
-                {
-                    size_t nThreads = std::thread::hardware_concurrency();
-                    if(nThreads > 2)
-                        nThreads = (nThreads - 2)/2;
-                    
-                    if(nThreads == 0)
-                        nThreads = 1;
+                auto kBM_f = convertKernel<float>(fBM);
+                iN = Morphology::GPU::folding<float>(img, kBM_f, *fbackend_);
+                iN->MaskPixels(img->GetMask());
 
-                    std::shared_ptr<FITScube> iN = Morphology::folding<double>(img, fBM,nThreads);
-                    iN->MaskPixels(img->GetMask());
-                    return iN;
-                });
+                auto kBE_f = convertKernel<float>(fBE);
+                iS = Morphology::GPU::folding<float>(iN, kBE_f, *fbackend_);
+                iS->MaskPixels(img->GetMask());
+            }
+            else
+            {
+                // CPU path: run iK and iN in parallel, then iS.
+                size_t nT = std::thread::hardware_concurrency();
+                if(nT > 2) nT = (nT - 2)/2;
+                if(nT == 0) nT = 1;
 
-            // Wait for both to complete
-            std::shared_ptr<FITScube> iK = futureIK.get();
-            std::shared_ptr<FITScube> iN = futureIN.get();
+                auto futureIK = std::async(std::launch::async, [&img, this, nT]()
+                    {
+                        auto r = Morphology::folding<double>(img, fBS, nT);
+                        r->MaskPixels(img->GetMask());
+                        return r;
+                    });
+                auto futureIN = std::async(std::launch::async, [&img, this, nT]()
+                    {
+                        auto r = Morphology::folding<double>(img, fBM, nT);
+                        r->MaskPixels(img->GetMask());
+                        return r;
+                    });
 
-            std::shared_ptr<FITScube> iS = Morphology::folding<double>(iN, fBE, maxThreads);
-            iS->MaskPixels(img->GetMask());
+                iK = futureIK.get();
+                iN = futureIN.get();
+                iS = Morphology::folding<double>(iN, fBE, maxThreads);
+                iS->MaskPixels(img->GetMask());
+            }
 
             if(foutURL != "")
             {
@@ -718,7 +757,7 @@ namespace DST
             // If no valid pixels updated lowestValue, avoid subtracting max()
             if(lowestValue == std::numeric_limits<double>::max())
                 lowestValue = 0.0;
-            *(iK.get()) -=  lowestValue; 
+            *(iK.get()) -=  lowestValue;
 
 
             //for(size_t i=0; i<iK->Nelements(); ++i)
@@ -736,9 +775,18 @@ namespace DST
             iS.reset();
             iN.reset();
 
-            double threshold = iK->Getpercentil(fthresholdValue);
+            // _watershedFlooding uses GetData<double>() internally.
+            // If iK is a float image (GPU path), promote to double before calling it.
+            if(iK->GetEqBitPerPixel() != DOUBLE_IMG)
+            {
+                auto iK_d = std::make_shared<FITSimg<double>>(std::vector<size_t>{iK->Size(1), iK->Size(2)});
+                for(size_t i = 0; i < iK->Nelements(); ++i)
+                    iK_d->SetPixelValue(iK->DoubleValueAtPixel(i), i);
+                iK_d->MaskPixels(iK->GetMask());
+                iK = iK_d;
+            }
 
-            // Search stars using watershedalgorithm on the significance map
+            double threshold = iK->Getpercentil(fthresholdValue);
             _watershedFlooding(iK, threshold, fquantumStepQueue, iLayer);
             iK.reset();
  
@@ -752,41 +800,36 @@ namespace DST
             if(maxThreads == 0)
                 maxThreads = 1;
 
-            // The first stepconsists in smoothing the image to reduses the noise level applying a mean filter on the image using the BS kernel.
-            std::future<std::shared_ptr<FITScube>> futuresmoothedImage = std::async(std::launch::async, [&img, this]()
-                {
-                    size_t nThreads = std::thread::hardware_concurrency();
-                    if(nThreads > 3)
-                        nThreads = (nThreads - 3)/3;
-                    
-                    if(nThreads == 0)
-                        nThreads = 1;
+            // The first step consists in smoothing the image to reduce the noise level.
+            // NOTE: MEAN and MEDIAN are fold operations; the GPU FOLD shader is not reliable.
+            // These always use the CPU parallel path.
+            fBS.setType(DST::Morphology::ktype::MEAN);
+            fBE.setType(DST::Morphology::ktype::MEDIAN);
 
-                    fBS.setType(DST::Morphology::ktype::MEAN);
-                    std::shared_ptr<FITScube> smoothedImage = Morphology::folding<double>(img, fBS, nThreads);
-                    smoothedImage->MaskPixels(img->GetMask());
-                    return smoothedImage;
-                });
-                        
-            std::future<std::shared_ptr<FITScube>> futurebkgMap = std::async(std::launch::async, [&img, this]()
-                {
-                    size_t nThreads = std::thread::hardware_concurrency();
-                    if(nThreads > 3)
-                        nThreads = (nThreads - 3)/3;
-                    
-                    if(nThreads == 0)
-                        nThreads = 1;
+            std::shared_ptr<FITScube> smoothedImage, bkgMap;
 
-                    fBE.setType(DST::Morphology::ktype::MEDIAN);
+            {
+                // CPU path: run both in parallel.
+                size_t nT = std::thread::hardware_concurrency();
+                if(nT > 3) nT = (nT - 3)/3;
+                if(nT == 0) nT = 1;
 
-                    std::shared_ptr<FITScube> bkgMap = Morphology::folding<double>(img, fBE, nThreads);
-                    bkgMap->MaskPixels(img->GetMask());
-                    return bkgMap;
-                });
+                auto futureSI = std::async(std::launch::async, [&img, this, nT]()
+                    {
+                        auto r = Morphology::folding<double>(img, fBS, nT);
+                        r->MaskPixels(img->GetMask());
+                        return r;
+                    });
+                auto futureBK = std::async(std::launch::async, [&img, this, nT]()
+                    {
+                        auto r = Morphology::folding<double>(img, fBE, nT);
+                        r->MaskPixels(img->GetMask());
+                        return r;
+                    });
 
-            // Wait for both to complete
-            std::shared_ptr<FITScube> smoothedImage = futuresmoothedImage.get();
-            std::shared_ptr<FITScube> bkgMap        = futurebkgMap.get();
+                smoothedImage = futureSI.get();
+                bkgMap        = futureBK.get();
+            }
 
             // Subtract background
             *(smoothedImage.get()) -= *(bkgMap.get());
@@ -811,59 +854,41 @@ namespace DST
 
 
             // The first step consists in estimating the background and noise level of the image.
-            std::future<std::shared_ptr<FITScube>> futureErrMap = std::async(std::launch::async, [&img, this]()
-                {
-                    size_t nThreads = std::thread::hardware_concurrency();
-                    if(nThreads > 3)
-                        nThreads = (nThreads - 3)/3;
-                    
-                    if(nThreads == 0)
-                        nThreads = 1;
+            // NOTE: RMSE, MEDIAN and SUM are fold operations; the GPU FOLD shader is not reliable.
+            // These always use the CPU parallel path.
+            std::shared_ptr<FITScube> errMap, bkgMap, snrMap;
 
-                    std::shared_ptr<FITScube> errMap = Morphology::folding<double>(img, fBS, nThreads);
-                    errMap->MaskPixels(img->GetMask());
+            {
+                // CPU path: run all three in parallel.
+                size_t nT = std::thread::hardware_concurrency();
+                if(nT > 3) nT = (nT - 3)/3;
+                if(nT == 0) nT = 1;
 
-                    return errMap;
-                });
+                auto futureErr = std::async(std::launch::async, [&img, this, nT]()
+                    {
+                        auto r = Morphology::folding<double>(img, fBS, nT);
+                        r->MaskPixels(img->GetMask());
+                        return r;
+                    });
+                auto futureBkg = std::async(std::launch::async, [&img, this, nT]()
+                    {
+                        auto r = Morphology::folding<double>(img, fBE, nT);
+                        r->MaskPixels(img->GetMask());
+                        return r;
+                    });
+                auto futureSNR = std::async(std::launch::async, [&img]()
+                    {
+                        Morphology::kernel<double> k = DST::Morphology::kernel<double>::one({1,1});
+                        k.setType(DST::Morphology::ktype::SUM);
+                        auto r = Morphology::folding<double>(img, k);
+                        r->MaskPixels(img->GetMask());
+                        return r;
+                    });
 
-            
-            std::future<std::shared_ptr<FITScube>> futurebkgMap = std::async(std::launch::async, [&img, this]()
-                {
-                    size_t nThreads = std::thread::hardware_concurrency();
-                    if(nThreads > 3)
-                        nThreads = (nThreads - 3)/3;
-                    
-                    if(nThreads == 0)
-                        nThreads = 1;
-
-                    std::shared_ptr<FITScube> bkgMap = Morphology::folding<double>(img, fBE, nThreads);
-                    bkgMap->MaskPixels(img->GetMask());
-                    return bkgMap;
-                });
-
-            // The second step consists in searching for pixels with SNR above a given threshold.
-
-            std::future<std::shared_ptr<FITScube>> futuresnrMap = std::async(std::launch::async, [&img]()
-                {
-                    size_t nThreads = std::thread::hardware_concurrency();
-                    if(nThreads > 3)
-                        nThreads = (nThreads - 3)/3;
-                    
-                    if(nThreads == 0)
-                        nThreads = 1;
-
-                    Morphology::kernel<double> snrKernel = DST::Morphology::kernel<double>::one({1,1});
-                    snrKernel.setType(DST::Morphology::ktype::SUM);
-
-                    std::shared_ptr<FITScube> snrMap = Morphology::folding<double>(img, snrKernel);
-                    snrMap->MaskPixels(img->GetMask());
-                    return snrMap;
-                });
-
-            // Wait for both to complete
-            std::shared_ptr<FITScube> errMap = futureErrMap.get();
-            std::shared_ptr<FITScube> bkgMap = futurebkgMap.get();
-            std::shared_ptr<FITScube> snrMap = futuresnrMap.get();
+                errMap = futureErr.get();
+                bkgMap = futureBkg.get();
+                snrMap = futureSNR.get();
+            }
 
             // Compute Li & Ma SNR map
             //*(snrMap.get()) -= *(bkgMap.get());
@@ -1276,6 +1301,10 @@ namespace DST
         {
             if(fsky == nullptr)
                 throw FITSexception(BAD_DIMEN,"DST","starFinder::show","Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
+
+            // Ligne MANQUANTE :
+            if(flabel == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST","starFinder::plot","Label image is null.["+std::to_string(__LINE__)+"]");
             
             if(fsky->GetDimension() == 3 && iL >= fsky->Size(3))
                 throw std::out_of_range("DST::starFinder::show: Layer index out of range.["+std::to_string(__LINE__)+"]");
@@ -1347,12 +1376,14 @@ namespace DST
                 maxY.push_back(maxPos.Y());
             }
             
-            ax->scatter(starX, starY)
+            if(!starX.empty())
+                ax->scatter(starX, starY)
                     ->marker_style(mp::line_spec::marker_style::cross)
                     .marker_size(8)
                     .color("red");
 
-            ax->scatter(maxX, maxY)
+            if(!maxX.empty())
+                ax->scatter(maxX, maxY)
                     ->marker_style(mp::line_spec::marker_style::plus_sign)
                     .marker_size(8)
                     .color("yellow");

@@ -1,0 +1,508 @@
+// morpho.comp
+//
+// Vulkan compute shader for morphological operations.
+// GLSL translation of DSTmorph_ops.h — same algorithm as the CPU and CUDA/HIP paths.
+//
+// Pixel data SSBOs store raw bytes packed as uint32 words (host byte order).
+// Output buffer must be zero-initialised before dispatch.
+// Sub-32-bit pixel writes use atomicOr into the packed word.
+//
+// Push constants encode: operation type, pixel type, kernel/image geometry.
+//
+// ktype enum values (matching DSTmorpho.h):
+//   MIN=0 MAX=1 MEAN=2 MEDIAN=3 SUM=4 RMS=5 RMSE=6
+//   DILATE=7 ERODE=8 CORRELATE=13 nCORRELATE=14
+//
+// PixelType enum values (matching Backend.h):
+//   UInt8=0 Int8=1 UInt16=2 Int16=3 UInt32=4 Int32=5 Float32=6
+//
+// Licensed under CC BY-NC 4.0
+
+#version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+
+layout(local_size_x = 256) in;
+
+// ============================================================
+//  Push constants
+// ============================================================
+layout(push_constant) uniform PC {
+    uint nPixels;      // total image pixels
+    uint kDim;         // kernel dimensionality
+    uint kSize;        // total kernel elements
+    uint imgDim;       // image dimensionality
+    int  op;           // ktype enum value
+    int  pixelType;    // PixelType enum value
+    int  normalize;    // 1 = normalize for CORRELATE
+    int  hasMask;      // 1 = mask buffer is valid
+} pc;
+
+// ============================================================
+//  Shader storage buffers
+//  All pixel data buffers are raw bytes packed as uint32.
+//  kSizes, imgSizes: uint; kCenter: int (signed offsets).
+// ============================================================
+layout(std430, set = 0, binding = 0) readonly  buffer InBuf     { uint data[]; } inBuf;
+layout(std430, set = 0, binding = 1) readonly  buffer MaskBuf   { uint data[]; } maskBuf;
+layout(std430, set = 0, binding = 2)           buffer OutBuf    { uint data[]; } outBuf;
+layout(std430, set = 0, binding = 3) readonly  buffer KwBuf     { float kw[];  } kwBuf;
+layout(std430, set = 0, binding = 4) readonly  buffer KsBuf     { uint ks[];   } ksBuf;  // kSizes[kDim]
+layout(std430, set = 0, binding = 5) readonly  buffer KcBuf     { int  kc[];   } kcBuf;  // kCenter[kDim]
+layout(std430, set = 0, binding = 6) readonly  buffer IsBuf     { uint is_[];  } isBuf;  // imgSizes[imgDim]
+
+// ============================================================
+//  Constants matching DSTmorph_ops.h
+// ============================================================
+const uint MAX_KDIM        = 8u;
+const uint MAX_KERNEL_SIZE = 512u;
+
+// ktype values
+const int OP_MIN       = 0;
+const int OP_MAX       = 1;
+const int OP_MEAN      = 2;
+const int OP_MEDIAN    = 3;
+const int OP_SUM       = 4;
+const int OP_RMS       = 5;
+const int OP_RMSE      = 6;
+const int OP_DILATE    = 7;
+const int OP_ERODE     = 8;
+const int OP_CORRELATE = 13;
+const int OP_nCORRELATE= 14;
+
+// PixelType values
+const int PT_UINT8  = 0;
+const int PT_INT8   = 1;
+const int PT_UINT16 = 2;
+const int PT_INT16  = 3;
+const int PT_UINT32 = 4;
+const int PT_INT32  = 5;
+const int PT_FLOAT32= 6;
+
+// ============================================================
+//  Pixel read/write helpers
+//  Input data is packed as uint32 (little-endian byte layout).
+//  readPixel returns the pixel value as float.
+//  writePixel stores the float result into the output buffer.
+//  For sub-32-bit types, atomicOr is used (output must be pre-zeroed).
+// ============================================================
+
+float readPixelIn(uint idx)
+{
+    int pt = pc.pixelType;
+    if(pt == PT_UINT8)
+    {
+        uint shift = (idx % 4u) * 8u;
+        return float((inBuf.data[idx / 4u] >> shift) & 0xFFu);
+    }
+    else if(pt == PT_INT8)
+    {
+        uint shift = (idx % 4u) * 8u;
+        int raw = int((inBuf.data[idx / 4u] >> shift) & 0xFFu);
+        if(raw >= 128) raw -= 256;
+        return float(raw);
+    }
+    else if(pt == PT_UINT16)
+    {
+        uint shift = (idx % 2u) * 16u;
+        return float((inBuf.data[idx / 2u] >> shift) & 0xFFFFu);
+    }
+    else if(pt == PT_INT16)
+    {
+        uint shift = (idx % 2u) * 16u;
+        int raw = int((inBuf.data[idx / 2u] >> shift) & 0xFFFFu);
+        if(raw >= 32768) raw -= 65536;
+        return float(raw);
+    }
+    else if(pt == PT_UINT32)
+    {
+        return float(inBuf.data[idx]);
+    }
+    else if(pt == PT_INT32)
+    {
+        return float(int(inBuf.data[idx]));
+    }
+    else // PT_FLOAT32
+    {
+        return uintBitsToFloat(inBuf.data[idx]);
+    }
+}
+
+// Read the same packed input but for a neighbour index (separate buffer index)
+float readPixelInAt(uint idx) { return readPixelIn(idx); }
+
+bool readMask(uint idx)
+{
+    if(pc.hasMask == 0) return false;
+    // Mask stored as 1 byte per element, packed 4 per uint32
+    uint shift = (idx % 4u) * 8u;
+    return ((maskBuf.data[idx / 4u] >> shift) & 0xFFu) != 0u;
+}
+
+void writePixel(uint idx, float val)
+{
+    int pt = pc.pixelType;
+    if(pt == PT_UINT8)
+    {
+        uint clamped = uint(clamp(val, 0.0, 255.0)) & 0xFFu;
+        uint shift   = (idx % 4u) * 8u;
+        atomicOr(outBuf.data[idx / 4u], clamped << shift);
+    }
+    else if(pt == PT_INT8)
+    {
+        int  ival    = int(clamp(val, -128.0, 127.0));
+        uint clamped = uint(ival) & 0xFFu;
+        uint shift   = (idx % 4u) * 8u;
+        atomicOr(outBuf.data[idx / 4u], clamped << shift);
+    }
+    else if(pt == PT_UINT16)
+    {
+        uint clamped = uint(clamp(val, 0.0, 65535.0)) & 0xFFFFu;
+        uint shift   = (idx % 2u) * 16u;
+        atomicOr(outBuf.data[idx / 2u], clamped << shift);
+    }
+    else if(pt == PT_INT16)
+    {
+        int  ival    = int(clamp(val, -32768.0, 32767.0));
+        uint clamped = uint(ival) & 0xFFFFu;
+        uint shift   = (idx % 2u) * 16u;
+        atomicOr(outBuf.data[idx / 2u], clamped << shift);
+    }
+    else if(pt == PT_UINT32)
+    {
+        outBuf.data[idx] = uint(max(val, 0.0));
+    }
+    else if(pt == PT_INT32)
+    {
+        outBuf.data[idx] = uint(int(val));
+    }
+    else // PT_FLOAT32
+    {
+        outBuf.data[idx] = floatBitsToUint(val);
+    }
+}
+
+// ============================================================
+//  Index helpers — GLSL translation of DSTmorph_ops.h
+// ============================================================
+
+// decode_pixel_coords: flat index → per-axis coords
+// Matches FITScube::PixelCoordinates(k)
+void decodePixelCoords(uint k, out uint coords[MAX_KDIM])
+{
+    for(uint i = 0u; i < pc.imgDim; ++i)
+    {
+        uint stride = 1u;
+        for(uint l = 0u; l < i; ++l) stride *= isBuf.is_[l];
+        coords[i] = (k / stride) % isBuf.is_[i];
+    }
+}
+
+// compute_flat_index: per-axis coords → flat index
+uint computeFlatIndex(in uint coords[MAX_KDIM])
+{
+    uint index = 0u;
+    for(uint naxe = 0u; naxe < pc.imgDim; ++naxe)
+    {
+        uint arg = coords[naxe];
+        for(uint iX = 0u; iX < naxe; ++iX) arg *= isBuf.is_[iX];
+        index += arg;
+    }
+    return index;
+}
+
+// decode_kernel_idx — ascending order (dilation, correlate, fold)
+void decodeKernelIdxAsc(uint kj, out uint kIdx[MAX_KDIM])
+{
+    uint rem = kj;
+    for(uint a = 0u; a < pc.kDim; ++a)
+    {
+        kIdx[a] = rem % ksBuf.ks[a];
+        rem /= ksBuf.ks[a];
+    }
+}
+
+// decode_kernel_idx — descending order (erosion, matches DSTmorpho.h original)
+void decodeKernelIdxDesc(uint kj, out uint kIdx[MAX_KDIM])
+{
+    uint rem = kj;
+    // Fill in reverse axis order so that axis kDim-1 is fastest-varying
+    for(int a = int(pc.kDim) - 1; a >= 0; --a)
+    {
+        kIdx[uint(a)] = rem % ksBuf.ks[uint(a)];
+        rem /= ksBuf.ks[uint(a)];
+    }
+}
+
+// neighbor_index: pixel coords + kernel offset → target flat index
+// Kernel spans the LAST kDim image axes (axes imgDim-kDim .. imgDim-1)
+bool neighborIndex(in uint pxCoords[MAX_KDIM],
+                   in uint kIdx[MAX_KDIM],
+                   out uint tgtIndex)
+{
+    uint tgtCoords[MAX_KDIM];
+    uint kOffset = pc.imgDim - pc.kDim;   // first image axis covered by kernel
+
+    for(uint d = 0u; d < pc.imgDim; ++d)
+    {
+        if(d < kOffset)
+        {
+            tgtCoords[d] = pxCoords[d];
+        }
+        else
+        {
+            uint kAxis = d - kOffset;
+            int  coord = int(pxCoords[d]) + int(kIdx[kAxis]) - kcBuf.kc[kAxis];
+            if(coord < 0 || coord >= int(isBuf.is_[d])) return false;
+            tgtCoords[d] = uint(coord);
+        }
+    }
+
+    tgtIndex = computeFlatIndex(tgtCoords);
+    return true;
+}
+
+// ============================================================
+//  Insertion sort for MEDIAN (GLSL translation of sort_small)
+// ============================================================
+void sortSmall(inout float arr[MAX_KERNEL_SIZE], uint n)
+{
+    for(uint i = 1u; i < n; ++i)
+    {
+        float key = arr[i];
+        int j = int(i) - 1;
+        while(j >= 0 && arr[j] > key)
+        {
+            arr[j + 1] = arr[j];
+            --j;
+        }
+        arr[j + 1] = key;
+    }
+}
+
+// ============================================================
+//  Per-pixel operation functions
+//  All return float; input pixels are read via readPixelInAt().
+// ============================================================
+
+// --- DILATION (ascending kernel decode, running max) ---
+float pixelDilation(uint pixelIdx)
+{
+    uint pxCoords[MAX_KDIM];
+    decodePixelCoords(pixelIdx, pxCoords);
+
+    float result = -3.40282347e+38;  // float lowest
+    bool  found  = false;
+
+    for(uint kj = 0u; kj < pc.kSize; ++kj)
+    {
+        if(!(kwBuf.kw[kj] > 0.0)) continue;
+
+        uint kIdx[MAX_KDIM];
+        decodeKernelIdxAsc(kj, kIdx);
+
+        uint tgtIndex;
+        if(!neighborIndex(pxCoords, kIdx, tgtIndex)) continue;
+        if(readMask(tgtIndex)) continue;
+
+        float v = readPixelInAt(tgtIndex);
+        if(!found || v > result) { result = v; found = true; }
+    }
+
+    return found ? result : 0.0;
+}
+
+// --- EROSION (descending kernel decode, running min) ---
+float pixelErosion(uint pixelIdx)
+{
+    uint pxCoords[MAX_KDIM];
+    decodePixelCoords(pixelIdx, pxCoords);
+
+    float result = 3.40282347e+38;  // float max
+    bool  found  = false;
+
+    for(uint kj = 0u; kj < pc.kSize; ++kj)
+    {
+        if(!(kwBuf.kw[kj] > 0.0)) continue;
+
+        uint kIdx[MAX_KDIM];
+        decodeKernelIdxDesc(kj, kIdx);
+
+        uint tgtIndex;
+        if(!neighborIndex(pxCoords, kIdx, tgtIndex)) continue;
+        if(readMask(tgtIndex)) continue;
+
+        float v = readPixelInAt(tgtIndex);
+        if(!found || v < result) { result = v; found = true; }
+    }
+
+    return found ? result : 0.0;
+}
+
+// --- CORRELATE (ascending decode, weighted sum, optional normalisation) ---
+float pixelCorrelate(uint pixelIdx, bool norm)
+{
+    uint pxCoords[MAX_KDIM];
+    decodePixelCoords(pixelIdx, pxCoords);
+
+    float vsum   = 0.0;
+    float wsum   = 0.0;
+    bool  found  = false;
+
+    for(uint kj = 0u; kj < pc.kSize; ++kj)
+    {
+        float w = kwBuf.kw[kj];
+
+        uint kIdx[MAX_KDIM];
+        decodeKernelIdxAsc(kj, kIdx);
+
+        uint tgtIndex;
+        if(!neighborIndex(pxCoords, kIdx, tgtIndex))
+        {
+            // OOB → zero-padding: 0 * w = 0, contributes nothing
+            continue;
+        }
+
+        float ttmp;
+        if(readMask(tgtIndex))
+            ttmp = (0.0 / 0.0) * w;  // NaN — filtered below
+        else
+            ttmp = readPixelInAt(tgtIndex) * w;
+
+        // NaN check (ttmp != ttmp for NaN)
+        if(ttmp == ttmp)
+        {
+            vsum  += ttmp;
+            wsum  += abs(w);
+            found  = true;
+        }
+    }
+
+    if(!found) return 0.0;
+    return norm ? (wsum > 0.0 ? vsum / wsum : 0.0) : vsum;
+}
+
+// --- FOLD (MIN/MAX/MEAN/MEDIAN/SUM/RMS/RMSE) ---
+float pixelFold(uint pixelIdx)
+{
+    uint pxCoords[MAX_KDIM];
+    decodePixelCoords(pixelIdx, pxCoords);
+
+    float acc1     = 0.0;  // sum (for MEAN, SUM, RMS, RMSE) / running min or max
+    float acc2     = 0.0;  // sumsq (for RMS, RMSE)
+    float mean_val = 0.0;  // for RMSE intermediate
+    uint  count    = 0u;
+    bool  found    = false;
+
+    // MEDIAN: collect values into a local array
+    float median_buf[MAX_KERNEL_SIZE];
+
+    for(uint kj = 0u; kj < pc.kSize; ++kj)
+    {
+        float w = kwBuf.kw[kj];
+
+        uint kIdx[MAX_KDIM];
+        decodeKernelIdxAsc(kj, kIdx);
+
+        uint tgtIndex;
+        float ttmp;
+
+        if(!neighborIndex(pxCoords, kIdx, tgtIndex))
+        {
+            // OOB → zero-padding: contribute 0 * w
+            ttmp = 0.0 * w;
+        }
+        else if(readMask(tgtIndex))
+        {
+            ttmp = (0.0 / 0.0) * w;  // NaN
+        }
+        else
+        {
+            ttmp = readPixelInAt(tgtIndex) * w;
+        }
+
+        // NaN filter
+        if(ttmp != ttmp) continue;
+
+        if(pc.op == OP_MIN)
+        {
+            if(!found || ttmp < acc1) acc1 = ttmp;
+            found = true;
+        }
+        else if(pc.op == OP_MAX)
+        {
+            if(!found || ttmp > acc1) acc1 = ttmp;
+            found = true;
+        }
+        else if(pc.op == OP_MEAN || pc.op == OP_SUM)
+        {
+            acc1 += ttmp;
+            count++;
+            found = true;
+        }
+        else if(pc.op == OP_RMS)
+        {
+            acc2 += ttmp * ttmp;
+            count++;
+            found = true;
+        }
+        else if(pc.op == OP_RMSE)
+        {
+            acc1  += ttmp;
+            acc2  += ttmp * ttmp;
+            count++;
+            found = true;
+        }
+        else if(pc.op == OP_MEDIAN)
+        {
+            if(count < MAX_KERNEL_SIZE)
+                median_buf[count++] = ttmp;
+            found = true;
+        }
+    }
+
+    if(!found) return 0.0;
+
+    if(pc.op == OP_MIN || pc.op == OP_MAX) return acc1;
+    if(pc.op == OP_SUM)  return acc1;
+    if(pc.op == OP_MEAN) return count > 0u ? acc1 / float(count) : 0.0;
+    if(pc.op == OP_RMS)  return count > 0u ? sqrt(acc2 / float(count)) : 0.0;
+    if(pc.op == OP_RMSE)
+    {
+        if(count == 0u) return 0.0;
+        float m  = acc1 / float(count);
+        return sqrt(acc2 - float(count) * m * m);
+    }
+    if(pc.op == OP_MEDIAN)
+    {
+        if(count == 0u) return 0.0;
+        sortSmall(median_buf, count);
+        uint mid = count / 2u;
+        return (count % 2u == 0u)
+            ? (median_buf[mid - 1u] + median_buf[mid]) * 0.5
+            :  median_buf[mid];
+    }
+
+    return 0.0;
+}
+
+// ============================================================
+//  Main dispatch
+// ============================================================
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if(i >= pc.nPixels) return;
+
+    float result = 0.0;
+
+    if(pc.op == OP_DILATE)
+        result = pixelDilation(i);
+    else if(pc.op == OP_ERODE)
+        result = pixelErosion(i);
+    else if(pc.op == OP_CORRELATE || pc.op == OP_nCORRELATE)
+        result = pixelCorrelate(i, (pc.op == OP_nCORRELATE || pc.normalize != 0));
+    else
+        result = pixelFold(i);
+
+    writePixel(i, result);
+}

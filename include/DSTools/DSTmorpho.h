@@ -26,6 +26,7 @@
 #include <DSTfits/DSF_version.h>
 
 #include "DST_version.h"
+#include "DSTmorph_ops.h"
 
 using namespace DSL;
 
@@ -58,7 +59,7 @@ namespace DST
         class kernel
         {
 
-#pragma region • members
+#pragma region - members
             private:
                 std::valarray<T> fkernel;
                 std::vector<size_t> fsize;
@@ -80,7 +81,7 @@ namespace DST
             }
 
             public:
-#pragma region • constructors / destructor
+#pragma region - constructors / destructor
 
                 /**
                  * @brief Construct a new kernel object     
@@ -127,11 +128,11 @@ namespace DST
                 ~kernel(){fsize.clear();}
 #pragma endregion
 
-#pragma region • accessors
+#pragma region - accessors
                 const ktype& type() const { return ftype;}
 #pragma endregion
 
-#pragma region • modifiers
+#pragma region - modifiers
                 void setType(const ktype& t) { ftype = t; }
 
                 inline void setWeightAt(const size_t& i, const T& v)
@@ -144,7 +145,7 @@ namespace DST
 #pragma endregion
 
 
-#pragma region • methods
+#pragma region - methods
                 /**
                  * @brief Get the kernel data array
                  */
@@ -169,7 +170,7 @@ namespace DST
                 inline size_t size() const { return fkernel.size(); }
 #pragma endregion
 
-#pragma region • type utilities (promotion)
+#pragma region - type utilities (promotion)
             private:
                 // Determine if numeric range of A includes B (arithmetic types only)
                 template <typename A, typename B, bool Aok = std::is_arithmetic_v<A>, bool Bok = std::is_arithmetic_v<B>>
@@ -194,7 +195,7 @@ namespace DST
                 using promote_with = std::conditional_t<range_superset_impl<T,Other>::value, T, Other>;
 #pragma endregion
 
-#pragma region • operators
+#pragma region - operators
 
                 /**
                  * @brief assignement operator
@@ -365,7 +366,7 @@ namespace DST
                     return *this;
                 }
 #pragma endregion
-#pragma region • predifined kernel
+#pragma region - predifined kernel
 
                 /**
                  * @brief Create kernel of 1
@@ -488,310 +489,50 @@ namespace DST
             std::vector<ptrdiff_t> kCenter(kDim);
             for(size_t a = 0; a < kDim; ++a)
                 kCenter[a] = static_cast<ptrdiff_t>(kSizes[a] / 2);
-        
+
+            // Image sizes as plain array for DSTmorph_ops helpers
+            std::vector<size_t> imgSizesVec(imgDim);
+            for(size_t d = 0; d < imgDim; ++d)
+                imgSizesVec[d] = in->Size(d + 1);
+
+            // Raw pointers for DSTmorph_ops functions
+            const K*         in_raw  = in->template raw_data<K>();
+            const bool*      msk_raw = in->raw_mask();
+            const U*         kw_raw  = (tmpKernel.size() > 0) ? &tmpKernel[0] : nullptr;
+            const size_t*    ks_raw  = kSizes.data();
+            const ptrdiff_t* kc_raw  = kCenter.data();
+            const size_t*    is_raw  = imgSizesVec.data();
+            const size_t     kSize   = k.size();
+
+            const ops::fold_op fop = static_cast<ops::fold_op>(k.type());
+
             if(nThreads <= 1)
             {
-                // Single-threaded implementation
-                for(size_t i = 0; i < in_data->size(); i++)
-                {
-                    // First step is to get slice of the image which correspond to the kernel position. When the kernel is near the border  of the image, only portion of the kernel is used and the slice of the image should be aligned with the kernel    center (i.e. tmp array should be null when outside image bounds)
-
-                    // Get pixel coordinates of the current central pixel (0-based)
-                    const std::vector<size_t> pxCoords = in->PixelCoordinates(i);
-
-                    // Temporary accumulator (promoted type)
-                    std::valarray<U> tmp(U(0), k.data().size());
-
-                    // Map kernel axes to image axes:
-                    // If kernel has fewer dims than image, align kernel to the last kDim axes of the image
-                    // image axis index for kernel axis 'ka' is: imgAxis = imgDim - kDim + ka
-                    // (this allows 2D kernel applied to last two axes of N-D image)
-                    for(size_t kj = 0; kj < k.data().size(); ++kj)
-                    {
-                        // decode linear kernel index into multi-index (row-major: axis 0 fastest)
-                        size_t rem = kj;
-                        std::vector<size_t> kIdx(kDim);
-                        for(size_t ka = 0; ka < kDim; ++ka)
-                        {
-                            kIdx[ka] = rem % kSizes[ka];
-                            rem /= kSizes[ka];
-                        }
-
-                        // compute corresponding image coordinates for this kernel element
-                        bool outside = false;
-                        std::vector<size_t> tgtCoords = pxCoords; // copy original coords for axes not touched by kernel
-
-                        for(size_t ka = 0; ka < kDim; ++ka)
-                        {
-                            const ptrdiff_t offset = static_cast<ptrdiff_t>(kIdx[ka]) - kCenter[ka];
-                            const size_t imgAxis = imgDim - kDim + ka; // map kernel axis to image axis
-
-                            // safe check (should not happen): if mapping yields invalid axis, mark outside
-                            if(imgAxis >= imgDim)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            // compute target coordinate (may be negative)
-                            ptrdiff_t tgt = static_cast<ptrdiff_t>(pxCoords[imgAxis]) + offset;
-                            if(tgt < 0)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            const size_t tgt_sz = in->Size(imgAxis+1); // Size is 1-based
-                            if(static_cast<size_t>(tgt) >= tgt_sz)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            tgtCoords[imgAxis] = static_cast<size_t>(tgt);
-                        }
-
-                        if(outside)
-                        {
-                            tmp[kj] = U(0);
-                            continue;
-                        }
-
-                        // get linear pixel index corresponding to tgtCoords
-                        size_t tgtIndex = in->PixelIndex(tgtCoords);
-
-                        // fetch value from input data and promote to U
-                        if(msk[tgtIndex])
-                            tmp[kj] = std::numeric_limits<U>::quiet_NaN();
-                        else
-                            tmp[kj] = static_cast<U>((*in_data)[tgtIndex]);
-                    }
-
-                    // perform folding operation
-                    std::valarray<U> ttmp = tmp*tmpKernel;
-                    switch(k.type())
-                    {
-                        case ktype::MIN:
-                            out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).min();
-                            break;
-                        
-                        case ktype::MAX:
-                            out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).max();
-                            break;
-                        
-                        case ktype::MEAN:
-                            out_data[i] = (((std::valarray<U>) ttmp[ttmp==ttmp]).size() > 0)?((std::valarray<U>) ttmp[ttmp==ttmp]).sum()/static_cast<U>(((std::valarray<U>) ttmp[ttmp==ttmp]).size()):U(0);
-                            break;
-                        
-                        case ktype::MEDIAN:
-                            {
-                                std::valarray<U> prod = ttmp[ttmp==ttmp];
-                                if(prod.size() == 0)
-                                    out_data[i] = U(0);
-                                else
-                                {
-                                    std::vector<U> vec(std::begin(prod), std::end(prod));
-                                    std::sort(vec.begin(), vec.end());
-                                    size_t n = vec.size();
-                                    
-                                    if(n % 2 == 0)
-                                        out_data[i] = (vec[n/2 - 1] + vec[n/2]) / U(2);
-                                    else
-                                        out_data[i] = vec[n/2];
-                                }
-                            }
-                            break;
-                        
-                        case ktype::RMS:
-                            {
-                                std::valarray<U> prod = ttmp[ttmp==ttmp];
-                                if(prod.size() == 0)
-                                    out_data[i] = U(0);
-                                else
-                                {
-                                    U sumsq = (prod*prod).sum();
-                                    out_data[i] = std::sqrt( sumsq / static_cast<U>(prod.size()) );
-                                }
-                            }
-                            break;
-
-                        case ktype::RMSE:
-                            {
-                                std::valarray<U> prod = ttmp[ttmp==ttmp];
-                                if(prod.size() == 0)
-                                    out_data[i] = U(0);
-                                else
-                                {
-                                    U meanP = prod.sum()/static_cast<U>(prod.size());
-                                    U sumsq = (prod*prod-meanP*meanP).sum();
-                                    out_data[i] = std::sqrt( sumsq );
-                                }
-                            }
-                            break;
-
-                        case ktype::SUM:
-                        default:
-                            out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).sum();
-                            break;
-                    }
-                }
+                for(size_t i = 0; i < in_data->size(); ++i)
+                    out_data[i] = ops::pixel_fold<U,K>(
+                        in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, i, fop);
             }
             else
             {
-                // Multi-threaded implementation: partition output indices between threads.
-                const size_t N = in_data->size();
-                const size_t nT = std::min(nThreads, N); // don't spawn more threads than pixels
-
+                const size_t N  = in_data->size();
+                const size_t nT = std::min(nThreads, N);
                 std::vector<std::thread> workers;
                 workers.reserve(nT);
-
                 const size_t base = N / nT;
-                const size_t rem = N % nT;
-            
-                // Capture stable copies for threads:
-                const std::valarray<K>* in_data_ptr = in_data; // copy pointer by value
-                auto in_shared = in;                            // copy shared_ptr (keeps object alive)
-            
+                const size_t rem  = N % nT;
                 for(size_t t = 0; t < nT; ++t)
                 {
                     const size_t start = t * base + std::min(t, rem);
-                    const size_t len = base + (t < rem ? 1 : 0);
-                    const size_t end = start + len;
-                
-                    workers.emplace_back([start, end, &out_data, in_data_ptr, &k, &tmpKernel, &kSizes, kDim, imgDim, in_shared, &kCenter, & msk]()
-                     {
-                         for(size_t i = start; i < end; ++i)
-                         {
-                             const std::vector<size_t> pxCoords = in_shared->PixelCoordinates(i);
-
-                            std::valarray<U> tmp(U(0),k.data().size() );
-
-                            for(size_t kj = 0; kj < k.data().size(); ++kj)
-                            {
-                                size_t remk = kj;
-                                std::vector<size_t> kIdx(kDim);
-                                for(size_t ka = 0; ka < kDim; ++ka)
-                                {
-                                    kIdx[ka] = remk % kSizes[ka];
-                                    remk /= kSizes[ka];
-                                }
-
-                                bool outside = false;
-                                std::vector<size_t> tgtCoords = pxCoords;
-
-                                for(size_t ka = 0; ka < kDim; ++ka)
-                                {
-                                    const ptrdiff_t offset = static_cast<ptrdiff_t>(kIdx[ka]) - kCenter[ka];
-                                    const size_t imgAxis = imgDim - kDim + ka;
-
-                                    if(imgAxis >= imgDim)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    ptrdiff_t tgt = static_cast<ptrdiff_t>(pxCoords[imgAxis]) + offset;
-                                    if(tgt < 0)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    const size_t tgt_sz = in_shared->Size(imgAxis+1);
-                                    if(static_cast<size_t>(tgt) >= tgt_sz)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    tgtCoords[imgAxis] = static_cast<size_t>(tgt);
-                                }
-
-                                if(outside)
-                                {
-                                    tmp[kj] = U(0);
-                                    continue;
-                                }
-
-                                size_t tgtIndex = in_shared->PixelIndex(tgtCoords);
-                                if(msk[tgtIndex])
-                                    tmp[kj] = std::numeric_limits<U>::quiet_NaN();
-                                else
-                                    tmp[kj] = static_cast<U>((*in_data_ptr)[tgtIndex]);
-                            }
-
-                            std::valarray<U> ttmp = tmp*tmpKernel;
-
-                            switch(k.type())
-                            {
-                                case ktype::MIN:
-                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).min();
-                                    break;
-                                
-                                case ktype::MAX:
-                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).max();
-                                    break;
-                                
-                                case ktype::MEAN:
-                                    out_data[i] = (((std::valarray<U>) ttmp[ttmp==ttmp]).size() > 0)?((std::valarray<U>) ttmp[ttmp==ttmp]).sum()/       static_cast<U>(((std::valarray<U>) ttmp[ttmp==ttmp]).size()):U(0);
-                                    break;
-                                
-                                case ktype::MEDIAN:
-                                    {
-                                        std::valarray<U> prod = ttmp[ttmp==ttmp];
-                                        if(prod.size() == 0)
-                                            out_data[i] = U(0);
-                                        else
-                                        {
-                                            std::vector<U> vec(std::begin(prod), std::end(prod));
-                                            std::sort(vec.begin(), vec.end());
-                                            size_t n = vec.size();
-                                            
-                                            if(n % 2 == 0)
-                                                out_data[i] = (vec[n/2 - 1] + vec[n/2]) / U(2);
-                                            else
-                                                out_data[i] = vec[n/2];
-                                        }
-                                    }
-                                    break;
-                                
-                                case ktype::RMS:
-                                    {
-                                        std::valarray<U> prod = ttmp[ttmp==ttmp];
-                                        if(prod.size() == 0)
-                                            out_data[i] = U(0);
-                                        else
-                                        {
-                                            U sumsq = (prod*prod).sum();
-                                            out_data[i] = std::sqrt( sumsq / static_cast<U>(prod.size()) );
-                                        }
-                                    }
-                                    break;
-                                
-                                case ktype::RMSE:
-                                    {
-                                        std::valarray<U> prod = ttmp[ttmp==ttmp];
-                                        if(prod.size() == 0)
-                                            out_data[i] = U(0);
-                                        else
-                                        {
-                                            U meanP = prod.sum()/static_cast<U>(prod.size());
-                                            U sumsq = (prod*prod-meanP*meanP).sum();
-                                            out_data[i] = std::sqrt( sumsq );
-                                        }
-                                    }
-                                    break;
-                                
-                                case ktype::SUM:
-                                default:
-                                    out_data[i] = ((std::valarray<U>) ttmp[ttmp==ttmp]).sum();
-                                    break;
-                            }
-                        }
+                    const size_t end   = start + base + (t < rem ? 1 : 0);
+                    workers.emplace_back([start, end, &out_data,
+                                          in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, fop]()
+                    {
+                        for(size_t i = start; i < end; ++i)
+                            out_data[i] = ops::pixel_fold<U,K>(
+                                in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, i, fop);
                     });
                 }
-
-                for(auto &th : workers) th.join();
+                for(auto& th : workers) th.join();
             }
 
             std::vector<size_t> out_data_shape;
@@ -929,114 +670,45 @@ namespace DST
             for(size_t a = 0; a < kDim; ++a)
                 kCenter[a] = static_cast<ptrdiff_t>(kSizes[a] / 2);
 
-            auto absU = [](U v) -> U
-            {
-                if(v < U(0))
-                    return U(-v);
-                return v;
-            };
+            // Image sizes as plain array for DSTmorph_ops helpers
+            std::vector<size_t> imgSizesVec(imgDim);
+            for(size_t d = 0; d < imgDim; ++d)
+                imgSizesVec[d] = in->Size(d + 1);
 
-            auto processRange = [&](size_t start, size_t end)
-            {
-                for(size_t i = start; i < end; ++i)
-                {
-                    const std::vector<size_t> pxCoords = in->PixelCoordinates(i);
-                    U acc = U(0);
-                    U wsum = U(0);
-
-                    for(size_t kj = 0; kj < k.data().size(); ++kj)
-                    {
-                        size_t remk = kj;
-                        std::vector<size_t> kIdx(kDim);
-                        for(size_t ka = 0; ka < kDim; ++ka)
-                        {
-                            kIdx[ka] = remk % kSizes[ka];
-                            remk /= kSizes[ka];
-                        }
-
-                        bool outside = false;
-                        std::vector<size_t> tgtCoords = pxCoords;
-
-                        for(size_t ka = 0; ka < kDim; ++ka)
-                        {
-                            const ptrdiff_t offset = static_cast<ptrdiff_t>(kIdx[ka]) - kCenter[ka];
-                            const size_t imgAxis = imgDim - kDim + ka;
-
-                            if(imgAxis >= imgDim)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            ptrdiff_t tgt = static_cast<ptrdiff_t>(pxCoords[imgAxis]) + offset;
-                            if(tgt < 0)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            const size_t tgt_sz = in->Size(imgAxis+1);
-                            if(static_cast<size_t>(tgt) >= tgt_sz)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            tgtCoords[imgAxis] = static_cast<size_t>(tgt);
-                        }
-
-                        if(outside)
-                            continue;
-
-                        const size_t tgtIndex = in->PixelIndex(tgtCoords);
-                        if(msk[tgtIndex])
-                            continue;
-
-                        const U w = tmpKernel[kj];
-                        const U v = static_cast<U>((*in_data)[tgtIndex]);
-                        acc += v * w;
-
-                        if(normalize)
-                        {
-                            const U aw = absU(w);
-                            if(aw == aw) // ignore NaN weights
-                                wsum += aw;
-                        }
-                    }
-
-                    if(normalize)
-                    {
-                        if(wsum != U(0))
-                            acc /= wsum;
-                        else
-                            acc = U(0);
-                    }
-
-                    out_data[i] = acc;
-                }
-            };
+            // Raw pointers for DSTmorph_ops functions
+            const K*         in_raw  = in->template raw_data<K>();
+            const bool*      msk_raw = in->raw_mask();
+            const U*         kw_raw  = (tmpKernel.size() > 0) ? &tmpKernel[0] : nullptr;
+            const size_t*    ks_raw  = kSizes.data();
+            const ptrdiff_t* kc_raw  = kCenter.data();
+            const size_t*    is_raw  = imgSizesVec.data();
+            const size_t     kSize   = k.size();
 
             if(nThreads <= 1)
             {
-                processRange(0, in_data->size());
+                for(size_t i = 0; i < in_data->size(); ++i)
+                    out_data[i] = ops::pixel_correlate<U,K>(
+                        in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, i, normalize);
             }
             else
             {
-                const size_t N = in_data->size();
+                const size_t N  = in_data->size();
                 const size_t nT = std::min(nThreads, N);
-
                 std::vector<std::thread> workers;
                 workers.reserve(nT);
-
                 const size_t base = N / nT;
-                const size_t rem = N % nT;
-
+                const size_t rem  = N % nT;
                 for(size_t t = 0; t < nT; ++t)
                 {
                     const size_t start = t * base + std::min(t, rem);
-                    const size_t len = base + (t < rem ? 1 : 0);
-                    const size_t end = start + len;
-                    workers.emplace_back([&, start, end]() { processRange(start, end); });
+                    const size_t end   = start + base + (t < rem ? 1 : 0);
+                    workers.emplace_back([start, end, &out_data,
+                                          in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, normalize]()
+                    {
+                        for(size_t i = start; i < end; ++i)
+                            out_data[i] = ops::pixel_correlate<U,K>(
+                                in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, i, normalize);
+                    });
                 }
                 for(auto& th : workers) th.join();
             }
@@ -1171,185 +843,48 @@ namespace DST
             std::vector<ptrdiff_t> kCenter(kDim);
             for(size_t a = 0; a < kDim; ++a)
                 kCenter[a] = static_cast<ptrdiff_t>(kSizes[a] / 2);
-        
+
+            // Image sizes as plain array for DSTmorph_ops helpers
+            std::vector<size_t> imgSizesVec(imgDim);
+            for(size_t d = 0; d < imgDim; ++d)
+                imgSizesVec[d] = in->Size(d + 1);
+
+            // Raw pointers for DSTmorph_ops functions
+            const K*         in_raw  = in->template raw_data<K>();
+            const bool*      msk_raw = in->raw_mask();
+            const U*         kw_raw  = (tmpKernel.size() > 0) ? &tmpKernel[0] : nullptr;
+            const size_t*    ks_raw  = kSizes.data();
+            const ptrdiff_t* kc_raw  = kCenter.data();
+            const size_t*    is_raw  = imgSizesVec.data();
+            const size_t     kSize   = k.size();
+
             if(nThreads <= 1)
             {
-                // Single-threaded implementation
-                for(size_t i = 0; i < in_data->size(); i++)
-                {
-                    // First step is to get slice of the image which correspond to the kernel position. When the kernel is near the border  of the image, only portion of the kernel is used and the slice of the image should be aligned with the kernel    center (i.e. tmp array should be null when outside image bounds)
-
-                    // Get pixel coordinates of the current central pixel (0-based)
-                    const std::vector<size_t> pxCoords = in->PixelCoordinates(i);
-
-                    // Temporary accumulator (promoted type)
-                    std::valarray<U> tmp(U(0), k.data().size());
-
-                    // Map kernel axes to image axes:
-                    // If kernel has fewer dims than image, align kernel to the last kDim axes of the image
-                    // image axis index for kernel axis 'ka' is: imgAxis = imgDim - kDim + ka
-                    // (this allows 2D kernel applied to last two axes of N-D image)
-                    for(size_t kj = 0; kj < k.data().size(); ++kj)
-                    {
-                        // decode linear kernel index into multi-index (row-major: axis 0 fastest)
-                        size_t rem = kj;
-                        std::vector<size_t> kIdx(kDim);
-                        for(size_t ka = 0; ka < kDim; ++ka)
-                        {
-                            kIdx[ka] = rem % kSizes[ka];
-                            rem /= kSizes[ka];
-                        }
-
-                        // compute corresponding image coordinates for this kernel element
-                        bool outside = false;
-                        std::vector<size_t> tgtCoords = pxCoords; // copy original coords for axes not touched by kernel
-
-                        for(size_t ka = 0; ka < kDim; ++ka)
-                        {
-                            const ptrdiff_t offset = static_cast<ptrdiff_t>(kIdx[ka]) - kCenter[ka];
-                            const size_t imgAxis = imgDim - kDim + ka; // map kernel axis to image axis
-
-                            // safe check (should not happen): if mapping yields invalid axis, mark outside
-                            if(imgAxis >= imgDim)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            // compute target coordinate (may be negative)
-                            ptrdiff_t tgt = static_cast<ptrdiff_t>(pxCoords[imgAxis]) + offset;
-                            if(tgt < 0)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            const size_t tgt_sz = in->Size(imgAxis+1); // Size is 1-based
-                            if(static_cast<size_t>(tgt) >= tgt_sz)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            tgtCoords[imgAxis] = static_cast<size_t>(tgt);
-                        }
-
-                        if(outside)
-                        {
-                            tmp[kj] = std::numeric_limits<U>::lowest();
-                            continue;
-                        }
-
-                        // get linear pixel index corresponding to tgtCoords
-                        size_t tgtIndex = in->PixelIndex(tgtCoords);
-
-                        // fetch value from input data and promote to U
-                        if(msk[tgtIndex])
-                            tmp[kj] = std::numeric_limits<U>::lowest();
-                        else
-                            tmp[kj] = static_cast<U>((*in_data)[tgtIndex]);
-                    }
-
-                    // flat dilation: max( tmp [ kernel ]) over footprint, ignoring NaNs
-                    const std::valarray<U> vals = tmp[ tmpKernel > U(0) ];
-                    out_data[i] = (vals.size() > 0) ? vals.max() : U(0);
-                }
+                for(size_t i = 0; i < in_data->size(); ++i)
+                    out_data[i] = ops::pixel_dilation<U,K>(
+                        in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, i);
             }
             else
             {
-                // Multi-threaded implementation: partition output indices between threads.
-                const size_t N = in_data->size();
-                const size_t nT = std::min(nThreads, N); // don't spawn more threads than pixels
-
+                const size_t N  = in_data->size();
+                const size_t nT = std::min(nThreads, N);
                 std::vector<std::thread> workers;
                 workers.reserve(nT);
-
                 const size_t base = N / nT;
-                const size_t rem = N % nT;
-            
-                // Capture stable copies for threads:
-                const std::valarray<K>* in_data_ptr = in_data; // copy pointer by value
-                auto in_shared = in;                            // copy shared_ptr (keeps object alive)
-            
+                const size_t rem  = N % nT;
                 for(size_t t = 0; t < nT; ++t)
                 {
                     const size_t start = t * base + std::min(t, rem);
-                    const size_t len = base + (t < rem ? 1 : 0);
-                    const size_t end = start + len;
-                
-                    workers.emplace_back([start, end, &out_data, in_data_ptr, &k, &tmpKernel, &kSizes, kDim, imgDim, in_shared, &kCenter,&  msk]()
-                     {
-                         for(size_t i = start; i < end; ++i)
-                         {
-                             const std::vector<size_t> pxCoords = in_shared->PixelCoordinates(i);
-
-                            std::valarray<U> tmp(U(0),k.data().size() );
-
-                            for(size_t kj = 0; kj < k.data().size(); ++kj)
-                            {
-                                size_t remk = kj;
-                                std::vector<size_t> kIdx(kDim);
-                                for(size_t ka = 0; ka < kDim; ++ka)
-                                {
-                                    kIdx[ka] = remk % kSizes[ka];
-                                    remk /= kSizes[ka];
-                                }
-
-                                bool outside = false;
-                                std::vector<size_t> tgtCoords = pxCoords;
-
-                                for(size_t ka = 0; ka < kDim; ++ka)
-                                {
-                                    const ptrdiff_t offset = static_cast<ptrdiff_t>(kIdx[ka]) - kCenter[ka];
-                                    const size_t imgAxis = imgDim - kDim + ka;
-
-                                    if(imgAxis >= imgDim)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    ptrdiff_t tgt = static_cast<ptrdiff_t>(pxCoords[imgAxis]) + offset;
-                                    if(tgt < 0)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    const size_t tgt_sz = in_shared->Size(imgAxis+1);
-                                    if(static_cast<size_t>(tgt) >= tgt_sz)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    tgtCoords[imgAxis] = static_cast<size_t>(tgt);
-                                }
-
-                                if(outside)
-                                {
-                                    tmp[kj] = std::numeric_limits<U>::lowest();
-                                    continue;
-                                }
-
-                                size_t tgtIndex = in_shared->PixelIndex(tgtCoords);
-
-                                if(msk[tgtIndex])
-                                    tmp[kj] = std::numeric_limits<U>::lowest();
-                                else
-                                    tmp[kj] = static_cast<U>((*in_data_ptr)[tgtIndex]);
-                            }
-
-                            {
-                                // non-flat dilation: max( tmp  ) over footprint, ignoring NaNs
-                                const std::valarray<U> vals = tmp[ tmpKernel > U(0) ];
-                                out_data[i] = (vals.size() > 0) ? vals.max() : U(0);
-                            }
-                        }
+                    const size_t end   = start + base + (t < rem ? 1 : 0);
+                    workers.emplace_back([start, end, &out_data,
+                                          in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim]()
+                    {
+                        for(size_t i = start; i < end; ++i)
+                            out_data[i] = ops::pixel_dilation<U,K>(
+                                in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, i);
                     });
                 }
-
-                for(auto &th : workers) th.join();
+                for(auto& th : workers) th.join();
             }
 
             std::vector<size_t> out_data_shape;
@@ -1500,186 +1035,48 @@ namespace DST
             std::vector<ptrdiff_t> kCenter(kDim);
             for(size_t a = 0; a < kDim; ++a)
                 kCenter[a] = static_cast<ptrdiff_t>(kSizes[a] / 2);
-        
+
+            // Image sizes as plain array for DSTmorph_ops helpers
+            std::vector<size_t> imgSizesVec(imgDim);
+            for(size_t d = 0; d < imgDim; ++d)
+                imgSizesVec[d] = in->Size(d + 1);
+
+            // Raw pointers for DSTmorph_ops functions
+            const K*         in_raw  = in->template raw_data<K>();
+            const bool*      msk_raw = in->raw_mask();
+            const U*         kw_raw  = (tmpKernel.size() > 0) ? &tmpKernel[0] : nullptr;
+            const size_t*    ks_raw  = kSizes.data();
+            const ptrdiff_t* kc_raw  = kCenter.data();
+            const size_t*    is_raw  = imgSizesVec.data();
+            const size_t     kSize   = k.size();
+
             if(nThreads <= 1)
             {
-                // Single-threaded implementation
-                for(size_t i = 0; i < in_data->size(); i++)
-                {
-                    // First step is to get slice of the image which correspond to the kernel position. When the kernel is near the border  of the image, only portion of the kernel is used and the slice of the image should be aligned with the kernel    center (i.e. tmp array should be null when outside image bounds)
-
-                    // Get pixel coordinates of the current central pixel (0-based)
-                    const std::vector<size_t> pxCoords = in->PixelCoordinates(i);
-
-                    // Temporary accumulator (promoted type)
-                    std::valarray<U> tmp(U(0), k.data().size());
-
-                    // Map kernel axes to image axes:
-                    // If kernel has fewer dims than image, align kernel to the last kDim axes of the image
-                    // image axis index for kernel axis 'ka' is: imgAxis = imgDim - kDim + ka
-                    // (this allows 2D kernel applied to last two axes of N-D image)
-                    for(size_t kj = 0; kj < k.data().size(); ++kj)
-                    {
-                        // decode linear kernel index into multi-index (kernel coordinates)
-                        size_t rem = kj;
-                        std::vector<size_t> kIdx(kDim);
-                        for(ptrdiff_t ka = static_cast<ptrdiff_t>(kDim) - 1; ka >= 0; --ka)
-                        {
-                            kIdx[ka] = rem % kSizes[ka];
-                            rem /= kSizes[ka];
-                        }
-
-                        // compute corresponding image coordinates for this kernel element
-                        bool outside = false;
-                        std::vector<size_t> tgtCoords = pxCoords; // copy original coords for axes not touched by kernel
-
-                        for(size_t ka = 0; ka < kDim; ++ka)
-                        {
-                            const ptrdiff_t offset = static_cast<ptrdiff_t>(kIdx[ka]) - kCenter[ka];
-                            const size_t imgAxis = imgDim - kDim + ka; // map kernel axis to image axis
-
-                            // safe check (should not happen): if mapping yields invalid axis, mark outside
-                            if(imgAxis >= imgDim)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            // compute target coordinate (may be negative)
-                            ptrdiff_t tgt = static_cast<ptrdiff_t>(pxCoords[imgAxis]) + offset;
-                            if(tgt < 0)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            const size_t tgt_sz = in->Size(imgAxis+1); // Size is 1-based
-                            if(static_cast<size_t>(tgt) >= tgt_sz)
-                            {
-                                outside = true;
-                                break;
-                            }
-
-                            tgtCoords[imgAxis] = static_cast<size_t>(tgt);
-                        }
-
-                        if(outside)
-                        {
-                            tmp[kj] = std::numeric_limits<U>::max();
-                            continue;
-                        }
-
-                        // get linear pixel index corresponding to tgtCoords
-                        size_t tgtIndex = in->PixelIndex(tgtCoords);
-
-                        // fetch value from input data and promote to U
-                        if(msk[tgtIndex])
-                            tmp[kj] = std::numeric_limits<U>::max();
-                        else
-                            tmp[kj] = static_cast<U>((*in_data)[tgtIndex]);
-                    }
-
-                    {
-                        // perform folding operation
-                        const std::valarray<U> vals = tmp[ tmpKernel > U(0) ];  // footprint  
-                        out_data[i] = (vals.size() > 0) ? vals.min() : U(0);
-                    }
-                }
+                for(size_t i = 0; i < in_data->size(); ++i)
+                    out_data[i] = ops::pixel_erosion<U,K>(
+                        in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, i);
             }
             else
             {
-                // Multi-threaded implementation: partition output indices between threads.
-                const size_t N = in_data->size();
-                const size_t nT = std::min(nThreads, N); // don't spawn more threads than pixels
-
+                const size_t N  = in_data->size();
+                const size_t nT = std::min(nThreads, N);
                 std::vector<std::thread> workers;
                 workers.reserve(nT);
-
                 const size_t base = N / nT;
-                const size_t rem = N % nT;
-            
-                // Capture stable copies for threads:
-                const std::valarray<K>* in_data_ptr = in_data; // copy pointer by value
-                auto in_shared = in;                            // copy shared_ptr (keeps object alive)
-            
+                const size_t rem  = N % nT;
                 for(size_t t = 0; t < nT; ++t)
                 {
                     const size_t start = t * base + std::min(t, rem);
-                    const size_t len = base + (t < rem ? 1 : 0);
-                    const size_t end = start + len;
-                
-                    workers.emplace_back([start, end, &out_data, in_data_ptr, &k, &tmpKernel, &kSizes, kDim, imgDim, in_shared, &kCenter,&  msk]()
-                     {
-                         for(size_t i = start; i < end; ++i)
-                         {
-                             const std::vector<size_t> pxCoords = in_shared->PixelCoordinates(i);
-
-                            std::valarray<U> tmp(U(0),k.data().size() );
-
-                            for(size_t kj = 0; kj < k.data().size(); ++kj)
-                            {
-                                size_t remk = kj;
-                                std::vector<size_t> kIdx(kDim);
-                                for(ptrdiff_t ka = static_cast<ptrdiff_t>(kDim) - 1; ka >= 0; --ka)
-                                {
-                                    kIdx[ka] = remk % kSizes[ka];
-                                    remk /= kSizes[ka];
-                                }
-
-                                bool outside = false;
-                                std::vector<size_t> tgtCoords = pxCoords;
-
-                                for(size_t ka = 0; ka < kDim; ++ka)
-                                {
-                                    const ptrdiff_t offset = static_cast<ptrdiff_t>(kIdx[ka]) - kCenter[ka];
-                                    const size_t imgAxis = imgDim - kDim + ka;
-
-                                    if(imgAxis >= imgDim)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    ptrdiff_t tgt = static_cast<ptrdiff_t>(pxCoords[imgAxis]) + offset;
-                                    if(tgt < 0)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    const size_t tgt_sz = in_shared->Size(imgAxis+1);
-                                    if(static_cast<size_t>(tgt) >= tgt_sz)
-                                    {
-                                        outside = true;
-                                        break;
-                                    }
-
-                                    tgtCoords[imgAxis] = static_cast<size_t>(tgt);
-                                }
-
-                                if(outside)
-                                {
-                                    tmp[kj] = std::numeric_limits<U>::max();
-                                    continue;
-                                }
-
-                                size_t tgtIndex = in_shared->PixelIndex(tgtCoords);
-
-                                if(msk[tgtIndex])
-                                    tmp[kj] = std::numeric_limits<U>::max();
-                                else
-                                    tmp[kj] = static_cast<U>((*in_data_ptr)[tgtIndex]);
-                            }
-
-                            {
-                                const std::valarray<U> vals = tmp[ tmpKernel > U(0) ];  // footprint
-                                out_data[i] = (vals.size() > 0) ? vals.min() : U(0);
-                            }
-                        }
+                    const size_t end   = start + base + (t < rem ? 1 : 0);
+                    workers.emplace_back([start, end, &out_data,
+                                          in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim]()
+                    {
+                        for(size_t i = start; i < end; ++i)
+                            out_data[i] = ops::pixel_erosion<U,K>(
+                                in_raw, msk_raw, kw_raw, ks_raw, kDim, kSize, kc_raw, is_raw, imgDim, i);
                     });
                 }
-
-                for(auto &th : workers) th.join();
+                for(auto& th : workers) th.join();
             }
 
             std::vector<size_t> out_data_shape;
