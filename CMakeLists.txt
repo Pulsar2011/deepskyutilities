@@ -98,12 +98,10 @@ set(BUILD_SHARED_LIBS "YES")
 
 #-------------------- GCC specifics
 IF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-    # Linux specific code (homogenized)
     cmake_policy(SET CMP0069 NEW)
     set(CMAKE_SYSTEM_PROCESSOR x86_64)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -pipe -pthread -fexceptions -fPIC -m64 -Wno-unknown-pragmas -Wmisleading-indentation -flto -mtune=native -ffp-contract=on -fomit-frame-pointer")
 
-    # Enable Interprocedural Optimization (LTO) when supported on Linux
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
     if(ipo_supported)
@@ -114,6 +112,19 @@ IF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     ADD_DEFINITIONS(-DLinuxx86_64)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CXX_EXTENSIONS OFF)
+
+    # ---- RPATH Linux ----
+    set(CMAKE_SKIP_BUILD_RPATH FALSE)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+    set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib:${DeepSkyROOT}/lib")
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+    set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} -Wl,--disable-new-dtags")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--disable-new-dtags")
+    list(APPEND CMAKE_BUILD_RPATH
+        "${CMAKE_CURRENT_BINARY_DIR}/build/lib"
+        "${DeepSkyROOT}/lib"
+    )
+
 ENDIF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 
 #-------------------- DARWIN specifics
@@ -311,21 +322,90 @@ file(GLOB TEST_SRC "test/*.cxx")
 
 set(HEADER_FILES ${CORE_HEADER})
 
+
+#-------------------- GPU backends (optional)
+
+# Backend.cpp is always compiled (contains the Backend::create() factory)
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/gpu")
+set(GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/Backend.cpp")
+set(GPU_LIBS "")
+
+# ---- Vulkan Compute backend ----
+option(USE_VULKAN "Enable Vulkan Compute GPU backend" OFF)
+if(USE_VULKAN)
+    find_package(Vulkan REQUIRED)
+    message("${Green}-- Vulkan FOUND:${ColourReset} ${Vulkan_LIBRARIES}")
+
+    # Compile GLSL compute shader to SPIR-V at build time
+    set(SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/shaders/morpho.comp")
+    set(SHADER_SPV "${CMAKE_CURRENT_BINARY_DIR}/morpho.spv")
+
+    find_program(GLSLC        glslc)
+    find_program(GLSLANG_VAL  glslangValidator)
+
+    if(GLSLC)
+        add_custom_command(
+            OUTPUT  ${SHADER_SPV}
+            COMMAND ${GLSLC} -fshader-stage=compute ${SHADER_SRC} -o ${SHADER_SPV}
+            DEPENDS ${SHADER_SRC}
+            COMMENT "Compiling morpho.comp -> morpho.spv  [glslc]"
+            VERBATIM
+        )
+    elseif(GLSLANG_VAL)
+        add_custom_command(
+            OUTPUT  ${SHADER_SPV}
+            COMMAND ${GLSLANG_VAL} -V ${SHADER_SRC} -o ${SHADER_SPV}
+            DEPENDS ${SHADER_SRC}
+            COMMENT "Compiling morpho.comp -> morpho.spv  [glslangValidator]"
+            VERBATIM
+        )
+    else()
+        message(FATAL_ERROR
+            "USE_VULKAN=ON but neither glslc nor glslangValidator was found.\n"
+            "Install the Vulkan SDK (https://vulkan.lunarg.com) and re-run CMake.")
+    endif()
+
+    add_custom_target(morpho_spv DEPENDS ${SHADER_SPV})
+
+    list(APPEND GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/VulkanBackend.cpp")
+    include_directories(${Vulkan_INCLUDE_DIRS})
+    list(APPEND GPU_LIBS Vulkan::Vulkan)
+    add_definitions(-DUSE_VULKAN)
+    add_definitions(-DDST_VULKAN_SPIRV_PATH="${SHADER_SPV}")
+    message("${Green}-- USE_VULKAN enabled.  SPIR-V -> ${SHADER_SPV}${ColourReset}")
+endif()
+
+# ---- MPI backend ----
+option(USE_MPI "Enable MPI domain-decomposition backend" OFF)
+if(USE_MPI)
+    find_package(MPI REQUIRED)
+    message("${Green}-- MPI FOUND:${ColourReset} ${MPI_CXX_LIBRARIES}")
+    list(APPEND GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/MPIBackend.cpp")
+    include_directories(${MPI_CXX_INCLUDE_DIRS})
+    list(APPEND GPU_LIBS MPI::MPI_CXX)
+    add_definitions(-DUSE_MPI)
+    message("${Green}-- USE_MPI enabled${ColourReset}")
+endif()
+
 #-------------------- Configuration de la bibliothèque
 
 add_library(
     DSTools
     SHARED
     ${CORE_SRC}
+    ${GPU_SRC}
     ${CORE_HEADER}
     ${version_file}
 )
 
+if(USE_VULKAN)
+    add_dependencies(DSTools morpho_spv)
+endif()
 
 if(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 matplot ${QT_LIBS})
+    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 matplot ${QT_LIBS} ${GPU_LIBS})
 else(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 matplot ${QT_LIBS} ${Boost_LIBRARIES})
+    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 matplot ${QT_LIBS} ${Boost_LIBRARIES} ${GPU_LIBS})
 endif(COMPILER_SUPPORTS_CXX23)
 
 #-------------------- Configuration des test
@@ -344,11 +424,15 @@ foreach( test_source_file ${TEST_SRC} )
 	)
 
     if(COMPILER_SUPPORTS_CXX23)
-        target_link_libraries( ${tSRC} DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} gtest gtest_main)
+        target_link_libraries( ${tSRC} DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} gtest gtest_main)
     else(COMPILER_SUPPORTS_CXX23)
-        target_link_libraries( ${tSRC} DSTools DSTFits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
+        target_link_libraries( ${tSRC} DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
     endif(COMPILER_SUPPORTS_CXX23)
 
+    set_target_properties(${tSRC} PROPERTIES
+        BUILD_RPATH   "${DeepSkyROOT}/lib"
+        INSTALL_RPATH "${DeepSkyROOT}/lib"
+    )
 
 endforeach( test_source_file ${TEST_SRC} )
 
@@ -375,12 +459,15 @@ add_executable(
     utilities/FitsViewer/DSTfitsViewer.cxx
 )
 
-target_link_libraries(FitsViewer DSTFits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS})
+target_link_libraries(FitsViewer DSTfits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS})
 
-# Ensure RPATH is embedded into the executable
+# Embed the install RPATH at build time so that install_name_tool does not
+# attempt to rewrite it on every subsequent "make install", which causes
+# duplicate-path errors on macOS when the binary is already up to date.
 set_target_properties(FitsViewer PROPERTIES
-    BUILD_RPATH "${CMAKE_BUILD_RPATH}"
+    BUILD_WITH_INSTALL_RPATH TRUE
     INSTALL_RPATH "${CMAKE_INSTALL_RPATH}"
+    SKIP_BUILD_RPATH FALSE
 )
 
 #-------------------- ADD DISTCLEAN CUSTOM TARGET
@@ -423,6 +510,16 @@ add_dependencies(distclean distclean_run)
 #-------------------- Installation proceedure
 if(CMAKE_INSTALL_PREFIX)
     INSTALL(FILES ${CORE_HEADER} DESTINATION include/DSTools)
+    INSTALL(FILES
+        gpu/Backend.h
+        gpu/CPUBackend.h
+        gpu/GPUContext.h
+        gpu/VulkanBackend.h
+        gpu/CUDABackend.h
+        gpu/HIPBackend.h
+        gpu/MPIBackend.h
+        DESTINATION include/DSTools/gpu
+    )
     INSTALL(TARGETS DSTools FitsViewer
 		RUNTIME DESTINATION exe
 		LIBRARY DESTINATION lib

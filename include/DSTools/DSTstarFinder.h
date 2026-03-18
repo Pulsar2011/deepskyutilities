@@ -33,6 +33,7 @@
 
 
 #include "DSTmorpho.h"
+#include "DSTmorph_gpu.h"
 
 
 using namespace DSL;
@@ -153,6 +154,9 @@ namespace DST
                 DST::Morphology::kernel<double> fBE;
                 DST::Morphology::kernel<double> fBM;
 
+                //-- GPU backend (always created; falls back to CPUBackend when no GPU hardware)
+                std::unique_ptr<DST::GPU::Backend> fbackend_;
+
                 void _findStarsMorpho(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsThreshold(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsSNR(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
@@ -197,6 +201,10 @@ namespace DST
                 const DST::Morphology::kernel<double>& getfBSkernel() const {return fBS;}
                 const DST::Morphology::kernel<double>& getfBEkernel() const {return fBE;}
                 const DST::Morphology::kernel<double>& getfBMkernel() const {return fBM;}
+
+                /// Returns true when a real GPU backend (Vulkan/CUDA/HIP) is active.
+                /// When false, morphological operations run on CPU regardless of image type.
+                bool isGPUEnabled() const { return fbackend_ && fbackend_->available(); }
 #pragma endregion
 #pragma region -- processing
                 void findStars(double quantizationStep=1e3);
