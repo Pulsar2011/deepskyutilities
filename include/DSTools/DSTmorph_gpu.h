@@ -34,8 +34,8 @@
 
 #include <DSTfits/FITSdata.h>     // is_gpu_eligible_type_v
 
-#include "../../gpu/Backend.h"    // DST::GPU::Backend
-#include "../../gpu/GPUContext.h" // DST::GPU::GPUContext<T>
+#include <DSTools/gpu/Backend.h>    // DST::GPU::Backend
+#include <DSTools/gpu/GPUContext.h> // DST::GPU::GPUContext<T>
 
 #include <memory>
 #include <vector>

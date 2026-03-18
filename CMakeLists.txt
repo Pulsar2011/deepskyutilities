@@ -326,8 +326,8 @@ set(HEADER_FILES ${CORE_HEADER})
 #-------------------- GPU backends (optional)
 
 # Backend.cpp is always compiled (contains the Backend::create() factory)
-include_directories("${CMAKE_CURRENT_SOURCE_DIR}/gpu")
-set(GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/Backend.cpp")
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include/DSTools/gpu")
+set(GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/Backend.cpp")
 set(GPU_LIBS "")
 
 # ---- Vulkan Compute backend ----
@@ -337,7 +337,7 @@ if(USE_VULKAN)
     message("${Green}-- Vulkan FOUND:${ColourReset} ${Vulkan_LIBRARIES}")
 
     # Compile GLSL compute shader to SPIR-V at build time
-    set(SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/shaders/morpho.comp")
+    set(SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/shaders/morpho.comp")
     set(SHADER_SPV "${CMAKE_CURRENT_BINARY_DIR}/morpho.spv")
 
     find_program(GLSLC        glslc)
@@ -367,7 +367,7 @@ if(USE_VULKAN)
 
     add_custom_target(morpho_spv DEPENDS ${SHADER_SPV})
 
-    list(APPEND GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/VulkanBackend.cpp")
+    list(APPEND GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/VulkanBackend.cpp")
     include_directories(${Vulkan_INCLUDE_DIRS})
     list(APPEND GPU_LIBS Vulkan::Vulkan)
     add_definitions(-DUSE_VULKAN)
@@ -380,7 +380,7 @@ option(USE_MPI "Enable MPI domain-decomposition backend" OFF)
 if(USE_MPI)
     find_package(MPI REQUIRED)
     message("${Green}-- MPI FOUND:${ColourReset} ${MPI_CXX_LIBRARIES}")
-    list(APPEND GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/MPIBackend.cpp")
+    list(APPEND GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/MPIBackend.cpp")
     include_directories(${MPI_CXX_INCLUDE_DIRS})
     list(APPEND GPU_LIBS MPI::MPI_CXX)
     add_definitions(-DUSE_MPI)
@@ -511,13 +511,13 @@ add_dependencies(distclean distclean_run)
 if(CMAKE_INSTALL_PREFIX)
     INSTALL(FILES ${CORE_HEADER} DESTINATION include/DSTools)
     INSTALL(FILES
-        gpu/Backend.h
-        gpu/CPUBackend.h
-        gpu/GPUContext.h
-        gpu/VulkanBackend.h
-        gpu/CUDABackend.h
-        gpu/HIPBackend.h
-        gpu/MPIBackend.h
+        include/DSTools/gpu/Backend.h
+        include/DSTools/gpu/CPUBackend.h
+        include/DSTools/gpu/GPUContext.h
+        include/DSTools/gpu/VulkanBackend.h
+        include/DSTools/gpu/CUDABackend.h
+        include/DSTools/gpu/HIPBackend.h
+        include/DSTools/gpu/MPIBackend.h
         DESTINATION include/DSTools/gpu
     )
     INSTALL(TARGETS DSTools FitsViewer
