@@ -23,6 +23,7 @@
 #include <DSTCore/OptionManager.h>
 #include <DSTCore/DSS_version.h>
 #include <DSTools/DST_version.h>
+#include <DSTdisplay/DSD_version.h>
 #include <DSTfits/FITSmanager.h>
 #include <DSTfits/FITSimg.h>
 #include <DSTfits/FITShdu.h>
@@ -101,7 +102,9 @@ public:
         DOption::prg_name += "FitsViewer -- "+DST::gGIT::version();
 
         if(DSS::gGIT::version() < "v2.0.0")
-            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSS version, please update your DSS installation.");
+            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSS version, please update your DSS installation to v2.0.0 at minimum.");
+        if(DSD::gGIT::version() < "v1.1.0")
+            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSD version, please update your DSD installation to v1.1.0 at minimum.");
     }
     
     virtual ~UOption(){};
