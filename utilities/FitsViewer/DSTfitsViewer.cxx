@@ -17,6 +17,10 @@
 #include <QLabel>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QProxyStyle>
+#include <QPainter>
+#include <QStyleOption>
+#include <QPolygon>
 
 #endif
 
@@ -714,8 +718,11 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     auto f = std::bind(mouseHasMove,customPlot,in,x_projection,y_projection);
     QAbstractAnimation::connect(customPlot, &QCustomPlot::mouseMove, f);
 
-    image->axis(QCPAxis::atBottom)->setScaleRatio(image->axis(QCPAxis::atLeft),1.0);
-    
+    image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
+    QObject::connect(customPlot, &QCustomPlot::beforeReplot, [image]() {
+        image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
+    });
+
     mw->SetPlot(customPlot);
     mw->show();
 
@@ -723,6 +730,58 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
 
     return customPlot;
 }
+
+// ---------------------------------------------------------------------------
+// ArrowSliderStyle — downward-pointing triangle handle with tick marks
+// ---------------------------------------------------------------------------
+
+class ArrowSliderStyle : public QProxyStyle
+{
+public:
+    explicit ArrowSliderStyle(QStyle* base = nullptr) : QProxyStyle(base) {}
+
+    void drawComplexControl(ComplexControl cc, const QStyleOptionComplex* opt,
+                             QPainter* p, const QWidget* w) const override
+    {
+        if (cc != CC_Slider) {
+            QProxyStyle::drawComplexControl(cc, opt, p, w);
+            return;
+        }
+        const auto* so = qstyleoption_cast<const QStyleOptionSlider*>(opt);
+        if (!so) { QProxyStyle::drawComplexControl(cc, opt, p, w); return; }
+
+        // Draw groove and tick marks via base style (skip the default handle)
+        {
+            QStyleOptionSlider tmp = *so;
+            tmp.subControls &= ~QStyle::SC_SliderHandle;
+            QProxyStyle::drawComplexControl(cc, &tmp, p, w);
+        }
+
+        // Draw downward-pointing triangle handle
+        if (so->subControls & SC_SliderHandle) {
+            const QRect hr = subControlRect(cc, opt, SC_SliderHandle, w);
+            const int cx  = hr.center().x();
+            const int top = hr.top();
+            const int bot = hr.bottom();
+            const int hw  = std::min(hr.width() / 2, 9);
+
+            QPolygon tri;
+            tri << QPoint(cx - hw, top)
+                << QPoint(cx + hw, top)
+                << QPoint(cx,      bot);
+
+            const bool active = (so->state & QStyle::State_MouseOver) ||
+                                (so->state & QStyle::State_Sunken);
+
+            p->save();
+            p->setRenderHint(QPainter::Antialiasing, true);
+            p->setPen(QPen(active ? QColor(30, 100, 220) : QColor(50, 50, 50), 1));
+            p->setBrush(active ? QColor(70, 140, 255) : QColor(90, 90, 90));
+            p->drawPolygon(tri);
+            p->restore();
+        }
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Viewer helpers
@@ -894,7 +953,10 @@ static QWidget* make3DViewer(const HduInfo& hdu,
                         yproj->axis(QCPAxis::atRight), SLOT(setRange(QCPRange)));
 
     customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes | QCP::iSelectOther);
-    image->axis(QCPAxis::atBottom)->setScaleRatio(image->axis(QCPAxis::atLeft), 1.0);
+    image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
+    QObject::connect(customPlot, &QCustomPlot::beforeReplot, [image]() {
+        image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
+    });
 
     auto fMouse = std::bind(mouseHasMove, customPlot, c_cube, x_projection, y_projection);
     QAbstractAnimation::connect(customPlot, &QCustomPlot::mouseMove, fMouse);
@@ -907,6 +969,11 @@ static QWidget* make3DViewer(const HduInfo& hdu,
     auto* slider = new QSlider(Qt::Horizontal, strip);
     slider->setRange(0, nLayers - 1);
     slider->setValue(0);
+    slider->setTickPosition(QSlider::TicksBelow);
+    slider->setTickInterval(std::max(1, nLayers / 20));
+    auto* arrowStyle = new ArrowSliderStyle(slider->style());
+    arrowStyle->setParent(slider);
+    slider->setStyle(arrowStyle);
     auto* layerLabel = new QLabel(QString("1 / %1").arg(nLayers), strip);
     layerLabel->setMinimumWidth(60);
     hbox->addWidget(sliderLabel);
@@ -920,14 +987,33 @@ static QWidget* make3DViewer(const HduInfo& hdu,
     QObject::connect(slider, &QSlider::valueChanged,
                      [customPlot, c_cube, px_pdf, px_cdf, layerLabel, nLayers, nx, ny, drawOpt](int layer0) {
                          int layer1 = layer0 + 1;
+
+                         // Preserve current color scale range and axis limits across layer changes
+                         QCPRange savedRange, savedXRange, savedYRange;
+                         bool hasRange = false;
+                         if (customPlot->plotLayout()->hasElement(0, 1)) {
+                             auto* cs = dynamic_cast<QCPColorScale*>(
+                                 customPlot->plotLayout()->element(0, 1));
+                             if (cs) { savedRange = cs->dataRange(); hasRange = true; }
+                         }
+                         QCPAxisRect* imageRect = customPlot->axisRect(0);
+                         savedXRange = imageRect->axis(QCPAxis::atBottom)->range();
+                         savedYRange = imageRect->axis(QCPAxis::atLeft)->range();
+
                          QtFITSviewer::QtDisplayLayer(customPlot, c_cube, static_cast<size_t>(layer1), drawOpt);
-                         if (minZscale == minZscale && maxZscale == maxZscale) {
+
+                         // Restore color scale range
+                         if (hasRange) {
                              if (customPlot->plotLayout()->hasElement(0, 1)) {
                                  auto* cs = dynamic_cast<QCPColorScale*>(
                                      customPlot->plotLayout()->element(0, 1));
-                                 if (cs) cs->setDataRange(QCPRange(minZscale, maxZscale));
+                                 if (cs) cs->setDataRange(savedRange);
                              }
                          }
+                         // Restore axis limits
+                         imageRect->axis(QCPAxis::atBottom)->setRange(savedXRange);
+                         imageRect->axis(QCPAxis::atLeft)->setRange(savedYRange);
+
                          QtFITSviewer::QtHistogram(customPlot, c_cube, histo_bins,
                                                     (double)(layer0) * (double)(nx * ny),
                                                     (double)(layer1) * (double)(nx * ny),
