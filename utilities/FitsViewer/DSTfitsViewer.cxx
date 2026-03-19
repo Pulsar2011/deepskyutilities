@@ -11,8 +11,12 @@
 #include <QtConcurrent/QtConcurrent>
 #include <DSTdisplay/QtFITSviewer.h>
 #include <QMetaObject>
-#include <QMainWindow> 
-#include <QStatusBar>  
+#include <QMainWindow>
+#include <QStatusBar>
+#include <QSlider>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 
 #endif
 
@@ -74,13 +78,14 @@ private:
     rmode MODE;
     bool do_Print;
     bool a_info;
+    bool hdu_explicit;
 
 public:
     
     static drawing_mode ddraw;
     roi ROI;
     
-    UOption():DOption(),HDU(1),RBIN(0),opt_string(),MODE(rmode::NONE), do_Print(false),a_info(false),ROI()
+    UOption():DOption(),HDU(1),RBIN(0),opt_string(),MODE(rmode::NONE), do_Print(false),a_info(false),hdu_explicit(false),ROI()
     {
         AddDescription("Open a FITS header block and display data.");
         AddOption("--hdu",DParam::fparameter::uint8,"Header block to be open. If not given, the primary header will be opened");
@@ -108,6 +113,7 @@ public:
         {
             if(std::next(it) != arg.cend()){it++;}else{return false;}
             HDU = std::stoi(*it);
+            hdu_explicit = true;
             std::cout<<"   \033[34m• Open header block:\033[0m"<<HDU<<std::endl;
         }
         else if(!it->compare("--info") ||
@@ -203,7 +209,8 @@ public:
     inline const std::string&  draw()  const {return opt_string;}
     inline bool doPrint() const {return do_Print;}
     inline bool ArrayInfo() const {return a_info;}
-    
+    inline bool HduExplicit() const {return hdu_explicit;}
+
 };
 
 UOption::drawing_mode UOption::ddraw = UOption::drawing_mode::LINEAR;
@@ -714,19 +721,265 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     return customPlot;
 }
 
+// ---------------------------------------------------------------------------
+// Viewer helpers
+// ---------------------------------------------------------------------------
+
+static QWidget* notYetImpl(const std::string& desc, const HduInfo& hdu)
+{
+    auto* w = new QWidget;
+    w->setWindowTitle(QString("HDU %1 - placeholder").arg(hdu.index));
+    auto* lbl = new QLabel(
+        QString("Not yet implemented.\n%1\n(HDU index: %2)")
+            .arg(QString::fromStdString(desc))
+            .arg(hdu.index),
+        w);
+    lbl->setAlignment(Qt::AlignCenter);
+    lbl->setWordWrap(true);
+    auto* lay = new QVBoxLayout(w);
+    lay->addWidget(lbl);
+    w->resize(400, 200);
+    return w;
+}
+
+static QWidget* make2DViewer(const HduInfo& hdu,
+                              const std::string& fitsPath,
+                              const UOption& opt)
+{
+    if (_draw_histo.joinable()) _draw_histo.join();
+    if (_draw_grid.joinable())  _draw_grid.join();
+    if (_print_info.joinable()) _print_info.join();
+
+    FITSmanager fm(fitsPath);
+    std::shared_ptr<FITScube> img = fm.GetImageAtIndex(hdu.index);
+
+    if (opt.ROI.size() > 1) {
+        size_t X0 = 0, nX = img->Size(1);
+        size_t Y0 = 0, nY = img->Size(2);
+        if (opt.ROI.find('x') != opt.ROI.end()) {
+            X0 = opt.ROI.find('x')->second.first;
+            nX = opt.ROI.find('x')->second.second;
+        }
+        if (opt.ROI.find('y') != opt.ROI.end()) {
+            Y0 = opt.ROI.find('y')->second.first;
+            nY = opt.ROI.find('y')->second.second;
+        }
+        auto tmp = img->Window(X0, Y0, nX, nY);
+        std::swap(img, tmp);
+    }
+
+    auto c_img = std::const_pointer_cast<const FITScube>(img);
+    QCustomPlot* plt = Draw(c_img, opt.draw());
+    if (!plt) return nullptr;
+
+    return plt->window() ? dynamic_cast<QWidget*>(plt->window()) : nullptr;
+}
+
+static QWidget* make3DViewer(const HduInfo& hdu,
+                              const std::string& fitsPath,
+                              const UOption& opt)
+{
+    FITSmanager fm(fitsPath);
+    std::shared_ptr<FITScube> cube = fm.GetImageAtIndex(hdu.index);
+    auto c_cube = std::const_pointer_cast<const FITScube>(cube);
+    int nLayers = hdu.naxis3;
+    std::string drawOpt = opt.draw();
+
+    auto* win = new QMainWindow;
+    win->setWindowTitle(QString("HDU %1 - %2 (%3 layers)")
+                        .arg(hdu.index)
+                        .arg(QString::fromStdString(hdu.extname))
+                        .arg(nLayers));
+
+    auto* central = new QWidget(win);
+    auto* vlay = new QVBoxLayout(central);
+    vlay->setContentsMargins(0, 0, 0, 0);
+    vlay->setSpacing(4);
+
+    auto* customPlot = new QCustomPlot(central);
+    customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes);
+    customPlot->axisRect()->setupFullAxesBox(true);
+    vlay->addWidget(customPlot, 1);
+
+    QtFITSviewer::QtDisplayLayer(customPlot, c_cube, 1, drawOpt);
+
+    QCPAxisRect* image = customPlot->axisRect(0);
+    image->setBackgroundScaledMode(Qt::AspectRatioMode::KeepAspectRatioByExpanding);
+
+    QCPLayoutGrid* xproj_layout = new QCPLayoutGrid;
+    customPlot->plotLayout()->addElement(1, 0, xproj_layout);
+    QCPLayoutGrid* histo_layout = new QCPLayoutGrid;
+    customPlot->plotLayout()->addElement(0, 3, histo_layout);
+    QCPLayoutGrid* yproj_layout = new QCPLayoutGrid;
+    customPlot->plotLayout()->addElement(0, 2, yproj_layout);
+
+    QCPAxisRect* yproj = new QCPAxisRect(customPlot, false);
+    QCPAxisRect* xproj = new QCPAxisRect(customPlot, false);
+    QCPAxisRect* histo = new QCPAxisRect(customPlot, false);
+
+    image->setMinimumSize(200, 200);
+    yproj->setMinimumSize(50, 200);  yproj->setMaximumSize(100, 1200);
+    xproj->setMinimumSize(200, 50);  xproj->setMaximumSize(1200, 100);
+    histo->setMinimumSize(60, 200);
+
+    yproj_layout->addElement(0, 0, yproj);
+    xproj_layout->addElement(0, 0, xproj);
+    histo_layout->addElement(0, 0, histo);
+
+    xproj->addAxes(QCPAxis::atBottom | QCPAxis::atLeft);
+    xproj->axis(QCPAxis::atBottom)->setRange(image->axis(QCPAxis::atBottom)->range());
+    xproj->axis(QCPAxis::atLeft)->ticker()->setTickCount(2);
+    xproj->axis(QCPAxis::atBottom)->ticker()->setTickCount(2);
+    xproj->axis(QCPAxis::atLeft)->setRange(c_cube->GetMinimum(), c_cube->GetMaximum());
+
+    yproj->addAxes(QCPAxis::atBottom | QCPAxis::atRight);
+    yproj->axis(QCPAxis::atRight)->setRange(image->axis(QCPAxis::atLeft)->range());
+    yproj->axis(QCPAxis::atRight)->ticker()->setTickCount(2);
+    yproj->axis(QCPAxis::atBottom)->ticker()->setTickCount(2);
+    yproj->axis(QCPAxis::atBottom)->setRangeReversed(true);
+    yproj->axis(QCPAxis::atBottom)->setRange(c_cube->GetMinimum(), c_cube->GetMaximum());
+
+    histo->addAxes(QCPAxis::atBottom | QCPAxis::atRight | QCPAxis::atLeft);
+    histo->axis(QCPAxis::atBottom)->setRange(c_cube->GetMinimum()*(1-0.05), c_cube->GetMaximum()*(1+0.05));
+    histo->axis(QCPAxis::atBottom)->setScaleType(QCPAxis::stLinear);
+    histo->axis(QCPAxis::atBottom)->ticker()->setTickCount(2);
+    histo->axis(QCPAxis::atRight)->setRange(-0.05, 1.05);
+    histo->axis(QCPAxis::atRight)->setScaleType(QCPAxis::stLinear);
+    histo->axis(QCPAxis::atRight)->ticker()->setTickCount(2);
+    histo->axis(QCPAxis::atLeft)->setScaleType(QCPAxis::stLogarithmic);
+    QSharedPointer<QCPAxisTickerLog> logTicker3d(new QCPAxisTickerLog);
+    histo->axis(QCPAxis::atLeft)->setTicker(logTicker3d);
+
+    foreach (QCPAxis *axis, yproj->axes())
+        axis->setLayer("axes");
+    foreach (QCPAxis *axis, xproj->axes())
+        axis->setLayer("axes");
+    foreach (QCPAxis *axis, histo->axes())
+        axis->setLayer("axes");
+
+    QCPGraph* x_projection = customPlot->addGraph(xproj->axis(QCPAxis::atBottom), xproj->axis(QCPAxis::atLeft));
+    x_projection->setLineStyle(QCPGraph::lsStepCenter);
+    x_projection->setPen(QPen(QColor("#FFA100"), 1.5));
+
+    QCPGraph* y_projection = customPlot->addGraph(yproj->axis(QCPAxis::atRight), yproj->axis(QCPAxis::atBottom));
+    y_projection->setLineStyle(QCPGraph::lsStepCenter);
+    y_projection->setPen(QPen(QColor("#FFA100"), 1.5));
+
+    QCPGraph* px_pdf = customPlot->addGraph(histo->axis(QCPAxis::atBottom), histo->axis(QCPAxis::atLeft));
+    px_pdf->setLineStyle(QCPGraph::lsStepCenter);
+    px_pdf->setPen(QPen(QColor(255, 100, 0)));
+
+    QCPGraph* px_cdf = customPlot->addGraph(histo->axis(QCPAxis::atBottom), histo->axis(QCPAxis::atRight));
+    px_cdf->setLineStyle(QCPGraph::lsLine);
+    px_cdf->setPen(QPen(QColor(30, 40, 255, 150)));
+
+    if (minZscale == minZscale && maxZscale == maxZscale) {
+        if (customPlot->plotLayout()->hasElement(0, 1)) {
+            auto* cs = dynamic_cast<QCPColorScale*>(customPlot->plotLayout()->element(0, 1));
+            if (cs) cs->setDataRange(QCPRange(minZscale, maxZscale));
+        }
+    }
+
+    size_t nx = c_cube->Size(1), ny = c_cube->Size(2);
+    QtFITSviewer::QtHistogram(customPlot, c_cube, histo_bins,
+                               (double)(0), (double)(nx * ny),
+                               px_pdf, px_cdf);
+
+    customPlot->connect(image->axis(QCPAxis::atBottom), SIGNAL(rangeChanged(QCPRange)),
+                        xproj->axis(QCPAxis::atBottom), SLOT(setRange(QCPRange)));
+    customPlot->connect(image->axis(QCPAxis::atLeft), SIGNAL(rangeChanged(QCPRange)),
+                        yproj->axis(QCPAxis::atRight), SLOT(setRange(QCPRange)));
+
+    customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes | QCP::iSelectOther);
+    image->axis(QCPAxis::atBottom)->setScaleRatio(image->axis(QCPAxis::atLeft), 1.0);
+
+    auto fMouse = std::bind(mouseHasMove, customPlot, c_cube, x_projection, y_projection);
+    QAbstractAnimation::connect(customPlot, &QCustomPlot::mouseMove, fMouse);
+
+    // Slider strip
+    auto* strip = new QWidget(central);
+    auto* hbox = new QHBoxLayout(strip);
+    hbox->setContentsMargins(4, 2, 4, 2);
+    auto* sliderLabel = new QLabel("Layer:", strip);
+    auto* slider = new QSlider(Qt::Horizontal, strip);
+    slider->setRange(0, nLayers - 1);
+    slider->setValue(0);
+    auto* layerLabel = new QLabel(QString("1 / %1").arg(nLayers), strip);
+    layerLabel->setMinimumWidth(60);
+    hbox->addWidget(sliderLabel);
+    hbox->addWidget(slider, 1);
+    hbox->addWidget(layerLabel);
+    vlay->addWidget(strip, 0);
+
+    win->setCentralWidget(central);
+    win->resize(1200, 950);
+
+    QObject::connect(slider, &QSlider::valueChanged,
+                     [customPlot, c_cube, px_pdf, px_cdf, layerLabel, nLayers, nx, ny, drawOpt](int layer0) {
+                         int layer1 = layer0 + 1;
+                         QtFITSviewer::QtDisplayLayer(customPlot, c_cube, static_cast<size_t>(layer1), drawOpt);
+                         if (minZscale == minZscale && maxZscale == maxZscale) {
+                             if (customPlot->plotLayout()->hasElement(0, 1)) {
+                                 auto* cs = dynamic_cast<QCPColorScale*>(
+                                     customPlot->plotLayout()->element(0, 1));
+                                 if (cs) cs->setDataRange(QCPRange(minZscale, maxZscale));
+                             }
+                         }
+                         QtFITSviewer::QtHistogram(customPlot, c_cube, histo_bins,
+                                                    (double)(layer0) * (double)(nx * ny),
+                                                    (double)(layer1) * (double)(nx * ny),
+                                                    px_pdf, px_cdf);
+                         layerLabel->setText(QString("%1 / %2").arg(layer1).arg(nLayers));
+                         customPlot->replot(QCustomPlot::rpQueuedReplot);
+                     });
+
+    return win;
+}
+
+static QWidget* makeViewer(const HduInfo& hdu,
+                            const std::string& fitsPath,
+                            const UOption& opt)
+{
+    if (hdu.type == HduInfo::Type::IMG) {
+        switch (hdu.naxis) {
+            case 0:
+                return notYetImpl("Empty image HDU (NAXIS=0)", hdu);
+            case 1:
+                QMessageBox::warning(nullptr, "Not implemented",
+                    QString("1D image viewer not yet implemented (HDU %1).").arg(hdu.index));
+                return notYetImpl("1D image viewer", hdu);
+            case 2:
+                return make2DViewer(hdu, fitsPath, opt);
+            case 3:
+                return make3DViewer(hdu, fitsPath, opt);
+            default:
+                QMessageBox::warning(nullptr, "Unsupported HDU",
+                    QString("NAXIS=%1 not supported (HDU %2).").arg(hdu.naxis).arg(hdu.index));
+                return notYetImpl("N-D image viewer (NAXIS > 3)", hdu);
+        }
+    } else if (hdu.type == HduInfo::Type::TBL || hdu.type == HduInfo::Type::BTBL) {
+        QMessageBox::warning(nullptr, "Not implemented",
+            QString("Table viewer not yet implemented (HDU %1).").arg(hdu.index));
+        return notYetImpl("Table viewer", hdu);
+    } else {
+        QMessageBox::warning(nullptr, "Unsupported HDU",
+            QString("Unknown HDU type (HDU %1).").arg(hdu.index));
+        return notYetImpl("Unknown HDU type", hdu);
+    }
+}
+
 #endif
 
 int main(int argc, char **argv)
 {
 #ifdef __WITH_QT__
-    
+
     try
     {
-        //-1 READ OPTIONAL PARAMETERS
         UOption fOPT = UOption();
-        if(!fOPT.InitParameters(argc, argv))
+        if (!fOPT.InitParameters(argc, argv))
             return EXIT_FAILURE;
-        
+
         std::ostream* fp = &std::cout;
         std::ofstream fout;
         if (fOPT.GetOutput().size() > 1)
@@ -734,247 +987,151 @@ int main(int argc, char **argv)
             fout.open(fOPT.GetOutput());
             fp = &fout;
         }
-    
-        //2- GET IMAGE TO BE READS
+
         int16_t debugLevel = fOPT.DebugLevel();
-        if(debugLevel < 1)
+        if (debugLevel < 1)
             DSL::verbose = DSL::verboseLevel::VERBOSE_NONE;
-        else if(debugLevel == 1)
+        else if (debugLevel == 1)
             DSL::verbose = DSL::verboseLevel::VERBOSE_BASIC;
-        else if(debugLevel == 2)
+        else if (debugLevel == 2)
             DSL::verbose = DSL::verboseLevel::VERBOSE_DETAIL;
         else
             DSL::verbose = DSL::verboseLevel::VERBOSE_DEBUG;
 
         flist in_file = fOPT.GetFiles();
-    
-        if(in_file.size() < 1)
-            throw std::runtime_error("Not enougth number of argument. Please provide filename to open.");
-    
-        if(in_file.size() > 1)
-            throw std::runtime_error("Too many argument! I can handle more than 1 file.");
-    
-        //3- OPEN IMAGE AND HEADER BLOCK
-        std::shared_ptr<FITScube> img   = nullptr;
-    
-        FITSmanager ffile(in_file[0]);
-        img = ffile.GetImageAtIndex(fOPT.Header());
-        
-        if( fOPT.ROI.size() > 1)
+
+        if (in_file.size() < 1)
+            throw std::runtime_error("Not enough arguments. Please provide a filename to open.");
+
+        if (in_file.size() > 1)
+            throw std::runtime_error("Too many arguments! I can handle only 1 file.");
+
+        // Headless path: --draw disables GUI
+        if (UOption::ddraw == UOption::drawing_mode::OFF)
         {
-            size_t X0 = 0;
-            size_t nX = img->Size(1);
-            
-            if(fOPT.ROI.find('x') != fOPT.ROI.end())
+            FITSmanager ffile(in_file[0]);
+            std::shared_ptr<FITScube> img = ffile.GetImageAtIndex(fOPT.Header());
+
+            if (fOPT.ROI.size() > 1)
             {
-                X0 = fOPT.ROI.find('x')->second.first;
-                nX = fOPT.ROI.find('x')->second.second;
-            }
-            
-            size_t Y0 = 0;
-            size_t nY = img->Size(2);
-            
-            if(fOPT.ROI.find('y') != fOPT.ROI.end())
-            {
-                Y0 = fOPT.ROI.find('y')->second.first;
-                nY = fOPT.ROI.find('y')->second.second;
-            }
-            
-            std::shared_ptr<FITScube>   tmp = img->Window(X0, Y0, nX, nY);
-            std::swap(img,tmp);
-            tmp.reset();
-        }
-
-        // prepare variables and compute them in parallel
-        double sum=0,mean=0, median=0, rms=0, min=0, max=0, pp25=0, pp75=0;
-
-        auto fut_sum   = std::async(std::launch::async, [img]{ return img->GetSum(); });
-        auto fut_mean  = std::async(std::launch::async, [img]{ return img->GetMean(); });
-        auto fut_median= std::async(std::launch::async, [img]{ return img->GetMedian(); });
-        auto fut_rms   = std::async(std::launch::async, [img]{ return img->GetVariance(); }); // consistent with prior "RMS" usage
-        auto fut_min   = std::async(std::launch::async, [img]{ return img->GetMinimum(); });
-        auto fut_max   = std::async(std::launch::async, [img]{ return img->GetMaximum(); });
-        auto fut_pp25   = std::async(std::launch::async, [img]{ return img->Getpercentil(0.05); });
-        auto fut_pp75  = std::async(std::launch::async, [img]{ return img->Getpercentil(0.95); });
-
-        sum   = fut_sum.get();
-        mean  = fut_mean.get();
-        median= fut_median.get();
-        rms   = fut_rms.get();
-        min   = fut_min.get();
-        max   = fut_max.get();
-        pp25  = fut_pp25.get();
-        pp75  = fut_pp75.get();
-
-        if((DSL::verbose & DSL::verboseLevel::VERBOSE_BASIC)==DSL::verboseLevel::VERBOSE_BASIC)
-        {
-            QtFITS::msg_m.lock();
-            std::cout<<"\033[01m=====\033[34m"<< fOPT.GetFiles()[1]<<"\033[0m"<<std::endl
-                   <<"\033[31m     |- AVG :\033[0m"<<mean<<" "<<((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"")<<std::endl
-                   <<"\033[31m     |- MED :\033[0m"<<median<<" "<<((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"")<<std::endl
-                   <<"\033[31m     |- 25% :\033[0m"<<pp25<<" "<<((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"")<<std::endl
-                   <<"\033[31m     |- 75% :\033[0m"<<pp75<<" "<<((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"")<<std::endl;
-            QtFITS::msg_m.unlock();
-        }
-
-        
-        if( fOPT.ArrayInfo() )
-        {
-            QtFITS::msg_m.lock();
-            std::cout<<"\033[32m==== "<<in_file[0]<<"["<<fOPT.Header()<<"]\033[0m"<<std::endl;
-            std::cout<<" FILE |  NAME | MEAN | MEDIAN | Q1 | Q3 | RMS | MIN | MAX | SUM"<<std::endl;
-            std::cout<<fOPT.GetFiles()[0]<<" | "<<img->GetName()<<" | "<<mean<<" | "<<median<<" | "<<pp25<<" | "<<pp75<<" | "<<rms<<" | "<<min<<" | "<<max<<" | "<<sum<<std::endl;
-            QtFITS::msg_m.unlock();
-        }
-        
-        QApplication a(argc, argv);
-        auto c_img = std::const_pointer_cast<const FITScube>(img);
-
-        QCustomPlot* plt = Draw(c_img,fOPT.draw());
-        
-        foreach (QWidget *widget, QApplication::allWidgets())
-        {
-            if(plt == NULL)
-                continue;
-            widget->setGeometry(widget->x(), widget->y(), widget->width()*1.25, widget->height()/((img->Size(2)>=500)?1.25:1));
-            widget->update();
-            plt->replot();
-        }
-        
-         if(plt!=NULL)
-            a.exec();
-        
-//        if(plt!=NULL)
-//        {        
-//            {
-//                std::lock_guard<std::mutex> lk(QtFITS::io_mutex);
-//                foreach (QWidget *widget, QApplication::allWidgets())
-//                {
-//                    widget->setGeometry(widget->x(), widget->y(), widget->width()*1.25, widget->height()/((img->Size(2)>=500)?1.25:1));
-//                    widget->update();
-//                    plt->replot();
-//                }
-//            }
-//        }
-
-        bool printing_is_done=false;
-        if(fOPT.doPrint())
-        {
-               switch (img->GetEqBitPerPixel())
-                {
-                    case BYTE_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<uint8_t>::Print, dynamic_cast< DSL::FITSimg<uint8_t>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case SBYTE_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<int8_t>::Print, dynamic_cast< DSL::FITSimg<int8_t>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case SHORT_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<int16_t>::Print, dynamic_cast< DSL::FITSimg<int16_t>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case USHORT_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<uint16_t>::Print, dynamic_cast< DSL::FITSimg<uint16_t>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case LONG_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<int32_t>::Print, dynamic_cast< DSL::FITSimg<int32_t>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case ULONG_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<uint32_t>::Print, dynamic_cast< DSL::FITSimg<uint32_t>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case LONGLONG_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<int64_t>::Print, dynamic_cast< DSL::FITSimg<int64_t>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case ULONGLONG_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<uint64_t>::Print, dynamic_cast< DSL::FITSimg<uint64_t>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case FLOAT_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<float>::Print, dynamic_cast< DSL::FITSimg<float>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    case DOUBLE_IMG:
-                    {
-                        auto F = std::bind(&DSL::FITSimg<double>::Print, dynamic_cast< DSL::FITSimg<double>* >(img.get()));
-                        _print_=std::thread(F);
-                        break;
-                    }
-
-                    default:
-                    {
-                        if(fOPT.GetOutput().size() > 0)
-                            std::cout<<" ... WRITTING TO "<<fOPT.GetOutput()<<" plz, wait!"<<std::endl;
-                        img->Print();
-                        printing_is_done=true;
-                    }
+                size_t X0 = 0, nX = img->Size(1);
+                size_t Y0 = 0, nY = img->Size(2);
+                if (fOPT.ROI.find('x') != fOPT.ROI.end()) {
+                    X0 = fOPT.ROI.find('x')->second.first;
+                    nX = fOPT.ROI.find('x')->second.second;
                 }
+                if (fOPT.ROI.find('y') != fOPT.ROI.end()) {
+                    Y0 = fOPT.ROI.find('y')->second.first;
+                    nY = fOPT.ROI.find('y')->second.second;
+                }
+                auto tmp = img->Window(X0, Y0, nX, nY);
+                std::swap(img, tmp);
+            }
+
+            double sum=0, mean=0, median=0, rms=0, min=0, max=0, pp25=0, pp75=0;
+
+            auto fut_sum    = std::async(std::launch::async, [img]{ return img->GetSum(); });
+            auto fut_mean   = std::async(std::launch::async, [img]{ return img->GetMean(); });
+            auto fut_median = std::async(std::launch::async, [img]{ return img->GetMedian(); });
+            auto fut_rms    = std::async(std::launch::async, [img]{ return img->GetVariance(); });
+            auto fut_min    = std::async(std::launch::async, [img]{ return img->GetMinimum(); });
+            auto fut_max    = std::async(std::launch::async, [img]{ return img->GetMaximum(); });
+            auto fut_pp25   = std::async(std::launch::async, [img]{ return img->Getpercentil(0.05); });
+            auto fut_pp75   = std::async(std::launch::async, [img]{ return img->Getpercentil(0.95); });
+
+            sum    = fut_sum.get();
+            mean   = fut_mean.get();
+            median = fut_median.get();
+            rms    = fut_rms.get();
+            min    = fut_min.get();
+            max    = fut_max.get();
+            pp25   = fut_pp25.get();
+            pp75   = fut_pp75.get();
+
+            if ((DSL::verbose & DSL::verboseLevel::VERBOSE_BASIC) == DSL::verboseLevel::VERBOSE_BASIC)
+            {
+                QtFITS::msg_m.lock();
+                std::cout << "\033[01m=====\033[34m" << in_file[0] << "\033[0m" << std::endl
+                          << "\033[31m     |- AVG :\033[0m" << mean   << " " << ((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"") << std::endl
+                          << "\033[31m     |- MED :\033[0m" << median << " " << ((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"") << std::endl
+                          << "\033[31m     |- 25% :\033[0m" << pp25   << " " << ((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"") << std::endl
+                          << "\033[31m     |- 75% :\033[0m" << pp75   << " " << ((img->HDU().Exists("BUNIT"))?img->HDU().GetValueForKey("BUNIT"):"") << std::endl;
+                QtFITS::msg_m.unlock();
+            }
+
+            if (fOPT.ArrayInfo())
+            {
+                QtFITS::msg_m.lock();
+                std::cout << "\033[32m==== " << in_file[0] << "[" << fOPT.Header() << "]\033[0m" << std::endl;
+                std::cout << " FILE |  NAME | MEAN | MEDIAN | Q1 | Q3 | RMS | MIN | MAX | SUM" << std::endl;
+                std::cout << fOPT.GetFiles()[0] << " | " << img->GetName() << " | "
+                          << mean << " | " << median << " | " << pp25 << " | " << pp75
+                          << " | " << rms << " | " << min << " | " << max << " | " << sum << std::endl;
+                QtFITS::msg_m.unlock();
+            }
+
+            if (fOPT.doPrint())
+            {
+                if (fOPT.GetOutput().size() > 0)
+                    std::cout << " ... WRITING TO " << fOPT.GetOutput() << " plz, wait!" << std::endl;
+                img->Print();
+            }
+
+            img.reset();
+            ffile.Close();
+            return EXIT_SUCCESS;
         }
-        
-        if(plt != NULL)
-        {
-            _draw_histo.join();
-            _draw_grid.join();
-            _print_info.join();
-        }
-        
-        if(fOPT.doPrint() && !printing_is_done)
-        {
-            if(fOPT.GetOutput().size() > 0)
-                std::cout<<" ... WRITTING TO "<<fOPT.GetOutput()<<" plz, wait!"<<std::endl;
-            _print_.join();
-        }
-        
-        img.reset();
+
+        // GUI path
+        QApplication a(argc, argv);
+
+        FITSmanager ffile(in_file[0]);
+        std::vector<HduInfo> hdus = enumerateHDUs(ffile);
         ffile.Close();
 
+        if (hdus.empty())
+        {
+            QMessageBox::critical(nullptr, "FITS error", "No readable HDUs found in file.");
+            return EXIT_FAILURE;
+        }
+
+        const std::string fitsPath = in_file[0];
+        auto factory = [&fOPT, fitsPath](const HduInfo& hdu) -> QWidget* {
+            return makeViewer(hdu, fitsPath, fOPT);
+        };
+
+        HduListWindow listWin(in_file[0], hdus, factory);
+        listWin.show();
+
+        if (fOPT.HduExplicit())
+            listWin.openViewer(fOPT.Header());
+
+        const int ret = a.exec();
+
+        // Join background threads started by Draw() to avoid std::terminate
+        // on global std::thread destructor when threads are still joinable.
+        if (_draw_histo.joinable()) _draw_histo.join();
+        if (_draw_grid.joinable())  _draw_grid.join();
+        if (_print_info.joinable()) _print_info.join();
+        if (_print_.joinable())     _print_.join();
+
+        return ret;
     }
-    catch(std::exception& e)
+    catch (std::exception& e)
     {
-        std::cerr<<e.what()<<std::endl;
+        std::cerr << e.what() << std::endl;
         throw;
     }
-    catch(...)
+    catch (...)
     {
         return EXIT_FAILURE;
     }
 #else
-    std::cerr<<"\033[43;34m*** [FitsViewer]: Errors *** "<<std::endl
-        <<"THIS APPLICATION REQUIRE Qt5+ TO BE INSTALLED"<<std::endl
-        <<"PLZ, INSTALL Qt5 or Qt6 AND RETRY\033[0m"<<std::endl;
+    std::cerr << "\033[43;34m*** [FitsViewer]: Errors *** " << std::endl
+              << "THIS APPLICATION REQUIRE Qt5+ TO BE INSTALLED" << std::endl
+              << "PLZ, INSTALL Qt5 or Qt6 AND RETRY\033[0m" << std::endl;
     return EXIT_FAILURE;
 #endif
-    
+
     return EXIT_SUCCESS;
 }
