@@ -430,7 +430,7 @@ foreach( test_source_file ${TEST_SRC} )
     endif(COMPILER_SUPPORTS_CXX23)
 
     set_target_properties(${tSRC} PROPERTIES
-        BUILD_RPATH   "${DeepSkyROOT}/lib"
+        BUILD_RPATH   "${CMAKE_CURRENT_BINARY_DIR}/build/lib;${DeepSkyROOT}/lib"
         INSTALL_RPATH "${DeepSkyROOT}/lib"
     )
 

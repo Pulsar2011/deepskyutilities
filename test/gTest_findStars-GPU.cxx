@@ -28,12 +28,17 @@
 #include <DSTools/DSTmorph_gpu.h>
 #include <DSTools/DSTstarFinder.h>
 #include <DSTdisplay/DSTmathplotpp.h>
+
+#ifdef __WITH_QT__
+#include <DSTdisplay/QtFITSviewer.h>
+#endif
 #include <DSTfits/FITSdata.h>      // is_gpu_eligible_type_v
 
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <random>
@@ -595,10 +600,27 @@ TEST(StarFinderGPUTest, FindStarsCube_Float)
 
 #ifndef Linuxx86_64
     {
-        DSL::mathplot::StderrRedirect redirect;
-        EXPECT_NO_THROW(finder.plot(0));
-        EXPECT_NO_THROW(finder.plot(1));
-        EXPECT_NO_THROW(finder.plot(2));
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        
+    
+        for(size_t i=1; i<4; ++i)
+        {
+            QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+            mw->setWindowTitle(img->GetName().c_str());
+            mw->show();
+
+            QCustomPlot *customPlot = mw->GetPlot();
+            customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+            QtFITSviewer::QtDisplayLayer(customPlot,img,i);
+            EXPECT_NO_THROW(finder.Plot(customPlot->axisRect(), i));
+            customPlot->savePng(("./build/test_output/detected_stars_layer"+std::to_string(i)+".png").c_str());
+            
+            std::ifstream file("./build/test_output/detected_stars_layer"+std::to_string(i)+".png");
+            ASSERT_TRUE(file.good());
+        }   
     }
 #endif
 }

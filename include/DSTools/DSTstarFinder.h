@@ -35,6 +35,9 @@
 #include "DSTmorpho.h"
 #include "DSTmorph_gpu.h"
 
+#ifdef __WITH_QT__
+#include <DSTdisplay/QtDisplay.h>
+#endif
 
 using namespace DSL;
 using namespace DST::Math;
@@ -215,7 +218,10 @@ namespace DST
                 void EvalStellarProperties(Stars&, const enum Stars::evalType& method);
 #pragma endregion
 #pragma region -- ploting
-                void plot(size_t iL=0, bool  hold=false) const;
+
+#ifdef __WITH_QT__
+                void Plot(QCPAxisRect* axisRect, size_t iL=0, const QPen& starPen=QPen(Qt::red, 2)) const;
+#endif
 #pragma endregion
         };
 #pragma endregion
