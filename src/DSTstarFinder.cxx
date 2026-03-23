@@ -14,10 +14,28 @@
 #include <set>
 #include <mutex>
 
-#include <matplot/matplot.h>
-#include <cmath>
+#ifdef __WITH_QT__
 
-namespace mp = matplot;
+#include <DSTdisplay/QtFITSviewer.h>
+
+#include <QtConcurrent/QtConcurrent>
+#include <QMetaObject>
+#include <QMainWindow>
+#include <QStatusBar>
+#include <QSlider>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QProxyStyle>
+#include <QPainter>
+#include <QStyleOption>
+#include <QPolygon>
+#include <QToolTip>
+#include <QCursor>
+
+#endif
+
+#include <cmath>
 
 
 std::mutex flabelMutex;
@@ -1292,12 +1310,14 @@ namespace DST
 
 #pragma region -- ploting
 
+#ifdef __WITH_QT__
+
         /**
          * @brief Plot detected stars on the input image
          * @param starColor Color of the star markers
          * @param starSize Size of the star markers
          */
-        void starFinder::plot(size_t iL, bool hold) const
+        void starFinder::Plot(QCPAxisRect* axisRect, size_t iL, const QPen& starPen) const
         {
             if(fsky == nullptr)
                 throw FITSexception(BAD_DIMEN,"DST","starFinder::show","Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
@@ -1305,96 +1325,183 @@ namespace DST
             // Ligne MANQUANTE :
             if(flabel == nullptr)
                 throw FITSexception(BAD_DIMEN,"DST","starFinder::plot","Label image is null.["+std::to_string(__LINE__)+"]");
-            
-            if(fsky->GetDimension() == 3 && iL >= fsky->Size(3))
+
+            if(fsky->GetDimension() == 3 && iL > fsky->Size(3))
                 throw std::out_of_range("DST::starFinder::show: Layer index out of range.["+std::to_string(__LINE__)+"]");
 
-            typedef std::vector<double> plot_line;
-            typedef std::vector<plot_line> img_array;
-            
-            const size_t W = fsky->Size(1);
-            const size_t H = fsky->Size(2);
-            const size_t layer = (fsky->GetDimension() >= 2) ? iL : 0;
-            const size_t start = layer * W * H;
+            QCustomPlot* qPlot = axisRect->parentPlot();
+            QCPAxis* xAxis = axisRect->axis(QCPAxis::atBottom);
+            QCPAxis* yAxis = axisRect->axis(QCPAxis::atLeft);
 
-            mp::vector_1d x = mp::iota(0, 1, static_cast<double>(W-1));
-            mp::vector_1d y = mp::iota(0, 1, static_cast<double>(H-1));
-            auto [X, Y] = mp::meshgrid(x, y);
-            
-            img_array iC(H, plot_line(W));
-            img_array Z(H, plot_line(W));
-            for(size_t y = 0; y < H; ++y)
+            QMetaObject::invokeMethod(qPlot, [this,iL,starPen,qPlot,xAxis,yAxis,axisRect]() mutable
             {
-                const size_t row_base = start + y * W;
-                for(size_t x = 0; x < W; ++x)
                 {
-                    double v = fsky->DoubleValueAtPixel(row_base + x);
-                    double iLabel = flabel->DoubleValueAtPixel(row_base + x);
-                    if(!std::isfinite(iLabel)) iLabel = 0.0; // guard against NaN/Inf confusing gnuplot
-                    if(!std::isfinite(v))       v = 0.0; // guard against NaN/Inf confusing gnuplot
-                    Z[y][x] = v;
-                    iC[y][x] = iLabel;
+                    // Start plotting the sky image for the corresponding layer
+
+                    QCPGraph* point = new QCPGraph(xAxis, yAxis);
+                    point->setLineStyle(QCPGraph::lsNone);
+                    QVector<double> x;
+                    QVector<double> y;
+
+                    QCPScatterStyle StarPos(QCPScatterStyle::ssCross, starPen.color(), starPen.color(), 10);
+
+                    struct StarInfo {
+                        size_t id;
+                        double px, py;
+                        bool hasWCS;
+                        std::vector<double> wcs;
+                        std::vector<std::string> wcsLabels;
+                        bool hasFWHM;
+                        double fwhmX, fwhmY;
+                        bool hasAngle;
+                        double angle;
+                        bool hasSNR;
+                        double snr;
+                    };
+                    std::vector<StarInfo> tooltipList;
+                    bool skyHasWCS = fsky->getNumberOfWCS() > 0;
+                    std::vector<std::string> wcsAxisLabels;
+                    if (skyHasWCS)
+                        wcsAxisLabels = fsky->getWCS().CTYPE(0);
+
+                    for(auto iS: fdetectedStars)
+                    {
+                        unsigned int n_curve_point = 500;
+                        QCPCurve* cell = nullptr;
+
+                        DST::Math::point center = iS.second.position();
+                        bool skipe = false;
+
+                        if(center.size() >=3)
+                        {
+                            if(static_cast<size_t>(center.Z()+1.5) != iL)
+                                skipe |= true;
+                        }
+
+                        if(skipe)
+                            continue;
+
+                        x.push_back(center.X());
+                        y.push_back(center.Y());
+
+                        StarInfo info;
+                        info.id        = iS.second.ID();
+                        info.px        = center.X();
+                        info.py        = center.Y();
+                        info.hasWCS    = skyHasWCS;
+                        if (skyHasWCS)
+                        {
+                            info.wcs       = fsky->WorldCoordinates(iS.second.position().GetPoint());
+                            info.wcsLabels = wcsAxisLabels;
+                        }
+                        info.hasFWHM   = iS.second.FWHM().size() >= 2;
+                        info.fwhmX     = info.hasFWHM ? iS.second.FWHM().X() : 0.0;
+                        info.fwhmY     = info.hasFWHM ? iS.second.FWHM().Y() : 0.0;
+                        info.hasAngle  = !std::isnan(iS.second.angle());
+                        info.angle     = info.hasAngle ? iS.second.angle() : 0.0;
+                        info.hasSNR    = !std::isnan(iS.second.SNR());
+                        info.snr       = info.hasSNR ? iS.second.SNR() : 0.0;
+                        tooltipList.push_back(info);
+
+                        if(iS.second.FWHM().size() < 1)
+                            continue;
+
+                        cell = new QCPCurve(xAxis, yAxis);
+
+                        QVector<double> x_ell(n_curve_point);
+                        QVector<double> y_ell(n_curve_point);
+
+                        double a = iS.second.FWHM().X()/2.;
+                        double b = iS.second.FWHM().Y()/2.;
+
+                        double phi = iS.second.angle()*acos(-1)/180.;
+
+                        for(unsigned int n = 0; n < n_curve_point; n++)
+                        {
+                            double t = 2.*acos(-1)*static_cast<double>(n)/static_cast<double>(n_curve_point-1);
+                            DST::Math::point pt({a*cos(t)*cos(phi) - b*sin(t)*sin(phi), b*sin(t)*cos(phi)+a*cos(t)*sin(phi)});
+                            pt += center;
+
+                            x_ell[n] = pt.X();
+                            y_ell[n] = pt.Y();
+                        }
+                        cell->setData(x_ell, y_ell);
+                        cell->setPen(starPen);
+                    }
+
+                    point->setData(x, y);
+                    point->setScatterStyle(StarPos);
+
+                    // Hover tooltip — replace any previous handler for this axis rect
+                    QObject* oldHandler = axisRect->findChild<QObject*>("_starTooltipHandler_");
+                    if (oldHandler) delete oldHandler;
+                    QObject* handler = new QObject(axisRect);
+                    handler->setObjectName("_starTooltipHandler_");
+                    QObject::connect(qPlot, &QCustomPlot::mouseMove, handler,
+                        [tooltipList, qPlot, xAxis, yAxis, axisRect](QMouseEvent* event)
+                        {
+                            // Ignore events outside this axis rect
+                            if (!axisRect->rect().contains(event->pos()))
+                            {
+                                QToolTip::hideText();
+                                return;
+                            }
+
+                            double mx = xAxis->pixelToCoord(event->pos().x());
+                            double my = yAxis->pixelToCoord(event->pos().y());
+
+                            double minDist = std::numeric_limits<double>::max();
+                            const StarInfo* nearest = nullptr;
+                            for (const auto& info : tooltipList)
+                            {
+                                double dx = info.px - mx;
+                                double dy = info.py - my;
+                                double dist = dx*dx + dy*dy;
+                                if (dist < minDist) { minDist = dist; nearest = &info; }
+                            }
+
+                            if (!nearest) { QToolTip::hideText(); return; }
+
+                            // Only show within 20 px of the marker
+                            double xPix = xAxis->coordToPixel(nearest->px);
+                            double yPix = yAxis->coordToPixel(nearest->py);
+                            double dxPix = xPix - event->pos().x();
+                            double dyPix = yPix - event->pos().y();
+                            if (dxPix*dxPix + dyPix*dyPix > 400.0) { QToolTip::hideText(); return; }
+
+                            QString text = QString("Star #%1").arg(nearest->id);
+                            text += QString("\nPixel: (%1, %2)").arg(nearest->px, 0, 'f', 1).arg(nearest->py, 0, 'f', 1);
+                            if (nearest->hasWCS && nearest->wcs.size() >= 2)
+                                for (size_t i = 0; i < nearest->wcs.size() && i < nearest->wcsLabels.size(); ++i)
+                                    text += QString("\n%1: %2").arg(QString::fromStdString(nearest->wcsLabels[i])).arg(nearest->wcs[i], 0, 'f', 6);
+                            if (nearest->hasFWHM)
+                                text += QString("\nFWHM: %1 x %2 px").arg(nearest->fwhmX, 0, 'f', 2).arg(nearest->fwhmY, 0, 'f', 2);
+                            if (nearest->hasAngle)
+                                text += QString("\nAngle: %1 deg").arg(nearest->angle, 0, 'f', 1);
+                            if (nearest->hasSNR)
+                                text += QString("\nSNR: %1").arg(nearest->snr, 0, 'f', 2);
+
+                            QToolTip::showText(QCursor::pos(), text, qPlot);
+                        }
+                    );
+
+                    qPlot->replot();
                 }
-            }
 
-            // Isolate in a brand-new figure to avoid multiplot
-            auto fig = mp::figure(true);          // new session
-            fig->position({20,20,800,800});
-            fig->font("Helvetica");
-            fig->font_size(12);
-            fig->title("Stars candidates - Layer "+std::to_string(layer)+" - Method: "+detectionMethodString());
-            auto ax  = fig->current_axes();
-            ax->font_size(18);
-            ax->font("Helvetica");
-            ax->xlabel("X [pixels]");
-            ax->ylabel("Y [pixels]");
-            ax->title_font_size_multiplier(2);
-            ax->line_width(2);
-            ax->hold(true);                      // ensure single axes, no overlays
+                {
+                        std::lock_guard<std::mutex> dk(QtFITS::msg_m);
+                        if (!QtFITS::finished)
+                             QtFITS::finished |= true;
+                        QtFITS::msg_cv.notify_one(); // notify while holding msg_m (or move notify outside if preferred)
+                        QtFITS::finished &= false;
+                } // msg_m released here
 
-            ax->image(0,W-1,0,H-1,Z);
-            ax->contour(X, Y, iC, 1)->line_width(1).color("red");
-            mp::colormap(mp::palette::gray());
-            mp::gca()->color_box_range(fsky->GetMinimum()*(1-0.05),fsky->GetMaximum()*(1+0.05));
+            });
             
-            std::vector<double> starX;
-            std::vector<double> starY;
-
-            std::vector<double> maxX;
-            std::vector<double> maxY;
-
-            for(std::map<size_t, Stars>::const_iterator it=fdetectedStars.cbegin(); it!=fdetectedStars.cend(); ++it)
-            {
-                const point& starPos = it->second.position();
-                const point& maxPos  = it->second.maximaPosition();
-                if(fsky->GetDimension() == 3 && static_cast<size_t>(starPos.Z()) != layer)
-                    continue;
-
-                starX.push_back(starPos.X());
-                starY.push_back(starPos.Y());
-                maxX.push_back(maxPos.X());
-                maxY.push_back(maxPos.Y());
-            }
-            
-            if(!starX.empty())
-                ax->scatter(starX, starY)
-                    ->marker_style(mp::line_spec::marker_style::cross)
-                    .marker_size(8)
-                    .color("red");
-
-            if(!maxX.empty())
-                ax->scatter(maxX, maxY)
-                    ->marker_style(mp::line_spec::marker_style::plus_sign)
-                    .marker_size(8)
-                    .color("yellow");
-
-            ax->hold(false);
-
-            if(hold)
-                fig->show();
-            else
-                fig->draw(); 
         }
+
+#endif
+
 #pragma endregion
     }
 #pragma endregion
