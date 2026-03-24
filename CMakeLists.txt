@@ -302,13 +302,6 @@ else()
 endif()
 
 
-find_library(matplot NAMES matplot HINTS ${DeepSkyROOT}/lib)
-if(matplot)
-    message("-- ${Green}Found${ColourReset} matplot++: ${matplot}")
-else()
-    message(WARNING "libmatplot not found; install the library")
-endif()
-
 GET_DIRECTORY_PROPERTY(include_dir_list INCLUDE_DIRECTORIES)
 MESSAGE("${Green}INCLUDE DIRS${ColourReset} ${include_dir_list}")
 
@@ -403,9 +396,9 @@ if(USE_VULKAN)
 endif()
 
 if(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 matplot ${QT_LIBS} ${GPU_LIBS})
+    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${GPU_LIBS})
 else(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 matplot ${QT_LIBS} ${Boost_LIBRARIES} ${GPU_LIBS})
+    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} ${GPU_LIBS})
 endif(COMPILER_SUPPORTS_CXX23)
 
 #-------------------- Configuration des test
