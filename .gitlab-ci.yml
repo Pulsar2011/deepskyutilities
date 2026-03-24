@@ -83,7 +83,7 @@ build:
   - export GNUTERM="pngcairo"
   - mkdir -p build && cd build
   - cmake -Wno-dev -DCMAKE_THREAD_LIBS_INIT="-lpthread" -DCMAKE_HAVE_THREADS_LIBRARY=1 -DCMAKE_USE_PTHREADS_INIT=1 ..
-  - make -j "$(nproc --all)"
+  - make -j 2
   artifacts:
     expire_in: 2 hrs
     paths:
