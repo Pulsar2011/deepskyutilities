@@ -27,7 +27,6 @@
 #include <DSTools/DSTmorpho.h>
 #include <DSTools/DSTmorph_gpu.h>
 #include <DSTools/DSTstarFinder.h>
-#include <DSTdisplay/DSTmathplotpp.h>
 
 #ifdef __WITH_QT__
 #include <DSTdisplay/QtFITSviewer.h>
