@@ -86,6 +86,7 @@ namespace DST
         fID(id),
         fevalMethod(evalType::MOMENT),
         fposition(),
+        fPSFparameters(),
         fMaxima(std::numeric_limits<double>::quiet_NaN()),
         fMaximaPosition(),
         fFWHM(),
@@ -116,6 +117,8 @@ namespace DST
     Stars::~Stars()
     {
         fpixels.clear();
+        fPSFparameters.clear();
+        finURL.clear();
     }
 
 #pragma endregion
@@ -195,7 +198,6 @@ namespace DST
     {
         fposition.SetPoints(p);
     }
-
 
     /**
      * @brief Set the maximum value of the star
@@ -293,30 +295,63 @@ namespace DST
         fevalMethod = method;
     }
 
+    void Stars::setPSFparameters(const std::vector<double>& params)
+    {
+        fPSFparameters = params;
+    }
+
 #pragma endregion
 
 #pragma region -- Accessor
+
+    const std::string Stars::ModelString(const evalType& m)
+    {
+        switch (m)
+        {
+            case evalType::MOMENT:
+                return "MOMENT";
+            case evalType::GAUSS:
+                return "GAUSS-FIT";
+            case evalType::iGAUSS:
+                return "INT-GAUSS-FIT";
+            case evalType::GAUSS2D:
+                return "2D-GAUSS-FIT";
+            case evalType::iGAUSS2D:
+                return "2D-INT-GAUSS-FIT";
+            case evalType::MOFFAT:
+                return "MOFFAT-FIT";
+            case evalType::MOFFAT2D:
+                return "2D-MOFFAT-FIT";
+            case evalType::LORENTZIAN:
+                return "LORENTZIAN-FIT";
+            case evalType::LORENTZIAN2D:
+                return "2D-LORENTZIAN-FIT";
+            case evalType::VOIGT:
+                return "VOIGT-FIT";
+            case evalType::VOIGT2D:
+                return "2D-VOIGT-FIT";
+            case evalType::SERSIC:
+                return "SERSIC-FIT";
+            case evalType::SERSIC2D:
+                return "2D-SERSIC-FIT";
+            case evalType::KING:
+                return "KING-FIT";
+            case evalType::KING2D:
+                return "2D-KING-FIT";
+            case evalType::AIRY:
+                return "AIRY-FIT";
+            default:
+                return "UNKNOWN";
+        }
+    }
+
     /** 
      * @details Get the evaluation method as string
      * @return \c std::string Evaluation method string
      */
     const std::string Stars::evalMethodString() const
     {
-        switch (fevalMethod)
-        {
-            case evalType::MOMENT:
-                return "MOMENT";
-            case evalType::GAUSS:
-                return "GAUSS-FIT";
-            case evalType::GAUSS2D:
-                return "2D-GAUSS-FIT";
-            case evalType::MOFFAT:
-                return "MOFFAT-FIT";
-            case evalType::MOFFAT2D:
-                return "2D-MOFFAT-FIT";
-            default:
-                return "UNKNOWN";
-        }
+        return ModelString(fevalMethod);
     }
 
 #pragma endregion
@@ -361,6 +396,266 @@ namespace DST
 #pragma region - Algorithms 
     namespace algorithms
     {
+
+#pragma region - starFitter class implementation
+
+#pragma region -- private member function
+
+        std::shared_ptr< const FITSimg<double> > starFitter::_makeWeight(const std::shared_ptr< FITSimg<double> >& err, bool isErrorMap)
+        {       
+            if (!isErrorMap)
+                return std::static_pointer_cast< const FITSimg<double> >( err );  // pass-through: user gave a weight map directly
+
+            // build weight = 1/err^2 without touching the user's array
+            std::shared_ptr< FITSimg<double> > dblErr   = std::static_pointer_cast<FITSimg<double> >(err->cast<double>());
+            std::shared_ptr< FITSimg<double> > weightMap= std::make_shared<FITSimg<double> >(FITSimg<double>({dblErr->Size(1), dblErr->Size(2)}));
+            
+            *(weightMap->GetData<double>()) += 1;
+
+            (*weightMap) /= (*dblErr);
+            (*weightMap) /= (*dblErr);
+
+            dblErr.reset();  // free the intermediate double-cast error map
+            return weightMap;
+        }
+
+        std::shared_ptr< const FITSimg<double> > starFitter::_makeWeight(const std::shared_ptr<FITScube>& err, bool isErrorMap)
+        {       
+            if (!isErrorMap)
+                return std::static_pointer_cast< const FITSimg<double> >( err->cast<double>() );  // pass-through: user gave a weight map directly
+
+            // build weight = 1/err^2 without touching the user's array
+            std::shared_ptr< FITSimg<double> > dblErr   = std::static_pointer_cast<FITSimg<double> >(err->cast<double>());
+            std::shared_ptr< FITSimg<double> > weightMap= std::make_shared<FITSimg<double> >(FITSimg<double>({dblErr->Size(1), dblErr->Size(2)}));
+            
+            *(weightMap->GetData<double>()) += 1;
+
+            (*weightMap) /= (*dblErr);
+            (*weightMap) /= (*dblErr);
+
+            dblErr.reset();  // free the intermediate double-cast error map
+            return weightMap;
+        }
+#pragma endregion
+
+
+#pragma region -- ctor/dtor
+        starFitter::starFitter(const std::shared_ptr<FITScube>& sky, const DST::Stars::evalType& method):
+                    ROOT::Minuit2::FCNBase(),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky ? sky->cast<double>() : nullptr)),
+                    fweight(nullptr),
+                    fevalMethod(method)
+        {
+            if(fsky == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+
+            if(fsky->GetDimension() != 2)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube must be 2D or 3D.["+std::to_string(__LINE__)+"]");
+        }
+
+        starFitter::starFitter(const std::shared_ptr< FITSimg<double> >& sky, const DST::Stars::evalType& method):
+                    ROOT::Minuit2::FCNBase(),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky)),
+                    fweight(nullptr),
+                    fevalMethod(method)
+        {
+            if(fsky == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+
+            if(fsky->GetDimension() != 2)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube must be 2D or 3D.["+std::to_string(__LINE__)+"]");
+        }
+
+        starFitter::starFitter(const std::shared_ptr<FITScube>& sky, const std::shared_ptr<FITScube>& err, const DST::Stars::evalType& method, bool isErrorMap):
+                    ROOT::Minuit2::FCNBase(),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky ? sky->cast<double>() : nullptr)),
+                    fweight(_makeWeight(err,isErrorMap)),
+                    fevalMethod(method)
+        {
+            if(fsky == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+
+            if(fsky->GetDimension() != 2)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube must be 2D or 3D. ["+std::to_string(__LINE__)+"]");
+
+            if(fweight == nullptr || fweight->GetDimension() != fsky->GetDimension() || fweight->Size(1) != fsky->Size(1) || fweight->Size(2) != fsky->Size(2))
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input error FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+        }
+
+        starFitter::starFitter(const std::shared_ptr< FITSimg<double> >& sky, const std::shared_ptr< FITSimg<double> >& err, const DST::Stars::evalType& method, bool isErrorMap):
+                    ROOT::Minuit2::FCNBase(),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky)),
+                    fweight(_makeWeight(err,isErrorMap)),
+                    fevalMethod(method)
+        {
+            if(fsky == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+
+            if(fsky->GetDimension() != 2)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube must be 2D or 3D. ["+std::to_string(__LINE__)+"]");
+
+            if(fweight == nullptr || fweight->GetDimension() != fsky->GetDimension() || fweight->Size(1) != fsky->Size(1) || fweight->Size(2) != fsky->Size(2))
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input error FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+        }
+
+        starFitter::starFitter(const std::shared_ptr< FITSimg<double> >& sky, const std::shared_ptr< FITScube >& err, const DST::Stars::evalType& method, bool isErrorMap):
+                    ROOT::Minuit2::FCNBase(),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky)),
+                    fweight(_makeWeight(err,isErrorMap)),
+                    fevalMethod(method)
+        {
+            if(fsky == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+
+            if(fsky->GetDimension() != 2)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube must be 2D or 3D. ["+std::to_string(__LINE__)+"]");
+
+            if(fweight == nullptr || fweight->GetDimension() != fsky->GetDimension() || fweight->Size(1) != fsky->Size(1) || fweight->Size(2) != fsky->Size(2))
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input error FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+        }
+
+        starFitter::starFitter(const std::shared_ptr< FITScube >& sky, const std::shared_ptr< FITSimg<double> >& err, const DST::Stars::evalType& method, bool isErrorMap):
+                    ROOT::Minuit2::FCNBase(),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky ? sky->cast<double>() : nullptr)),
+                    fweight(_makeWeight(err,isErrorMap)),
+                    fevalMethod(method)
+        {
+            if(fsky == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+
+            if(fsky->GetDimension() != 2)
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input FITScube must be 2D or 3D. ["+std::to_string(__LINE__)+"]");
+
+            if(fweight == nullptr || fweight->GetDimension() != fsky->GetDimension() || fweight->Size(1) != fsky->Size(1) || fweight->Size(2) != fsky->Size(2))
+                throw FITSexception(BAD_DIMEN,"DST::starFitter","starFitter","Input error FITScube pointer is null. ["+std::to_string(__LINE__)+"]");
+        }
+
+        starFitter::~starFitter() = default;
+
+#pragma endregion
+
+        double starFitter::operator()(const std::vector<double>& params) const
+        {
+            double chi2 = 0.0;
+
+            for(size_t i = 0 ; i < fsky->Size(); i++)
+            {
+                if(fsky->isMasked(i))
+                    continue;
+
+                const auto   pix    = fsky->PixelCoordinates(i);
+                const double x      = static_cast<double>(pix[0]);
+                const double y      = static_cast<double>(pix[1]);
+                const double val    = (*fsky)[i];
+                const double weight = (fweight) ? (*fweight)[i] : 1.0;
+
+                double model_val;
+                try {
+                    model_val = Eval(x, y, params);
+                } catch (...) {
+                    return 1e30; // invalid parameters — steer Minuit away
+                }
+                chi2 += std::pow(val - model_val, 2) * weight;
+            }
+
+            return chi2;
+        }
+
+        double starFitter::user_eval(double /*x*/, double /*y*/, const std::vector<double>& /*p*/) const
+        {
+            std::cerr << "\033[1;35;47m[DST::starFitter::user_eval] Warning:\033[0m No user_eval defined for UNDEFINED evaluation method.\n"
+                         "                               To use this method, create a child class and override \033[32mstarFitter::user_eval\033[0m.\n";
+            throw std::invalid_argument("\033[1;35;47m[DST::starFitter::user_eval] :\033[0m Unknown evaluation method. ["+std::to_string(__LINE__)+"]");
+            
+            return 0.0;
+        }
+
+        double starFitter::Eval(double x, double y, const std::vector<double>& params) const
+        {
+            switch(fevalMethod)
+            {
+                case DST::Stars::evalType::GAUSS:
+                    //                                  x  y  A          x0         y0         sigma
+                    return DST::Math::function::gauss2D(x, y, params[0], params[1], params[2], params[3])
+                           + params[4];
+
+                case DST::Stars::evalType::iGAUSS:
+                    //                                   x  y  A          x0         y0         sigma      dx  dy
+                    return DST::Math::function::igauss2D(x, y, params[0], params[1], params[2], params[3], 1., 1.)
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::GAUSS2D:
+                    //                                  x  y  A          x0         y0         sigma_x    sigma_y    theta
+                    return DST::Math::function::gauss2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5])
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::iGAUSS2D:
+                    //                                  x  y  A          x0         y0         sigma_x    sigma_y    theta      dx  dy
+                    return DST::Math::function::igauss2D(x, y, params[0], params[1], params[2],params[3], params[4], params[5], 1., 1.)
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::MOFFAT:
+                    //                                   x  y  A          x0         y0        alpha      beta
+                    return DST::Math::function::moffat2D(x, y, params[0], params[1], params[2],params[3], params[4])
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::MOFFAT2D:
+                    //                                   x  y  A          x0         y0        alpha      beta       gamma      theta
+                    return DST::Math::function::moffat2D(x, y, params[0], params[1], params[2],params[3], params[4], params[5], params[6])
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::LORENTZIAN:
+                    // params: A, x0, y0, gamma, bg
+                    return DST::Math::function::lorentzian2D(x, y, params[0], params[1], params[2], params[3])
+                           + params[4];
+
+                case DST::Stars::evalType::LORENTZIAN2D:
+                    // params: A, x0, y0, gamma, q, theta, bg
+                    return DST::Math::function::lorentzian2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5])
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::VOIGT:
+                    // params: A, x0, y0, fG, fL, bg
+                    return DST::Math::function::pseudo_voigt2D(x, y, params[0], params[1], params[2], params[3], params[4])
+                           + params[5];
+
+                case DST::Stars::evalType::VOIGT2D:
+                    // params: A, x0, y0, fG, fL, q, theta, bg
+                    return DST::Math::function::pseudo_voigt2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::SERSIC:
+                    // params: A, x0, y0, re, n, bg
+                    return DST::Math::function::sersic2D(x, y, params[0], params[1], params[2], params[3], params[4])
+                           + params[5];
+
+                case DST::Stars::evalType::SERSIC2D:
+                    // params: A, x0, y0, re, n, q, theta, bg
+                    return DST::Math::function::sersic2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::KING:
+                    // params: A, x0, y0, rc, rt, bg
+                    return DST::Math::function::king2D(x, y, params[0], params[1], params[2], params[3], params[4])
+                           + params[5];
+
+                case DST::Stars::evalType::KING2D:
+                    // params: A, x0, y0, rc, rt, q, theta, bg
+                    return DST::Math::function::king2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+                           + params[params.size()-1];
+
+                case DST::Stars::evalType::AIRY:
+                    // params: A, x0, y0, a, bg
+                    return DST::Math::function::airy2D(x, y, params[0], params[1], params[2], params[3])
+                           + params[4];
+
+                default:
+                    return user_eval(x, y, params);
+            }
+        }
+
+#pragma endregion
+
 #pragma region - starFinder class implementation
 #pragma region -- ctor/dtor
 
@@ -450,121 +745,130 @@ namespace DST
             }
         }
 
-    /** 
-     * @details Get the list of identified stars
-     */
-    DSL::FITStable starFinder::detectedStars() const
-    {
-        return detectedStars("DETECTED.STARS");
-    }
-
-    /** 
-     * @details Get the list of identified stars
-     * @param tblName Name of the output FITStable
-     * @return \c DSL::FITStable Table containing the list of detected stars
-     */
-    DSL::FITStable starFinder::detectedStars(const std::string& tblName) const
-    {
-
-        std::string pixel_units = "ADU";
-        if(fsky->HDU().Exists("BUNIT"))
+        /** 
+         * @details Get the list of identified stars
+         */
+        DSL::FITStable starFinder::detectedStars() const
         {
-            pixel_units = fsky->HDU().GetValueForKey("BUNIT");
+            return detectedStars("DETECTED.STARS");
         }
 
-        std::vector<std::string> wcsCoord;
-        std::vector<std::string> wcsUnits;
-        size_t k=1;
-        while(fsky->HDU().Exists("CTYPE"+std::to_string(k)))
+        /** 
+         * @details Get the list of identified stars
+         * @param tblName Name of the output FITStable
+         * @return \c DSL::FITStable Table containing the list of detected stars
+         */
+        DSL::FITStable starFinder::detectedStars(const std::string& tblName) const
         {
-            wcsCoord.push_back(fsky->HDU().GetValueForKey("CTYPE"+std::to_string(k)));
 
-            if(fsky->HDU().Exists("CUNIT"+std::to_string(k)))
-                wcsUnits.push_back(fsky->HDU().GetValueForKey("CUNIT"+std::to_string(k)));
-            else
-                wcsUnits.push_back("");
-            
-                k++;
-        }
-
-        DSL::FITStable table(tblName);
-        FITScolumn<uint64_t>  ID      ("ID", tulonglong, "", 0);
-        FITScolumn<std::vector<double>> coo    ("coord_px", tdouble, "pixels", 1);
-        FITScolumn<std::vector<double>> coo_max("maxcoord_px", tdouble, "pixels", 2);
-
-        std::vector< FITScolumn<double> > wcsColumns;
-        for(size_t i=0; i<wcsCoord.size(); i++)
-            wcsColumns.push_back( FITScolumn<double>( wcsCoord[i], tdouble, wcsUnits[i], static_cast<int>(3+i) ) );
-
-        FITScolumn<double>       maxima        ("maxima", tdouble, "", 4);
-        FITScolumn<double>       FWHM_X        ("FWHM_X", tdouble, "pixels", 5);
-        FITScolumn<double>       FWHM_Y        ("FWHM_Y", tdouble, "pixels", 6);
-        FITScolumn<double>       angle         ("angle", tdouble, "radians", 7);
-        FITScolumn<double>       TotalFlux     ("TotalFlux", tdouble, pixel_units, 8);
-        FITScolumn<double>       SNR           ("SNR", tdouble, "", 9);
-        FITScolumn<double>       Background    ("Background", tdouble, "", 10);
-        FITScolumn<std::string>  EvalMethod    ("EvalMethod", tstring, "", 11);
-        FITScolumn<uint32_t>     n_pixels      ("n_pixels", tuint, "", 12);
-        FITScolumn<std::string>  source        ("source", tstring, "", 13);
-
-        table.InsertColumn(std::make_shared< FITScolumn<uint64_t> >(ID));
-        table.InsertColumn(std::make_shared< FITScolumn<std::vector<double>> >(coo));
-        table.InsertColumn(std::make_shared< FITScolumn<std::vector<double>> >(coo_max));
-
-        for(size_t i=0; i<wcsColumns.size(); i++)
-            table.InsertColumn(std::make_shared< FITScolumn<double> >(wcsColumns[i]));
-        
-        table.InsertColumn(std::make_shared< FITScolumn<double> >(maxima));
-        table.InsertColumn(std::make_shared< FITScolumn<double> >(FWHM_X));
-        table.InsertColumn(std::make_shared< FITScolumn<double> >(FWHM_Y));
-        table.InsertColumn(std::make_shared< FITScolumn<double> >(angle));
-        table.InsertColumn(std::make_shared< FITScolumn<double> >(TotalFlux));
-        table.InsertColumn(std::make_shared< FITScolumn<double> >(SNR));
-        table.InsertColumn(std::make_shared< FITScolumn<double> >(Background));
-        table.InsertColumn(std::make_shared< FITScolumn<std::string> >(EvalMethod));
-        table.InsertColumn(std::make_shared< FITScolumn<uint32_t> >(n_pixels));
-        table.InsertColumn(std::make_shared< FITScolumn<std::string> >(source));
-
-        for(const auto& [id, star] : fdetectedStars)
-        {
-            size_t newRow = table.push_back("ID", static_cast<uint64_t>(star.ID()));
-
-            DSL::FITSform::doubleVector pos;
-            for(size_t dim = 0; dim < star.position().size(); dim++)
-                pos.push_back(star.position()[dim]);
-            table.updateAt("coord_px", newRow, pos);
-
-            DSL::FITSform::doubleVector maxpos;
-            for(size_t dim = 0; dim < star.maximaPosition().size(); dim++)
-                maxpos.push_back(star.maximaPosition()[dim]);
-            table.updateAt("maxcoord_px", newRow, maxpos);
-
-            // WCS coordinates
-            if(wcsColumns.size() > 0)
+            std::string pixel_units = "ADU";
+            if(fsky->HDU().Exists("BUNIT"))
             {
-                worldCoords wcsPos = fsky->WorldCoordinates(star.position().GetPoint());
-                for(size_t i=0; i<wcsColumns.size(); i++)
-                {
-                    if(i < wcsPos.size())
-                        table.updateAt(wcsColumns[i].getName(), newRow, wcsPos[i]);
-                }
+                pixel_units = fsky->HDU().GetValueForKey("BUNIT");
             }
 
+            std::vector<std::string> wcsCoord;
+            std::vector<std::string> wcsUnits;
+            size_t k=1;
+            while(fsky->HDU().Exists("CTYPE"+std::to_string(k)))
+            {
+                wcsCoord.push_back(fsky->HDU().GetValueForKey("CTYPE"+std::to_string(k)));
 
-            table.updateAt("maxima", newRow, star.maxima());
-            table.updateAt("FWHM_X", newRow, (star.FWHM().size()>=1)? star.FWHM().X() : std::numeric_limits<double>::quiet_NaN());
-            table.updateAt("FWHM_Y", newRow, (star.FWHM().size()>=2)? star.FWHM().Y() : std::numeric_limits<double>::quiet_NaN());
-            table.updateAt("angle", newRow, star.angle());
-            table.updateAt("TotalFlux", newRow, star.totalFlux());
-            table.updateAt("SNR", newRow, star.SNR());
-            table.updateAt("Background", newRow, star.background());
-            table.updateAt("EvalMethod", newRow, star.evalMethodString());
-            table.updateAt("n_pixels", newRow, static_cast<uint32_t>(star.FilledPixels().size()));
-            table.updateAt("source", newRow, star.srcFile());
+                if(fsky->HDU().Exists("CUNIT"+std::to_string(k)))
+                    wcsUnits.push_back(fsky->HDU().GetValueForKey("CUNIT"+std::to_string(k)));
+                else
+                    wcsUnits.push_back("");
+
+                    k++;
+            }
+
+            DSL::FITStable table(tblName);
+            size_t ncol = 0;
+            FITScolumn<uint64_t>  ID      ("ID", tulonglong, "", ncol); ncol++;
+            FITScolumn<std::vector<double>> coo    ("coord_px", tdouble, "pixel", ncol); ncol++;
+            FITScolumn<std::vector<double>> coo_max("maxcoord_px", tdouble, "pixel", ncol); ncol++;
+
+            std::vector< FITScolumn<double> > wcsColumns;
+            for(size_t i=0; i<wcsCoord.size(); i++)
+            {
+                wcsColumns.push_back( FITScolumn<double>( wcsCoord[i], tdouble, wcsUnits[i], ncol)); ncol++;
+            }
+
+            FITScolumn<std::vector<double>>  params("fits", tdouble, "", ncol); ncol++;
+
+            FITScolumn<double>       maxima        ("maxima", tdouble, pixel_units, ncol); ncol++;
+            FITScolumn<double>       FWHM_X        ("FWHM_X", tdouble, "pixel", ncol); ncol++;
+            FITScolumn<double>       FWHM_Y        ("FWHM_Y", tdouble, "pixel", ncol); ncol++;
+            FITScolumn<double>       angle         ("angle", tdouble, "radian", ncol); ncol++;
+            FITScolumn<double>       TotalFlux     ("TotalFlux", tdouble, pixel_units, ncol); ncol++;
+            FITScolumn<double>       SNR           ("SNR", tdouble, "", ncol); ncol++;
+            FITScolumn<double>       Background    ("Background", tdouble, pixel_units, ncol); ncol++;
+            FITScolumn<std::string>  EvalMethod    ("EvalMethod", tstring, "", ncol); ncol++;
+            FITScolumn<uint32_t>     n_pixels      ("n_pixels", tuint, "", ncol); ncol++;
+            FITScolumn<std::string>  source        ("source", tstring, "", ncol); ncol++;
+
+            table.InsertColumn(std::make_shared< FITScolumn<uint64_t> >(ID));
+            table.InsertColumn(std::make_shared< FITScolumn<std::vector<double>> >(coo));
+            table.InsertColumn(std::make_shared< FITScolumn<std::vector<double>> >(coo_max));
+
+            for(size_t i=0; i<wcsColumns.size(); i++)
+                table.InsertColumn(std::make_shared< FITScolumn<double> >(wcsColumns[i]));
+
+            table.InsertColumn(std::make_shared< FITScolumn<std::vector<double>> >(params));
+            table.InsertColumn(std::make_shared< FITScolumn<double> >(maxima));
+            table.InsertColumn(std::make_shared< FITScolumn<double> >(FWHM_X));
+            table.InsertColumn(std::make_shared< FITScolumn<double> >(FWHM_Y));
+            table.InsertColumn(std::make_shared< FITScolumn<double> >(angle));
+            table.InsertColumn(std::make_shared< FITScolumn<double> >(TotalFlux));
+            table.InsertColumn(std::make_shared< FITScolumn<double> >(SNR));
+            table.InsertColumn(std::make_shared< FITScolumn<double> >(Background));
+            table.InsertColumn(std::make_shared< FITScolumn<std::string> >(EvalMethod));
+            table.InsertColumn(std::make_shared< FITScolumn<uint32_t> >(n_pixels));
+            table.InsertColumn(std::make_shared< FITScolumn<std::string> >(source));
+
+            for(const auto& [id, star] : fdetectedStars)
+            {
+                size_t newRow = table.push_back("ID", static_cast<uint64_t>(star.ID()));
+
+                DSL::FITSform::doubleVector pos;
+                for(size_t dim = 0; dim < star.position().size(); dim++)
+                    pos.push_back(star.position()[dim]);
+                table.updateAt("coord_px", newRow, pos);
+
+                DSL::FITSform::doubleVector maxpos;
+                for(size_t dim = 0; dim < star.maximaPosition().size(); dim++)
+                    maxpos.push_back(star.maximaPosition()[dim]);
+                table.updateAt("maxcoord_px", newRow, maxpos);
+
+                // WCS coordinates
+                if(wcsColumns.size() > 0)
+                {
+                    worldCoords wcsPos = fsky->WorldCoordinates(star.position().GetPoint());
+                    for(size_t i=0; i<wcsColumns.size(); i++)
+                    {
+                        if(i < wcsPos.size())
+                            table.updateAt(wcsColumns[i].getName(), newRow, wcsPos[i]);
+                    }
+                }
+
+
+                if(star.PSFparameters().size() > 0)
+                    table.updateAt("fits", newRow, star.PSFparameters());
+
+                table.updateAt("maxima", newRow, star.maxima());
+                table.updateAt("FWHM_X", newRow, (star.FWHM().size()>=1)? star.FWHM().X() : std::numeric_limits<double>::quiet_NaN());
+                table.updateAt("FWHM_Y", newRow, (star.FWHM().size()>=2)? star.FWHM().Y() : std::numeric_limits<double>::quiet_NaN());
+                table.updateAt("angle", newRow, star.angle());
+                table.updateAt("TotalFlux", newRow, star.totalFlux());
+                table.updateAt("SNR", newRow, star.SNR());
+                table.updateAt("Background", newRow, star.background());
+                table.updateAt("EvalMethod", newRow, star.evalMethodString());
+                table.updateAt("n_pixels", newRow, static_cast<uint32_t>(star.FilledPixels().size()));
+                table.updateAt("source", newRow, star.srcFile());
+            }
+
+            return table;
         }
-
-        return table;
-    }
 
 #pragma endregion
 #pragma region -- processing
@@ -787,7 +1091,7 @@ namespace DST
             if(foutURL != "")
             {
                 iK->SetName("significance_map_layer_"+std::to_string(iLayer));
-                iK->Write(foutURL+"/significance_map.fits",true);
+                iK->Write(foutURL+"/significance_map_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
             iS.reset();
@@ -1239,8 +1543,10 @@ namespace DST
                     _evalStellarPropertiesMoment(star);
                     break;
                 default:
-                    throw std::invalid_argument("DST::starFinder::EvalStellarProperties: Unknown evaluation method.["+std::to_string(__LINE__)+"]");
+                    _evalStellarPropertiesModel(star,method);
             }
+
+            _evalApperturePhotometry(star);
         }
 
         void starFinder::EvalStellarProperties(const size_t& starID, const enum Stars::evalType& method)
@@ -1299,6 +1605,24 @@ namespace DST
                     star.setPosition(point({cx, cy,iL}));
                 else
                     star.setPosition(point({cx, cy}));
+
+                // Second-order intensity-weighted moments → FWHM estimate
+                double M20 = 0.0, M02 = 0.0;
+                for(std::vector<point>::const_iterator pix = star.FilledPixels().cbegin(); pix!=star.FilledPixels().cend(); ++pix)
+                {
+                    size_t idx = fsky->PixelIndex(pix->GetPoint());
+                    if(fsky->Masked(idx))
+                        continue;
+                    double val = fsky->DoubleValueAtPixel(idx);
+                    double dx  = pix->X() - cx;
+                    double dy  = pix->Y() - cy;
+                    M20 += dx * dx * val;
+                    M02 += dy * dy * val;
+                }
+                M20 /= fluxSum;
+                M02 /= fluxSum;
+                constexpr double k = 2.354820045; // 2*sqrt(2*ln2)
+                star.setFWHM(point({k * std::sqrt(M20), k * std::sqrt(M02)}));
             }
 
             if(std::isfinite(maxima))
@@ -1307,6 +1631,458 @@ namespace DST
                 star.setMaximaPosition(point::pointFromVector<size_t>(fsky->PixelCoordinates(maxIndex)));
             }
         }
+
+        /**
+         * @brief Evaluate stellar properties using Gaussian Fit of the star profile
+         * @param star Star object to evaluate
+         * @param integrated Whether to use integrated Gaussian fit within pixels surface or to use the value at pixel centers (default)
+         */
+        void starFinder::_evalStellarPropertiesModel(Stars& star, const DST::Stars::evalType& how)
+        {
+            if(fsky == nullptr || star.FilledPixels().empty())
+                return;
+
+            double fluxSum   = 0.0;
+            double xWeighted = 0.0;
+            double yWeighted = 0.0;
+            double iL        = 0.0;
+
+            //1- Crop a small region arround the star to speed up the fitting
+            //1.a- Find the centroid position relying on the moment methods.
+            _evalStellarPropertiesMoment(star);
+
+            //1.b- Define a small bounding box the accapsulata all pixel which belong to that star + e small margine etending by all the width on each side of the bounding box.
+            
+            double xMin = std::numeric_limits<double>::infinity();
+            double xMax = -std::numeric_limits<double>::infinity();
+            double yMin = std::numeric_limits<double>::infinity();
+            double yMax = -std::numeric_limits<double>::infinity();
+
+            for(std::vector<point>::const_iterator pix = star.FilledPixels().cbegin(); pix!=star.FilledPixels().cend(); ++pix)
+            {
+                if(pix->X() < xMin) xMin = pix->X();
+                if(pix->X() > xMax) xMax = pix->X();
+                if(pix->Y() < yMin) yMin = pix->Y();
+                if(pix->Y() > yMax) yMax = pix->Y();
+
+                if(is3D && iL == 0.0)
+                    iL = pix->Z();
+
+                size_t idx = fsky->PixelIndex(pix->GetPoint());
+                if(fsky->Masked(idx))
+                    continue;
+
+                double val = fsky->DoubleValueAtPixel(idx);
+            }
+
+            xMin = std::max(0.0, xMin -(xMax - xMin)/2.);
+            xMax = std::min(static_cast<double>(fsky->Size(1)), xMax +(xMax - xMin)/2.);
+            yMin = std::max(0.0, yMin -(yMax - yMin)/2.);
+            yMax = std::min(static_cast<double>(fsky->Size(2)), yMax +(yMax - yMin)/2.);
+
+            //1.c- crop the 2D image to thise bounding box.
+            std::shared_ptr< FITSimg<double> > cpy = nullptr;
+            std::shared_ptr<FITScube> croppedImage = nullptr;
+            std::shared_ptr<FITScube> croppedLabel = nullptr;
+            if(is3D)
+            {
+                croppedImage = fsky->Window(xMin, yMin, (xMax-xMin), (yMax-yMin))->Layer(static_cast<size_t>(iL+0.5));
+                croppedLabel = flabel->Window(xMin, yMin, (xMax-xMin), (yMax-yMin))->Layer(static_cast<size_t>(iL+0.5));
+            }
+            else
+            {
+                croppedImage = fsky->Window(xMin, yMin, (xMax-xMin), (yMax-yMin));
+                croppedLabel = flabel->Window(xMin, yMin, (xMax-xMin), (yMax-yMin));
+            }
+
+            for(size_t i=0; i<croppedImage->Nelements(); ++i)
+            {
+                if(croppedLabel->Int64ValueAtPixel(i) != static_cast<int64_t>(star.ID()))
+                    croppedImage->MaskPixel(i);
+            }
+            croppedLabel.reset();
+
+            try
+            {
+                cpy = std::dynamic_pointer_cast<FITSimg<double>>(croppedImage->cast<double>());
+            }
+            catch(FITSexception& e)
+            {
+                if(e.errorCode() != SHARED_BADARG)  // or whatever identifies "already same type"
+                    throw;
+                cpy = std::make_shared< FITSimg<double> >(FITSimg<double>(*std::dynamic_pointer_cast<FITSimg<double>>(croppedImage)));
+            }
+            croppedImage.reset();
+
+
+            //2- Fits the image with the corresponding model (Gaussian, Moffat, etc..) and extract the stellar properties from the fitted model parameters.
+            star.setEvalMethod(how);
+            starFitter fitter(cpy, how);
+
+
+            ROOT::Minuit2::MnUserParameters upar;
+            upar.Add("flux", star.maxima(), 0.1);
+            upar.Add("x0", star.position().X()-xMin, 0.01);
+            upar.Add("y0", star.position().Y()-yMin, 0.01);
+
+            switch (how)
+            {
+                case Stars::evalType::GAUSS:
+                case Stars::evalType::iGAUSS:
+                    upar.Add("sigma", 1.0, 0.01);
+                    break;
+
+                case Stars::evalType::GAUSS2D:
+                case Stars::evalType::iGAUSS2D:
+                    upar.Add("sigma_x", 1.0, 0.01);
+                    upar.Add("sigma_y", 1.0, 0.01);
+                    upar.Add("theta"  , 0.0, 0.001);
+                    break;
+                
+                case Stars::evalType::MOFFAT:
+                    upar.Add("alpha", 1.5, 0.01);
+                    upar.Add("beta",  1.5, 0.01);
+                    break;
+                
+                case Stars::evalType::MOFFAT2D:
+                    upar.Add("alpha", 1.5, 0.001);
+                    upar.Add("beta" , 1.5, 0.001);
+                    upar.Add("gamma", 0.8, 0.001);
+                    upar.Add("theta", 0.0, 0.01);
+                    break;
+
+                case Stars::evalType::LORENTZIAN:
+                    upar.Add("gamma", 1.0, 0.01, 0.01, 50.0);
+                    break;
+
+                case Stars::evalType::LORENTZIAN2D:
+                    upar.Add("gamma", 1.0, 0.01, 0.01, 50.0);
+                    upar.Add("q",     1.0, 0.01, 0.01,  2.0);
+                    upar.Add("theta", 0.0, 0.01);
+                    break;
+
+                case Stars::evalType::VOIGT:
+                    upar.Add("fG", 1.0, 0.01, 0.01, 50.0);
+                    upar.Add("fL", 1.0, 0.01, 0.01, 50.0);
+                    break;
+
+                case Stars::evalType::VOIGT2D:
+                    upar.Add("fG",    1.0, 0.01, 0.01, 50.0);
+                    upar.Add("fL",    1.0, 0.01, 0.01, 50.0);
+                    upar.Add("q",     1.0, 0.01, 0.01,  2.0);
+                    upar.Add("theta", 0.0, 0.01);
+                    break;
+
+                case Stars::evalType::SERSIC:
+                    upar.Add("re", 1.0, 0.01, 0.01, 50.0);
+                    upar.Add("n",  1.0, 0.01, 0.01, 10.0);
+                    break;
+
+                case Stars::evalType::SERSIC2D:
+                    upar.Add("re",    1.0, 0.01, 0.01, 50.0);
+                    upar.Add("n",     1.0, 0.01, 0.01, 10.0);
+                    upar.Add("q",     1.0, 0.01, 0.01,  2.0);
+                    upar.Add("theta", 0.0, 0.01);
+                    break;
+
+                case Stars::evalType::KING:
+                    upar.Add("rc", 1.0, 0.01, 0.01, 50.0);
+                    upar.Add("rt", 3.0, 0.01, 0.01, 50.0);
+                    break;
+
+                case Stars::evalType::KING2D:
+                    upar.Add("rc",    1.0, 0.01, 0.01, 50.0);
+                    upar.Add("rt",    3.0, 0.01, 0.01, 50.0);
+                    upar.Add("q",     1.0, 0.01, 0.01,  2.0);
+                    upar.Add("theta", 0.0, 0.01);
+                    break;
+
+                case Stars::evalType::AIRY:
+                    upar.Add("a", 1.0, 0.01, 0.01, 50.0);
+                    break;
+
+                default:
+                    break;
+            }
+
+            upar.Add("background", 0.0, 0.01);
+
+            ROOT::Minuit2::MnMigrad migrad(fitter, upar);
+            //migrad.SetPrintLevel(-1); // Suppress output
+            ROOT::Minuit2::FunctionMinimum min = migrad();
+
+            if(!min.IsValid())
+                std::cerr << "DST::starFinder::_evalStellarPropertiesModel: Fit did not converge for star ID "<<star.ID()<<"."<<std::endl;
+
+            std::vector<double> best_fit_params;
+            best_fit_params.push_back(min.UserState().Value("flux"));
+            best_fit_params.push_back(min.UserState().Value("x0") + xMin);
+            best_fit_params.push_back(min.UserState().Value("y0") + yMin);
+
+            switch (how)
+            {
+                case Stars::evalType::GAUSS:
+                case Stars::evalType::iGAUSS:
+                    best_fit_params.push_back(min.UserState().Value("sigma"));
+                    star.setFWHM(point({2.354820045 * min.UserState().Value("sigma"),
+                                        2.354820045 * min.UserState().Value("sigma")})); // FWHM = 2.355 * sigma for Gaussian
+                    star.setAngle(0.0);
+                    break;
+
+                case Stars::evalType::GAUSS2D:
+                case Stars::evalType::iGAUSS2D:
+                    best_fit_params.push_back(min.UserState().Value("sigma_x"));
+                    best_fit_params.push_back(min.UserState().Value("sigma_y"));
+                    best_fit_params.push_back(min.UserState().Value("theta"  ));
+                    star.setFWHM(point({2.354820045 * min.UserState().Value("sigma_x"),
+                                        2.354820045 * min.UserState().Value("sigma_y")}));
+                    star.setAngle(min.UserState().Value("theta"));
+                    break;
+                
+                case Stars::evalType::MOFFAT:
+                    best_fit_params.push_back(min.UserState().Value("alpha"));
+                    best_fit_params.push_back(min.UserState().Value("beta" ));
+                    star.setFWHM(point({2.0 * min.UserState().Value("alpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("beta")) - 1.0),
+                                        2.0 * min.UserState().Value("alpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("beta")) - 1.0)})); // FWHM = 2*alpha*sqrt(2^(1/beta)-1) for Moffat
+                    star.setAngle(0.0);
+                    break;
+                
+                case Stars::evalType::MOFFAT2D:
+                    best_fit_params.push_back(min.UserState().Value("alpha"));
+                    best_fit_params.push_back(min.UserState().Value("beta" ));
+                    best_fit_params.push_back(min.UserState().Value("gamma"));
+                    best_fit_params.push_back(min.UserState().Value("theta"));
+                    star.setFWHM(point({2.0 * min.UserState().Value("alpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("beta")) - 1.0),
+                                        2.0 * min.UserState().Value("alpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("beta")) - 1.0)})); // FWHM = 2*alpha*sqrt(2^(1/beta)-1) for Moffat
+                    star.setAngle(min.UserState().Value("theta"));
+                    break;
+
+                case Stars::evalType::LORENTZIAN:
+                    best_fit_params.push_back(min.UserState().Value("gamma"));
+                    star.setFWHM(point({2.0*min.UserState().Value("gamma"),
+                                        2.0*min.UserState().Value("gamma")}));
+                    star.setAngle(0.0);
+                    break;
+
+                case Stars::evalType::LORENTZIAN2D:
+                    best_fit_params.push_back(min.UserState().Value("gamma"));
+                    best_fit_params.push_back(min.UserState().Value("q"));
+                    best_fit_params.push_back(min.UserState().Value("theta"));
+                    star.setFWHM(point({2.0*min.UserState().Value("gamma"),
+                                        2.0*min.UserState().Value("gamma")*min.UserState().Value("q")}));
+                    star.setAngle(min.UserState().Value("theta"));
+                    break;
+
+                case Stars::evalType::VOIGT:
+                {
+                    double fG = min.UserState().Value("fG");
+                    double fL = min.UserState().Value("fL");
+                    double fwhm = 0.5346*fL + std::sqrt(0.2166*fL*fL + fG*fG);
+                    best_fit_params.push_back(fG);
+                    best_fit_params.push_back(fL);
+                    star.setFWHM(point({fwhm, fwhm}));
+                    star.setAngle(0.0);
+                    break;
+                }
+
+                case Stars::evalType::VOIGT2D:
+                {
+                    double fG = min.UserState().Value("fG");
+                    double fL = min.UserState().Value("fL");
+                    double q  = min.UserState().Value("q");
+                    double fwhm = 0.5346*fL + std::sqrt(0.2166*fL*fL + fG*fG);
+                    best_fit_params.push_back(fG);
+                    best_fit_params.push_back(fL);
+                    best_fit_params.push_back(q);
+                    best_fit_params.push_back(min.UserState().Value("theta"));
+                    star.setFWHM(point({fwhm, fwhm*q}));
+                    star.setAngle(min.UserState().Value("theta"));
+                    break;
+                }
+
+                case Stars::evalType::SERSIC:
+                    best_fit_params.push_back(min.UserState().Value("re"));
+                    best_fit_params.push_back(min.UserState().Value("n"));
+                    star.setFWHM(point({2.0*min.UserState().Value("re"),
+                                        2.0*min.UserState().Value("re")}));
+                    star.setAngle(0.0);
+                    break;
+
+                case Stars::evalType::SERSIC2D:
+                    best_fit_params.push_back(min.UserState().Value("re"));
+                    best_fit_params.push_back(min.UserState().Value("n"));
+                    best_fit_params.push_back(min.UserState().Value("q"));
+                    best_fit_params.push_back(min.UserState().Value("theta"));
+                    star.setFWHM(point({2.0*min.UserState().Value("re"),
+                                        2.0*min.UserState().Value("re")*min.UserState().Value("q")}));
+                    star.setAngle(min.UserState().Value("theta"));
+                    break;
+
+                case Stars::evalType::KING:
+                    best_fit_params.push_back(min.UserState().Value("rc"));
+                    best_fit_params.push_back(min.UserState().Value("rt"));
+                    star.setFWHM(point({2.0*min.UserState().Value("rc"),
+                                        2.0*min.UserState().Value("rc")}));
+                    star.setAngle(0.0);
+                    break;
+
+                case Stars::evalType::KING2D:
+                    best_fit_params.push_back(min.UserState().Value("rc"));
+                    best_fit_params.push_back(min.UserState().Value("rt"));
+                    best_fit_params.push_back(min.UserState().Value("q"));
+                    best_fit_params.push_back(min.UserState().Value("theta"));
+                    star.setFWHM(point({2.0*min.UserState().Value("rc"),
+                                        2.0*min.UserState().Value("rc")*min.UserState().Value("q")}));
+                    star.setAngle(min.UserState().Value("theta"));
+                    break;
+
+                case Stars::evalType::AIRY:
+                    best_fit_params.push_back(min.UserState().Value("a"));
+                    star.setFWHM(point({2.0*min.UserState().Value("a"),
+                                        2.0*min.UserState().Value("a")}));
+                    star.setAngle(0.0);
+                    break;
+
+                default:
+                    break;
+            }
+            best_fit_params.push_back(min.UserState().Value("background"));
+            star.setPSFparameters(best_fit_params);
+
+
+            cpy.reset();
+        }
+
+#pragma region -- aperture photometry
+
+        /**
+         * @brief Measure total flux, background and SNR via aperture + sky-annulus photometry.
+         * @details Aperture radius = 1.5 × FWHM_max; annulus from 2.0 to 3.5 × FWHM_max.
+         *          Background per pixel = median of annulus pixels (robust against neighbours).
+         *          σ_sky = 1.4826 × MAD (normalised MAD, equivalent Gaussian σ).
+         *          SNR computed with the CCD equation assuming gain = 1 ADU/e⁻.
+         *          If flabel is available, pixels belonging to other stars are excluded from
+         *          both the aperture and the annulus.
+         * @param star Star object whose flux, background and SNR are set.
+         */
+        void starFinder::_evalApperturePhotometry(Stars& star)
+        {
+            if(fsky == nullptr || star.FilledPixels().empty())
+                return;
+
+            const double cx = star.position().X();
+            const double cy = star.position().Y();
+
+            // -- Determine FWHM_max ---------------------------------------------------
+            double fwhm_max = 0.0;
+            if(star.FWHM().size() >= 2)
+                fwhm_max = std::max(star.FWHM().X(), star.FWHM().Y());
+            else if(star.FWHM().size() == 1)
+                fwhm_max = star.FWHM().X();
+
+            if(fwhm_max <= 0.0)
+            {
+                // Safety fallback: use bounding-box diagonal of FilledPixels / 2
+                double xMin =  std::numeric_limits<double>::infinity();
+                double xMax = -std::numeric_limits<double>::infinity();
+                double yMin =  std::numeric_limits<double>::infinity();
+                double yMax = -std::numeric_limits<double>::infinity();
+                for(const auto& p : star.FilledPixels())
+                {
+                    if(p.X() < xMin) xMin = p.X();
+                    if(p.X() > xMax) xMax = p.X();
+                    if(p.Y() < yMin) yMin = p.Y();
+                    if(p.Y() > yMax) yMax = p.Y();
+                }
+                fwhm_max = 0.5 * std::sqrt((xMax-xMin)*(xMax-xMin) + (yMax-yMin)*(yMax-yMin));
+                if(fwhm_max <= 0.0) return;
+            }
+
+            const double r_ap  = 1.5 * fwhm_max;
+            const double r_in  = 2.0 * fwhm_max;
+            const double r_out = 3.5 * fwhm_max;
+
+            // -- Layer for 3D images --------------------------------------------------
+            double iL = 0.0;
+            if(is3D)
+                iL = star.FilledPixels().front().Z();
+
+            // -- Bounding box clamped to image bounds ---------------------------------
+            const size_t x0 = static_cast<size_t>(std::max(0.0, cx - r_out - 1.0));
+            const size_t x1 = static_cast<size_t>(std::min(static_cast<double>(fsky->Size(1) - 1), cx + r_out + 1.0));
+            const size_t y0 = static_cast<size_t>(std::max(0.0, cy - r_out - 1.0));
+            const size_t y1 = static_cast<size_t>(std::min(static_cast<double>(fsky->Size(2) - 1), cy + r_out + 1.0));
+
+            std::vector<double> aperture_vals;
+            std::vector<double> annulus_vals;
+
+            for(size_t ix = x0; ix <= x1; ++ix)
+            {
+                for(size_t iy = y0; iy <= y1; ++iy)
+                {
+                    const size_t idx = is3D
+                        ? fsky->PixelIndex(std::vector<double>({static_cast<double>(ix), static_cast<double>(iy), iL}))
+                        : fsky->PixelIndex(std::vector<double>({static_cast<double>(ix), static_cast<double>(iy)}));
+
+                    if(fsky->Masked(idx))
+                        continue;
+
+                    // Exclude pixels belonging to other detected stars
+                    if(flabel != nullptr)
+                    {
+                        const size_t lbl = static_cast<size_t>(flabel->DoubleValueAtPixel(idx));
+                        if(lbl != 0 && lbl != star.ID())
+                            continue;
+                    }
+
+                    const double dx = static_cast<double>(ix) - cx;
+                    const double dy = static_cast<double>(iy) - cy;
+                    const double r  = std::sqrt(dx*dx + dy*dy);
+                    const double val = fsky->DoubleValueAtPixel(idx);
+
+                    if(r <= r_ap)
+                        aperture_vals.push_back(val);
+                    else if(r >= r_in && r < r_out)
+                        annulus_vals.push_back(val);
+                }
+            }
+
+            if(annulus_vals.empty()) return;
+
+            // -- Background: median of annulus ----------------------------------------
+            std::sort(annulus_vals.begin(), annulus_vals.end());
+            const size_t n_ann = annulus_vals.size();
+            const double background = (n_ann % 2 == 0)
+                ? 0.5 * (annulus_vals[n_ann/2 - 1] + annulus_vals[n_ann/2])
+                : annulus_vals[n_ann/2];
+
+            // -- σ_sky: normalised MAD -------------------------------------------------
+            std::vector<double> deviations;
+            deviations.reserve(n_ann);
+            for(double v : annulus_vals)
+                deviations.push_back(std::abs(v - background));
+            std::sort(deviations.begin(), deviations.end());
+            const double sigma_sky = 1.4826 * ((n_ann % 2 == 0)
+                ? 0.5 * (deviations[n_ann/2 - 1] + deviations[n_ann/2])
+                : deviations[n_ann/2]);
+
+            // -- Aperture flux (background-subtracted sum) ----------------------------
+            double flux = 0.0;
+            for(double v : aperture_vals)
+                flux += v - background;
+            const size_t n_ap = aperture_vals.size();
+
+            // -- SNR: CCD equation (gain = 1 ADU/e⁻ assumed) -------------------------
+            const double snr = (n_ap > 0 && sigma_sky > 0.0)
+                ? flux / std::sqrt(std::abs(flux) + static_cast<double>(n_ap) * sigma_sky * sigma_sky)
+                : 0.0;
+
+            star.setBackground(background);
+            star.setTotalFlux(flux);
+            star.setSNR(snr);
+        }
+
+#pragma endregion
 
 #pragma region -- ploting
 
@@ -1414,7 +2190,7 @@ namespace DST
                         double a = iS.second.FWHM().X()/2.;
                         double b = iS.second.FWHM().Y()/2.;
 
-                        double phi = iS.second.angle()*acos(-1)/180.;
+                        double phi = std::isnan(iS.second.angle()) ? 0.0 : iS.second.angle()*acos(-1)/180.;
 
                         for(unsigned int n = 0; n < n_curve_point; n++)
                         {
@@ -1427,6 +2203,28 @@ namespace DST
                         }
                         cell->setData(x_ell, y_ell);
                         cell->setPen(starPen);
+
+                        // Aperture-photometry radii: 1.5, 2.0, 3.5 × FWHM_max (dashed)
+                        double fwhm_max = std::max(iS.second.FWHM().X(), iS.second.FWHM().Y());
+                        if(fwhm_max > 0.0)
+                        {
+                            QPen dashedPen(starPen);
+                            dashedPen.setStyle(Qt::DashLine);
+                            for(double factor : {1.5, 2.0, 3.5})
+                            {
+                                QCPCurve* ring = new QCPCurve(xAxis, yAxis);
+                                double r = factor * fwhm_max;
+                                QVector<double> xr(n_curve_point), yr(n_curve_point);
+                                for(unsigned int n = 0; n < n_curve_point; n++)
+                                {
+                                    double t = 2.*acos(-1)*static_cast<double>(n)/static_cast<double>(n_curve_point-1);
+                                    xr[n] = center.X() + r * cos(t);
+                                    yr[n] = center.Y() + r * sin(t);
+                                }
+                                ring->setData(xr, yr);
+                                ring->setPen(dashedPen);
+                            }
+                        }
                     }
 
                     point->setData(x, y);
@@ -1506,8 +2304,152 @@ namespace DST
     }
 #pragma endregion
 
-
-    
 } // namespace name
 #pragma endregion
 #pragma endregion
+
+// ---------------------------------------------------------------------------
+// starFitter plotting methods (Qt-only)
+// ---------------------------------------------------------------------------
+
+#ifdef __WITH_QT__
+
+namespace DST { namespace algorithms {
+
+void starFitter::Plot(QCPAxisRect* axisRect,
+                      const std::vector<double>& params,
+                      size_t oversample,
+                      const std::string& saveFile) const
+{
+    if(!fsky)
+        throw FITSexception(BAD_DIMEN, "DST", "starFitter::Plot",
+                            "fsky is null. [" + std::to_string(__LINE__) + "]");
+
+    oversample = std::clamp(oversample, size_t(1), size_t(100));
+
+    const size_t nx  = fsky->Size(1);
+    const size_t ny  = fsky->Size(2);
+    const size_t onx = nx * oversample;
+    const size_t ony = ny * oversample;
+
+    // Generate model on oversampled grid outside Qt thread (can be expensive)
+    // Zmodel[row][col], fractional fsky pixel coords: x = col/oversample, y = row/oversample
+    const double inv_s = 1.0 / static_cast<double>(oversample);
+    std::vector<std::vector<double>> Zmodel(ony, std::vector<double>(onx));
+    for(size_t iy = 0; iy < ony; iy++)
+        for(size_t ix = 0; ix < onx; ix++)
+            Zmodel[iy][ix] = Eval(static_cast<double>(ix) * inv_s,
+                                  static_cast<double>(iy) * inv_s, params);
+
+    // Compute contour geometry outside Qt thread
+    // QCustomContours uses row/col indices as coordinates → must scale by inv_s when rendering
+    QCustomContours contours(Zmodel, 8);
+    contours.setPen(QPen(Qt::white, 1.0));
+    contours.setLabelFontSize(0);
+
+    QCustomPlot* qPlot = axisRect->parentPlot();
+    QCPAxis*     xAxis = axisRect->axis(QCPAxis::atBottom);
+    QCPAxis*     yAxis = axisRect->axis(QCPAxis::atLeft);
+
+    QMetaObject::invokeMethod(qPlot,
+        [=, this]() mutable
+        {
+            // ---- 1. Heatmap of fsky with Viridis colormap ----
+            QCPColorMap* colorMap = new QCPColorMap(xAxis, yAxis);
+            colorMap->data()->setSize(static_cast<int>(nx), static_cast<int>(ny));
+            colorMap->data()->setRange(
+                QCPRange(0.0, static_cast<double>(nx) - 1.0),
+                QCPRange(0.0, static_cast<double>(ny) - 1.0));
+            colorMap->data()->fill(0.0);
+
+            for(size_t i = 0; i < fsky->Size(); i++) {
+                if(fsky->isMasked(i)) continue;
+                const auto pix = fsky->PixelCoordinates(i);
+                colorMap->data()->setCell(static_cast<int>(pix[0]),
+                                          static_cast<int>(pix[1]),
+                                          (*fsky)[i]);
+            }
+
+            QCPColorScale* colorScale = new QCPColorScale(qPlot);
+            qPlot->plotLayout()->addElement(0, 1, colorScale);
+            colorScale->setType(QCPAxis::atRight);
+            colorMap->setColorScale(colorScale);
+            colorMap->setGradient(QtFITS::makeViridisGradient());
+            colorMap->rescaleDataRange();
+            colorMap->setInterpolate(false);
+
+            // ---- 2. Centroid cross at (x0, y0) = (params[1], params[2]) ----
+            if(params.size() >= 3) {
+                QCPGraph* centroid = new QCPGraph(xAxis, yAxis);
+                centroid->setLineStyle(QCPGraph::lsNone);
+                centroid->setScatterStyle(
+                    QCPScatterStyle(QCPScatterStyle::ssCross,
+                                   Qt::yellow, Qt::yellow, 14));
+                centroid->addData(params[1], params[2]);
+            }
+
+            // ---- 3. Model contours scaled from model grid to fsky pixel coords ----
+            // QCustomContours coords are in [0..ony-1][0..onx-1]; divide by oversample
+            // to map to fsky pixel space [0..ny-1][0..nx-1].
+            // NaN-separated polylines are split into individual QCPCurve objects.
+            const auto& lines = contours.lines();
+            for(int k = 0; k < static_cast<int>(lines.size()); k++) {
+                const auto& [xs, ys] = lines[k];
+                QVector<double> segX, segY, segT;
+                double t = 0.0;
+                auto flush = [&]() {
+                    if(segX.size() > 1) {
+                        QCPCurve* curve = new QCPCurve(xAxis, yAxis);
+                        curve->setData(segT, segX, segY);
+                        curve->setPen(QPen(Qt::white, 1.0));
+                    }
+                    segX.clear(); segY.clear(); segT.clear(); t = 0.0;
+                };
+                for(int j = 0; j < xs.size(); j++) {
+                    if(std::isnan(xs[j])) {
+                        flush();
+                    } else {
+                        segX.push_back(xs[j] * inv_s);
+                        segY.push_back(ys[j] * inv_s);
+                        segT.push_back(t++);
+                    }
+                }
+                flush();
+            }
+
+            // ---- 4. Rescale axes, equal aspect ratio, render ----
+            qPlot->rescaleAxes();
+            qPlot->yAxis->setScaleRatio(qPlot->xAxis, 1.0);
+            qPlot->replot();
+
+            // ---- 5. Optional file save ----
+            if(!saveFile.empty()) {
+                namespace fs = std::filesystem;
+                auto ext = fs::path(saveFile).extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                const auto qs = QString::fromStdString(saveFile);
+                if(ext == ".jpg" || ext == ".jpeg")
+                    qPlot->saveJpg(qs);
+                else if(ext == ".pdf")
+                    qPlot->savePdf(qs);
+                else
+                    qPlot->savePng(qs.endsWith(".png") ? qs : qs + ".png");
+            }
+        });
+}
+
+void starFitter::Plot(QCPAxisRect* axisRect,
+                      const ROOT::Minuit2::MnUserParameters& mnParams,
+                      size_t oversample,
+                      const std::string& saveFile) const
+{
+    std::vector<double> vals;
+    vals.reserve(mnParams.Parameters().size());
+    for(const auto& p : mnParams.Parameters())
+        vals.push_back(p.Value());
+    Plot(axisRect, vals, oversample, saveFile);
+}
+
+}} // namespace DST::algorithms
+
+#endif // __WITH_QT__
