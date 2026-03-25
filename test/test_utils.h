@@ -5,6 +5,8 @@
 #include <random>
 #include <cmath>
 #include <vector>
+#include <functional>
+#include <utility>
 #include <DSTfits/FITSimg.h>
 #include <DSTools/DSTstarFinder.h>
 
@@ -156,6 +158,37 @@ namespace TestUtils
         std::vector<DST::Stars> dummy_catalog;
         return generateStarField(dummy_catalog, width, height, nStars, sigma_stars, 
                                 min_intensity, max_intensity, background, noise_sigma, seed);
+    }
+
+    /**
+     * @brief Create a flat-background image with stars rendered by a model function.
+     *
+     * @param width   Image width in pixels
+     * @param height  Image height in pixels
+     * @param background Uniform background level added to every pixel
+     * @param positions  List of (x0, y0) star centres in pixel coordinates
+     * @param starModel  Callable(x, y, x0, y0) returning the star value ABOVE background
+     * @return Shared pointer to the generated FITSimg<double>
+     */
+    inline std::shared_ptr<DSL::FITSimg<double>>
+    makeModelImage(size_t width, size_t height,
+                   double background,
+                   const std::vector<std::pair<double,double>>& positions,
+                   std::function<double(double /*x*/, double /*y*/,
+                                        double /*x0*/, double /*y0*/)> starModel)
+    {
+        auto img = std::make_shared<DSL::FITSimg<double>>(std::vector<size_t>{width, height});
+        for (size_t k = 0; k < img->Nelements(); ++k)
+        {
+            auto pix = img->PixelCoordinates(k);
+            double x = static_cast<double>(pix[0]);
+            double y = static_cast<double>(pix[1]);
+            double val = background;
+            for (const auto& pos : positions)
+                val += starModel(x, y, pos.first, pos.second);
+            img->SetPixelValue(val, k);
+        }
+        return img;
     }
 
 } // namespace TestUtils

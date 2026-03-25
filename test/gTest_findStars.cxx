@@ -15,6 +15,24 @@
 
 using namespace DST;
 
+// ---------------------------------------------------------------------------
+// Global test environment: wipe and recreate the output directory once before
+// any test runs so stale files from previous runs never cause failures.
+// ---------------------------------------------------------------------------
+class TestOutputEnv : public ::testing::Environment
+{
+public:
+    void SetUp() override
+    {
+        const std::filesystem::path outDir = "./build/test_output";
+        std::filesystem::remove_all(outDir);
+        std::filesystem::create_directories(outDir);
+    }
+};
+
+const ::testing::Environment* const kTestOutputEnv =
+    ::testing::AddGlobalTestEnvironment(new TestOutputEnv);
+
 TEST(StarsTest, DefaultConstructor)
 {
     Stars s;
@@ -129,6 +147,491 @@ TEST(StarsTest, AddMultiplePixelsVectorOfPoints)
     EXPECT_DOUBLE_EQ(s.FilledPixels()[1].Y(), 21.0);
     EXPECT_DOUBLE_EQ(s.FilledPixels()[2].X(), 12.0);
     EXPECT_DOUBLE_EQ(s.FilledPixels()[2].Y(), 22.0);
+}
+
+// ---------------------------------------------------------------------------
+// starFitter::Eval() / operator() consistency
+// ---------------------------------------------------------------------------
+
+TEST(StarFitterFunction, EvalConsistency_gauss)
+{
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // GAUSS params: A=500, x0=5, y0=5, sigma=1.5, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::gauss2D(x, y, params[0], params[1], params[2], params[3])
+                         + params[4];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::GAUSS);
+
+    // Perfect data → chi2 should be 0
+    EXPECT_NEAR(fitter(params), 0.0, 1e-8);
+
+    // At the centroid gauss2D = A → Eval = A + background
+    for(size_t i = 0; i < W; i++)
+    {
+        for(size_t j = 0; j < H; j++)
+        {
+            EXPECT_NEAR(fitter.Eval(static_cast<double>(i), static_cast<double>(j), params), (*img)[img->PixelIndex({i,j})] , 1e-8);
+        }
+    }
+}
+
+TEST(StarFitterFunction, EvalConsistency_igauss)
+{
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // GAUSS params: A=500, x0=5, y0=5, sigma=1.5, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::igauss2D(x, y, params[0], params[1], params[2], params[3], (double)1., (double) 1.)
+                         + params[4];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::iGAUSS);
+
+    // Perfect data → chi2 should be 0
+    EXPECT_NEAR(fitter(params), 0.0, 1e-8);
+
+    // At the centroid gauss2D = A → Eval = A + background
+    for(size_t i = 0; i < W; i++) {
+        for(size_t j = 0; j < H; j++) {
+            EXPECT_NEAR(fitter.Eval(static_cast<double>(i), static_cast<double>(j), params), (*img)[img->PixelIndex({i,j})] , 1e-8);
+        }
+    }
+}
+
+TEST(StarFitterFunction, EvalConsistency_gauss2D)
+{
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // GAUSS2D params: A=500, x0=5, y0=5, sigmaX=1.5, sigmaY=2.5, theta=pi/3, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5, DST::Math::MathCore::Pi()/3., 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::gauss2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5])
+                         + params[6];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::GAUSS2D);
+
+    // Perfect data → chi2 should be 0
+    EXPECT_NEAR(fitter(params), 0.0, 1e-8);
+
+    // At the centroid gauss2D = A → Eval = A + background
+    for(size_t i = 0; i < W; i++) {
+        for(size_t j = 0; j < H; j++) {
+            EXPECT_NEAR(fitter.Eval(static_cast<double>(i), static_cast<double>(j), params), (*img)[img->PixelIndex({i,j})] , 1e-8);
+        }
+    }
+}
+
+TEST(StarFitterFunction, EvalConsistency_igauss2D)
+{
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // GAUSS2D params: A=500, x0=5, y0=5, sigmaX=1.5, sigmaY=2.5, theta=pi/3, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5, DST::Math::MathCore::Pi()/3., 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::igauss2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5],(double) 1., (double) 1.)
+                         + params[6];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::iGAUSS2D);
+
+    // Perfect data → chi2 should be 0
+    EXPECT_NEAR(fitter(params), 0.0, 1e-8);
+
+    // At the centroid gauss2D = A → Eval = A + background
+    for(size_t i = 0; i < W; i++) {
+        for(size_t j = 0; j < H; j++) {
+            EXPECT_NEAR(fitter.Eval(static_cast<double>(i), static_cast<double>(j), params), (*img)[img->PixelIndex({i,j})] , 1e-8);
+        }
+    }
+}
+
+TEST(StarFitterFunction, EvalConsistency_moffat)
+{
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // MOFFAT params: A=500, x0=5, y0=5, alfa=1.5, beta=2.5, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5, 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::moffat2D(x, y, params[0], params[1], params[2], params[3], params[4])
+                         + params[5];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::MOFFAT);
+
+    // Perfect data → chi2 should be 0
+    EXPECT_NEAR(fitter(params), 0.0, 1e-8);
+
+    // At the centroid gauss2D = A → Eval = A + background
+    for(size_t i = 0; i < W; i++) {
+        for(size_t j = 0; j < H; j++) {
+            EXPECT_NEAR(fitter.Eval(static_cast<double>(i), static_cast<double>(j), params), (*img)[img->PixelIndex({i,j})] , 1e-8);
+        }
+    }
+}
+
+TEST(StarFitterFunction, EvalConsistency_moffat2D)
+{
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // MOFFAT params: A=500, x0=5, y0=5, alfa=1.5, beta=2.5, gamma=0.75, theta =pi/3, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5, 0.75, DST::Math::MathCore::Pi()/3., 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::moffat2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5],params[6])
+                         + params[7];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::MOFFAT2D);
+
+    // Perfect data → chi2 should be 0
+    EXPECT_NEAR(fitter(params), 0.0, 1e-8);
+
+    // At the centroid gauss2D = A → Eval = A + background
+    for(size_t i = 0; i < W; i++) {
+        for(size_t j = 0; j < H; j++) {
+            EXPECT_NEAR(fitter.Eval(static_cast<double>(i), static_cast<double>(j), params), (*img)[img->PixelIndex({i,j})] , 1e-8);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// starFitter::Fitting() consistency
+// ---------------------------------------------------------------------------
+
+TEST(StarFitterFit, EvalConsistency_gauss)
+{
+    std::uniform_real_distribution<double> unif(-0.1,0.1);
+    std::default_random_engine re;
+
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // GAUSS params: A=500, x0=5, y0=5, sigma=1.5, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::gauss2D(x, y, params[0], params[1], params[2], params[3])
+                         + params[4];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::GAUSS);
+
+    ROOT::Minuit2::MnUserParameters upar;
+    upar.Add("A",          params[0]*(1+unif(re)), 1e-6);
+    upar.Add("x0",         params[1]*(1+unif(re)), 1e-6);
+    upar.Add("y0",         params[2]*(1+unif(re)), 1e-6);
+    upar.Add("sigma",      params[3]*(1+unif(re)), 1e-6);
+    upar.Add("background", params[4]*(1+unif(re)), 1e-6);
+
+    ROOT::Minuit2::MnMigrad migrad(fitter, upar);
+    ROOT::Minuit2::FunctionMinimum result = migrad();
+    EXPECT_TRUE(result.IsValid());
+
+    for(size_t i = 0; i < params.size(); i++)
+    {
+        EXPECT_LT(std::abs((result.UserState().Value(i)-params[i])/params[i]), 0.1);
+    }
+}
+
+TEST(StarFitterFit, EvalConsistency_igauss)
+{
+    std::uniform_real_distribution<double> unif(-0.1,0.1);
+    std::default_random_engine re;
+
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // GAUSS params: A=500, x0=5, y0=5, sigma=1.5, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::igauss2D(x, y, params[0], params[1], params[2], params[3], (double)1., (double) 1.)
+                         + params[4];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::iGAUSS);
+
+    ROOT::Minuit2::MnUserParameters upar;
+    upar.Add("A",          params[0]*(1+unif(re)), 1e-6);
+    upar.Add("x0",         params[1]*(1+unif(re)), 1e-6);
+    upar.Add("y0",         params[2]*(1+unif(re)), 1e-6);
+    upar.Add("sigma",      params[3]*(1+unif(re)), 1e-6);
+    upar.Add("background", params[4]*(1+unif(re)), 1e-6);
+
+    ROOT::Minuit2::MnMigrad migrad(fitter, upar);
+    ROOT::Minuit2::FunctionMinimum result = migrad();
+    EXPECT_TRUE(result.IsValid());
+
+    for(size_t i = 0; i < params.size(); i++)
+    {
+        EXPECT_LT(std::abs((result.UserState().Value(i)-params[i])/params[i]), 0.1);
+    }
+}
+
+TEST(StarFitterFit, EvalConsistency_gauss2D)
+{
+    std::uniform_real_distribution<double> unif(-0.1,0.1);
+    std::default_random_engine re;
+
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // GAUSS2D params: A=500, x0=5, y0=5, sigmaX=1.5, sigmaY=2.5, theta=pi/3, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5, DST::Math::MathCore::Pi()/3., 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::gauss2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5])
+                         + params[6];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::GAUSS2D);
+
+    ROOT::Minuit2::MnUserParameters upar;
+    upar.Add("A",          params[0]*(1+unif(re)), 1e-6);
+    upar.Add("x0",         params[1]*(1+unif(re)), 1e-6);
+    upar.Add("y0",         params[2]*(1+unif(re)), 1e-6);
+    upar.Add("sigmaX",     params[3]*(1+unif(re)), 1e-6);
+    upar.Add("sigmaY",     params[4]*(1+unif(re)), 1e-6);
+    upar.Add("Theta" ,     params[5]*(1+unif(re)), 1e-6);
+    upar.Add("background", params[6]*(1+unif(re)), 1e-6);
+
+    ROOT::Minuit2::MnMigrad migrad(fitter, upar);
+    ROOT::Minuit2::FunctionMinimum result = migrad();
+    EXPECT_TRUE(result.IsValid());
+
+    for(size_t i = 0; i < params.size(); i++)
+    {
+        EXPECT_LT(std::abs((result.UserState().Value(i)-params[i])/params[i]), 0.1);
+    }
+}
+
+TEST(StarFitterFit, EvalConsistency_igauss2D)
+{
+    std::uniform_real_distribution<double> unif(-0.1,0.1);
+    std::default_random_engine re;
+
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // GAUSS2D params: A=500, x0=5, y0=5, sigmaX=1.5, sigmaY=2.5, theta=pi/3, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5, DST::Math::MathCore::Pi()/3., 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::igauss2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5],(double) 1., (double) 1.)
+                         + params[6];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::iGAUSS2D);
+
+    ROOT::Minuit2::MnUserParameters upar;
+    upar.Add("A",          params[0]*(1+unif(re)), 1e-6);
+    upar.Add("x0",         params[1]*(1+unif(re)), 1e-6);
+    upar.Add("y0",         params[2]*(1+unif(re)), 1e-6);
+    upar.Add("sigmaX",     params[3]*(1+unif(re)), 1e-6);
+    upar.Add("sigmaY",     params[4]*(1+unif(re)), 1e-6);
+    upar.Add("Theta" ,     params[5]*(1+unif(re)), 1e-6);
+    upar.Add("background", params[6]*(1+unif(re)), 1e-6);
+
+    ROOT::Minuit2::MnMigrad migrad(fitter, upar);
+    ROOT::Minuit2::FunctionMinimum result = migrad();
+    EXPECT_TRUE(result.IsValid());
+
+    for(size_t i = 0; i < params.size(); i++)
+    {
+        EXPECT_LT(std::abs((result.UserState().Value(i)-params[i])/params[i]), 0.1);
+    }
+}
+
+TEST(StarFitterFit, EvalConsistency_moffat)
+{
+    std::uniform_real_distribution<double> unif(-0.1,0.1);
+    std::default_random_engine re;
+
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // MOFFAT params: A=500, x0=5, y0=5, alfa=1.5, beta=2.5, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5, 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::moffat2D(x, y, params[0], params[1], params[2], params[3], params[4])
+                         + params[5];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::MOFFAT);
+
+    ROOT::Minuit2::MnUserParameters upar;
+    upar.Add("A",          params[0]*(1+unif(re)), 1e-6);
+    upar.Add("x0",         params[1]*(1+unif(re)), 1e-6);
+    upar.Add("y0",         params[2]*(1+unif(re)), 1e-6);
+    upar.Add("alpha",      params[3]*(1+unif(re)), 1e-6);
+    upar.Add("beta",       params[4]*(1+unif(re)), 1e-6);
+    upar.Add("background", params[5]*(1+unif(re)), 1e-6);
+
+    ROOT::Minuit2::MnMigrad migrad(fitter, upar);
+    ROOT::Minuit2::FunctionMinimum result = migrad();
+    EXPECT_TRUE(result.IsValid());
+
+    for(size_t i = 0; i < params.size(); i++)
+    {
+        EXPECT_LT(std::abs((result.UserState().Value(i)-params[i])/params[i]), 0.1);
+    }
+}
+
+TEST(StarFitterFit, EvalConsistency_moffat2D)
+{
+    std::uniform_real_distribution<double> unif(-0.1,0.1);
+    std::default_random_engine re;
+
+    // Build an 11×11 image filled with exact GAUSS values (no noise → chi2 must be ~0)
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared< DSL::FITSimg<double> >(std::vector<size_t>{W, H});
+
+    // MOFFAT params: A=500, x0=5, y0=5, alfa=1.5, beta=2.5, gamma=0.75, theta =pi/3, background=10
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5, 0.75, DST::Math::MathCore::Pi()/3., 10.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::moffat2D(x, y, params[0], params[1], params[2], params[3], params[4], params[5],params[6])
+                         + params[7];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::MOFFAT2D);
+
+    ROOT::Minuit2::MnUserParameters upar;
+    upar.Add("A",          params[0]*(1+unif(re)), 1e-6);
+    upar.Add("x0",         params[1]*(1+unif(re)), 1e-6);
+    upar.Add("y0",         params[2]*(1+unif(re)), 1e-6);
+    upar.Add("alpha",      params[3]*(1+unif(re)), 1e-6);
+    upar.Add("beta",       params[4]*(1+unif(re)), 1e-6);
+    upar.Add("gamma",      params[5]*(1+unif(re)), 1e-6);
+    upar.Add("theta",      params[6]*(1+unif(re)), 1e-6);
+    upar.Add("background", params[7]*(1+unif(re)), 1e-6);
+
+    ROOT::Minuit2::MnMigrad migrad(fitter, upar);
+    ROOT::Minuit2::FunctionMinimum result = migrad();
+    EXPECT_TRUE(result.IsValid());
+
+    for(size_t i = 0; i < params.size(); i++)
+    {
+        EXPECT_LT(std::abs((result.UserState().Value(i)-params[i])/params[i]), 0.1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// starFitter::Plot() — visual / file output
+// ---------------------------------------------------------------------------
+
+TEST(StarFitter, Plot)
+{
+#ifndef Linuxx86_64
+    const size_t W = 11, H = 11;
+    auto img = std::make_shared<DSL::FITSimg<double>>(std::vector<size_t>{W, H});
+
+    const std::vector<double> params = {500., 5., 5., 1.5, 2.5,DST::Math::MathCore::Pi()/3.,0.};
+
+    for(size_t i = 0; i < img->Nelements(); i++) {
+        auto pix = img->PixelCoordinates(i);
+        const double x = static_cast<double>(pix[0]);
+        const double y = static_cast<double>(pix[1]);
+        const double v = DST::Math::function::gauss2D(x, y, params[0], params[1], params[2], params[3],params[4],params[5])
+                         + params[6];
+        img->SetPixelValue(v, i);
+    }
+
+    DST::algorithms::starFitter fitter(img, DST::Stars::evalType::GAUSS2D);
+
+    int arg = 0;
+    QApplication app(arg, nullptr);
+
+    QtFITSviewer* mw = new QtFITSviewer(250, 250, 600, 600);
+    mw->show();
+    QCustomPlot* customPlot = mw->GetPlot();
+    customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+
+    const std::string outFile = "./build/test_output/starfitter_plot.png";
+    EXPECT_NO_THROW(fitter.Plot(customPlot->axisRect(), params, 10, outFile));
+
+    std::ifstream file(outFile);
+    EXPECT_TRUE(file.good());
+
+    //app.exec();
+#endif
 }
 
 TEST(StarFinderTest, SyntheticImageGeneration)
@@ -496,14 +999,11 @@ TEST(StarFinderTest, FindStarsCube)
     const auto& detectedStars = finder.detectedStars();
 
     detectedStars.toCSV(std::cout,';');
-
 #ifndef Linuxx86_64
     {
         int arg=0;
         QApplication app(arg, nullptr);
 
-        
-    
         for(size_t i=1; i<4; ++i)
         {
             QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
@@ -516,10 +1016,830 @@ TEST(StarFinderTest, FindStarsCube)
             QtFITSviewer::QtDisplayLayer(customPlot,img,i);
             EXPECT_NO_THROW(finder.Plot(customPlot->axisRect(), i));
             customPlot->savePng(("./build/test_output/detected_stars_layer"+std::to_string(i)+".png").c_str());
-            
+
             std::ifstream file("./build/test_output/detected_stars_layer"+std::to_string(i)+".png");
             ASSERT_TRUE(file.good());
-        }   
+        }
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Helpers shared by all StarPropertiesEstimator tests
+// ---------------------------------------------------------------------------
+namespace
+{
+    // 10 well-separated positions: ≥80 px from any edge of 512×512, ≥120 px apart
+    const std::vector<std::pair<double,double>> kStarPositions = {
+        { 80.0,  80.0}, { 80.0, 200.0}, { 80.0, 320.0}, { 80.0, 440.0},
+        {200.0, 140.0}, {200.0, 260.0}, {200.0, 380.0},
+        {320.0,  80.0}, {320.0, 200.0}, {320.0, 320.0}
+    };
+    const double kBkg = 100.0;
+    const double kTol = 0.05; // 5% relative tolerance
+
+    // Run fitting for one model on all already-detected stars and return the updated table.
+    DSL::FITStable runFit(DST::algorithms::starFinder& finder,
+                          DST::Stars::evalType evalType)
+    {
+        const auto& detected = finder.detectedStars();
+        const auto& ids = detected.getColumn("ID")->values<uint64_t>();
+        for (size_t i = 0; i < detected.nrows(); ++i)
+            finder.EvalStellarProperties(ids[i], evalType);
+        return finder.detectedStars();
+    }
+} // anonymous namespace
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_GAUSS)
+{
+    // fits = [A, x0, y0, sigma, background]
+    const double kA     = 5000.0;
+    const double kSigma = 2.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::gauss2D(x, y, kA, x0, y0, kSigma);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::GAUSS);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)     / kA,     kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kSigma) / kSigma, kTol) << "star " << i << " sigma";
+        EXPECT_LT(std::abs(fits[i][4] - kBkg)   / kBkg,   kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_iGAUSS)
+{
+    // fits = [A, x0, y0, sigma, background]
+    const double kA     = 5000.0;
+    const double kSigma = 2.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::igauss2D(x, y, kA, x0, y0, kSigma, 1.0, 1.0);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::iGAUSS);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)     / kA,     kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kSigma) / kSigma, kTol) << "star " << i << " sigma";
+        EXPECT_LT(std::abs(fits[i][4] - kBkg)   / kBkg,   kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_GAUSS2D)
+{
+    // fits = [A, x0, y0, sigma_x, sigma_y, theta, background]
+    // Symmetric (sigma_x == sigma_y) to avoid theta degeneracy — theta not checked.
+    const double kA      = 5000.0;
+    const double kSigmaX = 2.0;
+    const double kSigmaY = 2.0;
+    const double kTheta  = DST::Math::MathCore::Pi() / 3.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::gauss2D(x, y, kA, x0, y0, kSigmaX, kSigmaY, kTheta);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::GAUSS2D);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)      / kA,      kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kSigmaX) / kSigmaX, kTol) << "star " << i << " sigma_x";
+        EXPECT_LT(std::abs(fits[i][4] - kSigmaY) / kSigmaY, kTol) << "star " << i << " sigma_y";
+        EXPECT_LT(std::abs(fits[i][6] - kBkg)    / kBkg,    kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_iGAUSS2D)
+{
+    // fits = [A, x0, y0, sigma_x, sigma_y, theta, background]
+    const double kA      = 5000.0;
+    const double kSigmaX = 2.0;
+    const double kSigmaY = 2.0;
+    const double kTheta  = 0.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::igauss2D(x, y, kA, x0, y0, kSigmaX, kSigmaY, kTheta, 1.0, 1.0);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::iGAUSS2D);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)      / kA,      kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kSigmaX) / kSigmaX, kTol) << "star " << i << " sigma_x";
+        EXPECT_LT(std::abs(fits[i][4] - kSigmaY) / kSigmaY, kTol) << "star " << i << " sigma_y";
+        EXPECT_LT(std::abs(fits[i][6] - kBkg)    / kBkg,    kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_MOFFAT)
+{
+    // fits = [A, x0, y0, alpha, beta, background]
+    const double kA     = 5000.0;
+    const double kAlpha = 2.0;
+    const double kBeta  = 3.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::moffat2D(x, y, kA, x0, y0, kAlpha, kBeta);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::MOFFAT);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)     / kA,     kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kAlpha) / kAlpha, kTol) << "star " << i << " alpha";
+        EXPECT_LT(std::abs(fits[i][4] - kBeta)  / kBeta,  kTol) << "star " << i << " beta";
+        EXPECT_LT(std::abs(fits[i][5] - kBkg)   / kBkg,   kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_MOFFAT2D)
+{
+    // fits = [A, x0, y0, alpha, beta, gamma, theta, background]
+    // gamma=1 (circular) to avoid theta degeneracy — theta not checked.
+    const double kA     = 5000.0;
+    const double kAlpha = 2.0;
+    const double kBeta  = 3.0;
+    const double kGamma = 1.0;
+    const double kTheta = 0.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::moffat2D(x, y, kA, x0, y0, kAlpha, kBeta, kGamma, kTheta);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::MOFFAT2D);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)     / kA,     kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kAlpha) / kAlpha, kTol) << "star " << i << " alpha";
+        EXPECT_LT(std::abs(fits[i][4] - kBeta)  / kBeta,  kTol) << "star " << i << " beta";
+        EXPECT_LT(std::abs(fits[i][5] - kGamma) / kGamma, kTol) << "star " << i << " gamma";
+        EXPECT_LT(std::abs(fits[i][7] - kBkg)   / kBkg,   kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_LORENTZIAN)
+{
+    // fits = [A, x0, y0, gamma, background]
+    const double kA     = 5000.0;
+    const double kGamma = 2.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::lorentzian2D(x, y, kA, x0, y0, kGamma);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::LORENTZIAN);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)     / kA,     kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kGamma) / kGamma, kTol) << "star " << i << " gamma";
+        EXPECT_LT(std::abs(fits[i][4] - kBkg)   / kBkg,   kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_LORENTZIAN2D)
+{
+    // fits = [A, x0, y0, gamma, q, theta, background]
+    // q=1 (circular) to avoid theta degeneracy — q and theta not checked.
+    const double kA      = 5000.0;
+    const double kGamma2 = 2.0;
+    const double kQ      = 1.0;
+    const double kTheta  = 0.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::lorentzian2D(x, y, kA, x0, y0, kGamma2, kQ, kTheta);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::LORENTZIAN);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)      / kA,      kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kGamma2) / kGamma2, kTol) << "star " << i << " gamma";
+        EXPECT_LT(std::abs(fits[i][4] - kBkg)    / kBkg,    kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+    
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_VOIGT)
+{
+    // fits = [A, x0, y0, fG, fL, background]
+    const double kA  = 5000.0;
+    const double kFG = 1.5;
+    const double kFL = 1.5;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::pseudo_voigt2D(x, y, kA, x0, y0, kFG, kFL);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::VOIGT);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)   / kA,   kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kFG)  / kFG,  kTol) << "star " << i << " fG";
+        EXPECT_LT(std::abs(fits[i][4] - kFL)  / kFL,  kTol) << "star " << i << " fL";
+        EXPECT_LT(std::abs(fits[i][5] - kBkg) / kBkg, kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+    
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_VOIGT2D)
+{
+    // fits = [A, x0, y0, fG, fL, q, theta, background]
+    // q=1 (circular) to avoid theta degeneracy — q and theta not checked.
+    const double kA     = 5000.0;
+    const double kFG2   = 1.5;
+    const double kFL2   = 1.5;
+    const double kQ     = 1.0;
+    const double kTheta = 0.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::pseudo_voigt2D(x, y, kA, x0, y0, kFG2, kFL2, kQ, kTheta);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::VOIGT2D);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)   / kA,   kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kFG2) / kFG2, kTol) << "star " << i << " fG";
+        EXPECT_LT(std::abs(fits[i][4] - kFL2) / kFL2, kTol) << "star " << i << " fL";
+        EXPECT_LT(std::abs(fits[i][7] - kBkg) / kBkg, kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+    
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_SERSIC)
+{
+    // fits = [A, x0, y0, re, n, background]
+    const double kA  = 5000.0;
+    const double kRe = 2.0;
+    const double kN  = 1.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::sersic2D(x, y, kA, x0, y0, kRe, kN);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::SERSIC);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)   / kA,   kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kRe)  / kRe,  kTol) << "star " << i << " re";
+        EXPECT_LT(std::abs(fits[i][4] - kN)   / kN,   kTol) << "star " << i << " n";
+        EXPECT_LT(std::abs(fits[i][5] - kBkg) / kBkg, kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+    
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_SERSIC2D)
+{
+    // fits = [A, x0, y0, re, n, q, theta, background]
+    // q=1 (circular) to avoid theta degeneracy — q and theta not checked.
+    const double kA     = 5000.0;
+    const double kRe2   = 2.0;
+    const double kN2    = 1.0;
+    const double kQ     = 1.0;
+    const double kTheta = 0.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::sersic2D(x, y, kA, x0, y0, kRe2, kN2, kQ, kTheta);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::SERSIC2D);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)   / kA,   kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kRe2) / kRe2, kTol) << "star " << i << " re";
+        EXPECT_LT(std::abs(fits[i][4] - kN2)  / kN2,  kTol) << "star " << i << " n";
+        EXPECT_LT(std::abs(fits[i][7] - kBkg) / kBkg, kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+    
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_KING)
+{
+    // fits = [A, x0, y0, rc, rt, background]
+    const double kA  = 5000.0;
+    const double kRc = 1.5;
+    const double kRt = 6.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::king2D(x, y, kA, x0, y0, kRc, kRt);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::KING);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)   / kA,   kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kRc)  / kRc,  kTol) << "star " << i << " rc";
+        EXPECT_LT(std::abs(fits[i][4] - kRt)  / kRt,  kTol) << "star " << i << " rt";
+        EXPECT_LT(std::abs(fits[i][5] - kBkg) / kBkg, kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+    
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_KING2D)
+{
+    // fits = [A, x0, y0, rc, rt, q, theta, background]
+    // q=1 (circular) to avoid theta degeneracy — q and theta not checked.
+    const double kA     = 5000.0;
+    const double kRc2   = 1.5;
+    const double kRt2   = 6.0;
+    const double kQ     = 1.0;
+    const double kTheta = 0.0;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::king2D(x, y, kA, x0, y0, kRc2, kRt2, kQ, kTheta);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::KING2D);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)   / kA,   kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kRc2) / kRc2, kTol) << "star " << i << " rc";
+        EXPECT_LT(std::abs(fits[i][4] - kRt2) / kRt2, kTol) << "star " << i << " rt";
+        EXPECT_LT(std::abs(fits[i][7] - kBkg) / kBkg, kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+    
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+TEST(StarFinderTest, StarPropertiesEstimator_AIRY)
+{
+    // fits = [A, x0, y0, a, background]
+    const double kA      = 5000.0;
+    const double kAscale = 1.5;
+
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [&](double x, double y, double x0, double y0) {
+            return DST::Math::function::airy2D(x, y, kA, x0, y0, kAscale);
+        });
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    const auto& table = runFit(finder, Stars::evalType::AIRY);
+    const auto& fits  = table.getColumn("fits")->values<FITSform::doubleVector>();
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_LT(std::abs(fits[i][0] - kA)      / kA,      kTol) << "star " << i << " amplitude";
+        EXPECT_LT(std::abs(fits[i][3] - kAscale) / kAscale, kTol) << "star " << i << " a";
+        EXPECT_LT(std::abs(fits[i][4] - kBkg)    / kBkg,    kTol) << "star " << i << " background";
+        EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
+        EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
+    }
+    
+#ifndef Linuxx86_64
+    {
+        int arg=0;
+        QApplication app(arg, nullptr);
+
+        QtFITSviewer *mw = new QtFITSviewer(250, 250, 600,600);
+        mw->setWindowTitle(img->GetName().c_str());
+        mw->show();
+
+        QCustomPlot *customPlot = mw->GetPlot();
+        customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
+
+        QtFITSviewer::QtDisplay(customPlot,img);
+        EXPECT_NO_THROW(finder.Plot(customPlot->axisRect()));
+
+        //app.exec();
     }
 #endif
 }
