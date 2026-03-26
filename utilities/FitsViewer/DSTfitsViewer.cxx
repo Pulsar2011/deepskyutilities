@@ -610,27 +610,35 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     image->setBackgroundScaledMode(Qt::AspectRatioMode::KeepAspectRatioByExpanding);
     
     QCPLayoutGrid *xproj_layout = new QCPLayoutGrid;
-    customPlot->plotLayout()->addElement(1, 0, xproj_layout); // insert axis rect in first row
-    
-    QCPLayoutGrid *histo_layout = new QCPLayoutGrid;
-    customPlot->plotLayout()->addElement(0, 3, histo_layout); // insert axis rect in first row
-    
+    customPlot->plotLayout()->addElement(1, 0, xproj_layout); // row 1, col 0: x projection
+
     QCPLayoutGrid *yproj_layout = new QCPLayoutGrid;
-    customPlot->plotLayout()->addElement(0, 2, yproj_layout); // insert axis rect in first row
-    
-    
+    customPlot->plotLayout()->addElement(0, 2, yproj_layout); // row 0, col 2: y projection (col 1 is color scale)
+
+    QCPLayoutGrid *histo_layout = new QCPLayoutGrid;
+    customPlot->plotLayout()->addElement(0, 3, histo_layout); // row 0, col 3: histogram
+
+    // Col 0=image(6), col 1=colorscale(narrow), col 2=yproj(1), col 3=histo(1)
+    customPlot->plotLayout()->setColumnStretchFactor(0, 6);
+    customPlot->plotLayout()->setColumnStretchFactor(1, 0.3);
+    customPlot->plotLayout()->setColumnStretchFactor(2, 1);
+    customPlot->plotLayout()->setColumnStretchFactor(3, 3);
+
+    // Row 0=image(3), row 1=xproj(1)
+    customPlot->plotLayout()->setRowStretchFactor(0, 3);
+    customPlot->plotLayout()->setRowStretchFactor(1, 1);
+
     // prepare axis rects that will be placed in the sublayout:
     QCPAxisRect *yproj = new QCPAxisRect(customPlot, false);
     QCPAxisRect *xproj = new QCPAxisRect(customPlot, false);
     QCPAxisRect *histo = new QCPAxisRect(customPlot, false);
-    
+
     image->setMinimumSize(200, 200);
-    yproj->setMinimumSize(50, 200);
-    yproj->setMaximumSize(100, 1200);
-    xproj->setMinimumSize(200, 50);
-    xproj->setMaximumSize(1200, 100);
-    //histo->setMaximumSize(1200, 1200);
-    histo->setMinimumSize(60, 200);
+    //image->setMaximumSize(1900, 1900);
+    yproj->setMinimumSize(150, 200);
+    xproj->setMinimumSize(200, 150);
+    //xproj->setMaximumSize(QWIDGETSIZE_MAX, 100);
+    histo->setMinimumSize(200, 200);
     
     yproj_layout->addElement(0, 0, yproj);
     xproj_layout->addElement(0, 0, xproj);
