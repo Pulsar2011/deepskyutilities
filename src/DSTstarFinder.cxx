@@ -1642,9 +1642,9 @@ namespace DST
             if(fsky == nullptr || star.FilledPixels().empty())
                 return;
 
-            double fluxSum   = 0.0;
-            double xWeighted = 0.0;
-            double yWeighted = 0.0;
+            //double fluxSum   = 0.0;
+            //double xWeighted = 0.0;
+            //double yWeighted = 0.0;
             double iL        = 0.0;
 
             //1- Crop a small region arround the star to speed up the fitting
@@ -1672,7 +1672,7 @@ namespace DST
                 if(fsky->Masked(idx))
                     continue;
 
-                double val = fsky->DoubleValueAtPixel(idx);
+                //double val = fsky->DoubleValueAtPixel(idx);
             }
 
             xMin = std::max(0.0, xMin -(xMax - xMin)/2.);

@@ -5,6 +5,7 @@
 #include <fstream>
 #include <cmath>
 #include <map>
+#include <set>
 
 #ifdef __WITH_QT__
 
@@ -21,8 +22,22 @@
 #include <QPainter>
 #include <QStyleOption>
 #include <QPolygon>
+#include <QSplitter>
+#include <QComboBox>
+#include <QPushButton>
+#include <QCheckBox>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QFormLayout>
+#include <QToolBar>
+#include <QTabWidget>
+#include <QMessageBox>
+#include <QSpinBox>
+#include <DSTdisplay/QCustomContours.h>
 
 #endif
+
+#include <limits>
 
 #include <DSTCore/OptionManager.h>
 #include <DSTCore/DSS_version.h>
@@ -812,6 +827,111 @@ static QWidget* notYetImpl(const std::string& desc, const HduInfo& hdu)
     return w;
 }
 
+// ---------------------------------------------------------------------------
+// Command bar helpers
+// ---------------------------------------------------------------------------
+
+// Closes `popup` when the watched widget receives QEvent::Close.
+// Parented to `popup` so it is automatically uninstalled when popup is destroyed.
+class PopupCloseGuard : public QObject
+{
+public:
+    PopupCloseGuard(QWidget* popup, QObject* parent)
+        : QObject(parent), m_popup(popup) {}
+protected:
+    bool eventFilter(QObject*, QEvent* e) override
+    {
+        if (e->type() == QEvent::Close)
+            m_popup->close();
+        return false; // do not consume the event
+    }
+private:
+    QWidget* m_popup;
+};
+
+// Builds and returns a populated, read-only FITS header QTableWidget.
+// Caller is responsible for ownership (pass a parent or add to a layout).
+static QTableWidget* makeFitsHeaderTable(const FITShdu& hdu, QWidget* parent)
+{
+    auto* table = new QTableWidget(parent);
+    table->setColumnCount(4);
+    table->setHorizontalHeaderLabels({"Keyword", "Value", "Type", "Comment"});
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setWordWrap(true);
+    table->verticalHeader()->setVisible(false);
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    table->horizontalHeader()->setStretchLastSection(true);
+
+    int row = 0;
+    for (auto it = hdu.begin(); it != hdu.end(); ++it, ++row)
+    {
+        table->insertRow(row);
+        table->setItem(row, 0, new QTableWidgetItem(QString::fromStdString(it->first)));
+        table->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(it->second.value())));
+        table->setItem(row, 2, new QTableWidgetItem(QString::fromStdString(FITSkeyword::GetDataType(it->second.type()))));
+        table->setItem(row, 3, new QTableWidgetItem(QString::fromStdString(it->second.comment())));
+    }
+    table->resizeColumnsToContents();
+    table->setColumnWidth(1, qMin(table->columnWidth(1), table->fontMetrics().averageCharWidth() * 50));
+    table->resizeRowsToContents();
+    return table;
+}
+
+// Opens a non-modal window listing the FITS keywords of a given HDU.
+// The widget is Qt-parented to `parent` so it is destroyed when the viewer closes.
+static void showFitsHeaderWidget(const FITShdu& hdu, QWidget* parent)
+{
+    auto* w = new QWidget(parent, Qt::Window);
+    w->setWindowTitle(QString("FITS Header — %1").arg(parent ? parent->windowTitle() : ""));
+    w->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto* lay = new QVBoxLayout(w);
+    lay->addWidget(makeFitsHeaderTable(hdu, w));
+
+    w->resize(700, 400);
+    if (parent)
+        parent->installEventFilter(new PopupCloseGuard(w, w));
+    w->show();
+}
+
+// Attaches a thin command bar (QToolBar) to any QMainWindow.
+// To add more buttons in the future: create a QPushButton, connect it, call toolbar->addWidget().
+static void addCommandBar(QMainWindow* win, const FITShdu& hdu)
+{
+    auto* toolbar = new QToolBar("Options", win);
+    toolbar->setMovable(false);
+    toolbar->setFloatable(false);
+    toolbar->setIconSize(QSize(16, 16));
+
+    // --- Header button ---
+    auto* headerBtn = new QPushButton("Header", toolbar);
+    headerBtn->setFlat(true);
+    QObject::connect(headerBtn, &QPushButton::clicked, win, [hdu, win]() {
+        showFitsHeaderWidget(hdu, win);
+    });
+    toolbar->addWidget(headerBtn);
+
+    // --- Add future buttons here (one QPushButton + connect + addWidget per button) ---
+
+    win->addToolBar(Qt::TopToolBarArea, toolbar);
+}
+
+// Viewer for HDUs that carry no image data (NAXIS=0): shows the header table directly.
+static QWidget* makeHeaderOnlyViewer(const HduInfo& hdu, const std::string& fitsPath)
+{
+    FITSmanager fm(fitsPath);
+    const FITShdu fitshdu = *fm.GetHeaderAtIndex(hdu.index);
+
+    auto* win = new QMainWindow;
+    win->setWindowTitle(QString("HDU %1 — %2 (header only)")
+        .arg(hdu.index)
+        .arg(QString::fromStdString(hdu.extname)));
+
+    win->setCentralWidget(makeFitsHeaderTable(fitshdu, win));
+    win->resize(700, 400);
+    return win;
+}
+
 static QWidget* make2DViewer(const HduInfo& hdu,
                               const std::string& fitsPath,
                               const UOption& opt)
@@ -842,7 +962,10 @@ static QWidget* make2DViewer(const HduInfo& hdu,
     QCustomPlot* plt = Draw(c_img, opt.draw());
     if (!plt) return nullptr;
 
-    return plt->window() ? dynamic_cast<QWidget*>(plt->window()) : nullptr;
+    QMainWindow* mainWin = qobject_cast<QMainWindow*>(plt->window());
+    if (mainWin)
+        addCommandBar(mainWin, img->HDU());
+    return mainWin ? mainWin : dynamic_cast<QWidget*>(plt->window());
 }
 
 static QWidget* make3DViewer(const HduInfo& hdu,
@@ -1030,6 +1153,512 @@ static QWidget* make3DViewer(const HduInfo& hdu,
                          customPlot->replot(QCustomPlot::rpQueuedReplot);
                      });
 
+    addCommandBar(win, cube->HDU());
+    return win;
+}
+
+// ---------------------------------------------------------------------------
+// FITSTable viewer
+// ---------------------------------------------------------------------------
+
+// Returns true if the column can be used as Y axis (ordinate).
+// Complex types (tcplx, tdbcplx) are allowed — the plotting backend handles them.
+static bool isPlottableAsY(const std::unique_ptr<FITSform>& col)
+{
+    const DSL::dtype t = col->getType();
+    return t != DSL::dtype::tsbyte
+        && t != DSL::dtype::tstring
+        && t != DSL::dtype::tlogical
+        && t != DSL::dtype::tbit
+        && t != DSL::dtype::tbyte
+        && t != DSL::dtype::tnone;
+}
+
+// Returns true if the column can be used as X axis (abscissa).
+// Complex types are excluded: no natural ordering as a real-valued axis.
+static bool isPlottableAsX(const std::unique_ptr<FITSform>& col)
+{
+    return isPlottableAsY(col)
+        && col->getType() != DSL::dtype::tcplx
+        && col->getType() != DSL::dtype::tdbcplx;
+}
+
+static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsPath)
+{
+    // --- Load the table ---
+    FITSmanager fm(fitsPath);
+    auto tab = std::const_pointer_cast<const FITStable>(fm.GetTableAtIndex(hdu.index));
+
+    // --- Column metadata ---
+    const FITStable::clist cols = tab->listColumns(); // each entry: {name, TFORM, unit}
+    const size_t nCols = tab->ncols();
+    const size_t nRows = tab->nrows();
+
+    // Build separate plottable lists for X and Y combo boxes.
+    // plottableX: real/integer scalar columns (no complex) — used for Scatter X, Density Z weight, Histogram.
+    // plottableY: all numeric columns including complex — used for Scatter Y, Density X/Y.
+    // Complex columns are allowed in Density X/Y selectors; when one axis is left at "-- (none) --"
+    // and the other is complex, QtDensityPlot's single-column overload splits real/imag parts.
+    struct PlotCol { std::string name; std::string unit; };
+    std::vector<PlotCol> plottableX;
+    std::vector<PlotCol> plottableY;
+
+    for (const auto& entry : cols) {
+        const std::string& name = entry[0];
+        const std::string& unit = entry[2];
+        const auto& col = tab->getColumn(name);
+        if (isPlottableAsX(col)) plottableX.push_back({name, unit});
+        if (isPlottableAsY(col)) plottableY.push_back({name, unit});
+    }
+
+    // Label helper: "name [unit]" or just "name" when no unit
+    auto colLabel = [](const PlotCol& c) -> QString {
+        return c.unit.empty()
+            ? QString::fromStdString(c.name)
+            : QString::fromStdString(c.name) + " [" + QString::fromStdString(c.unit) + "]";
+    };
+
+    // --- Window shell ---
+    auto* win = new QMainWindow;
+    win->setWindowTitle(QString("HDU %1 - %2 (%3)")
+        .arg(hdu.index)
+        .arg(QString::fromStdString(hdu.extname))
+        .arg(hdu.type == HduInfo::Type::BTBL ? "Binary Table" : "ASCII Table"));
+
+    // --- Left panel: table summary (unchanged) ---
+    auto* leftPanel  = new QWidget;
+    auto* leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->addWidget(new QLabel(QString("Columns: %1").arg(nCols)));
+    leftLayout->addWidget(new QLabel(QString("Rows: %1").arg(nRows)));
+
+    auto* colTable = new QTableWidget(static_cast<int>(nCols), 2);
+    colTable->setHorizontalHeaderLabels({"Name", "Type"});
+    colTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    colTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    colTable->verticalHeader()->setVisible(false);
+    for (int i = 0; i < static_cast<int>(nCols); ++i) {
+        const auto& c = cols[static_cast<size_t>(i)]; // c[0]=name, c[1]=TFORM, c[2]=unit
+        colTable->setItem(i, 0, new QTableWidgetItem(QString::fromStdString(c[0])));
+        QString typeStr = QString::fromStdString(c[1]);
+        if (!c[2].empty())
+            typeStr += " [" + QString::fromStdString(c[2]) + "]";
+        colTable->setItem(i, 1, new QTableWidgetItem(typeStr));
+    }
+    leftLayout->addWidget(colTable, 1);
+    leftPanel->setMinimumWidth(120);
+
+    // --- Centre panel: plot area ---
+    auto* customPlot = new QCustomPlot;
+    customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes);
+    customPlot->axisRect()->setupFullAxesBox(true);
+    customPlot->legend->setVisible(false);  // axis labels identify columns; legend causes layout crash on first show
+    customPlot->setMinimumWidth(200);
+
+    // --- Right panel: QTabWidget with three tabs ---
+    auto* tabWidget = new QTabWidget;
+    tabWidget->setMinimumWidth(160);
+
+    // ---- Tab 0: Scatter ----
+    auto* scatterTab    = new QWidget;
+    auto* scatterLayout = new QVBoxLayout(scatterTab);
+    auto* scatterForm   = new QFormLayout;
+    auto* xScatterCombo = new QComboBox;
+    auto* yScatterCombo = new QComboBox;
+
+    // X: "(Row index)" sentinel first, then real/integer columns (no complex)
+    xScatterCombo->addItem("(Row index)");
+    for (const auto& c : plottableX)
+        xScatterCombo->addItem(colLabel(c));
+
+    // Y: all numeric columns including complex; no sentinel — column required
+    for (const auto& c : plottableY)
+        yScatterCombo->addItem(colLabel(c));
+
+    scatterForm->addRow("X axis:", xScatterCombo);
+    scatterForm->addRow("Y axis:", yScatterCombo);
+    scatterLayout->addLayout(scatterForm);
+    scatterLayout->addStretch();
+    tabWidget->addTab(scatterTab, "Scatter");
+
+    // ---- Tab 1: Density Plot ----
+    auto* densTab    = new QWidget;
+    auto* densLayout = new QVBoxLayout(densTab);
+    auto* densForm   = new QFormLayout;
+    auto* xDensCombo = new QComboBox;
+    auto* yDensCombo = new QComboBox;
+    auto* zDensCombo = new QComboBox;
+
+    // X/Y: "-- (none) --" sentinel first (index 0), then all numeric columns incl. complex
+    xDensCombo->addItem("-- (none) --");
+    yDensCombo->addItem("-- (none) --");
+    for (const auto& c : plottableY) {
+        xDensCombo->addItem(colLabel(c));
+        yDensCombo->addItem(colLabel(c));
+    }
+
+    // Z/weight: "-- (none) --" sentinel first, then real/integer columns only
+    zDensCombo->addItem("-- (none) --");
+    for (const auto& c : plottableX)
+        zDensCombo->addItem(colLabel(c));
+
+    auto* densNBinsX = new QSpinBox;
+    auto* densNBinsY = new QSpinBox;
+    densNBinsX->setRange(2, 2000);  densNBinsX->setValue(100);
+    densNBinsY->setRange(2, 2000);  densNBinsY->setValue(100);
+
+    auto* densLogX = new QCheckBox("Log X");
+    auto* densLogY = new QCheckBox("Log Y");
+    auto* densLogZ = new QCheckBox("Log color scale");
+    auto* densLogRow = new QHBoxLayout;
+    densLogRow->addWidget(densLogX);
+    densLogRow->addWidget(densLogY);
+    densLogRow->addWidget(densLogZ);
+
+    densForm->addRow("X axis:", xDensCombo);
+    densForm->addRow("Y axis:", yDensCombo);
+    densForm->addRow("Weight (optional):", zDensCombo);
+    densForm->addRow("Bins X:", densNBinsX);
+    densForm->addRow("Bins Y:", densNBinsY);
+    densLayout->addLayout(densForm);
+    densLayout->addLayout(densLogRow);
+    densLayout->addStretch();
+    tabWidget->addTab(densTab, "Density");
+
+    // ---- Tab 2: Histogram ----
+    auto* histTab    = new QWidget;
+    auto* histLayout = new QVBoxLayout(histTab);
+    auto* histForm   = new QFormLayout;
+    auto* histCombo  = new QComboBox;
+
+    // Column: real/integer only; no sentinel — column required
+    for (const auto& c : plottableX)
+        histCombo->addItem(colLabel(c));
+
+    auto* histNBins = new QSpinBox;
+    histNBins->setRange(1, 10000);
+    histNBins->setValue(0);           // 0 → auto (Sturges rule)
+    histNBins->setSpecialValueText("auto");
+
+    auto* histLogX  = new QCheckBox("Log bins (X)");
+    auto* histLogY  = new QCheckBox("Log Y axis");
+    auto* histLogRow = new QHBoxLayout;
+    histLogRow->addWidget(histLogX);
+    histLogRow->addWidget(histLogY);
+
+    histForm->addRow("Column:", histCombo);
+    histForm->addRow("Bins:", histNBins);
+    histLayout->addLayout(histForm);
+    histLayout->addLayout(histLogRow);
+    histLayout->addStretch();
+    tabWidget->addTab(histTab, "Histogram");
+
+    // --- Overlay / layering state ---
+    // hasContent tracks whether the canvas currently has any plotted data.
+    // contourColorIdx and scatterColorIdx cycle through distinct colors on each
+    // successive Plot call in Retain mode so overlaid plots are visually distinct.
+    auto hasContent      = std::make_shared<bool>(false);
+    auto contourColorIdx = std::make_shared<int>(0);
+    auto scatterColorIdx = std::make_shared<int>(0);
+
+    // Color palettes cycled in Retain mode
+    static const QColor scatterPalette[] = {
+        Qt::blue, Qt::red, Qt::darkGreen, Qt::magenta, Qt::cyan, QColor(255,128,0)
+    };
+    static const QColor contourPalette[] = {
+        Qt::white, Qt::yellow, Qt::cyan, Qt::magenta, Qt::red, Qt::green
+    };
+    static const int nScatterColors = 6;
+    static const int nContourColors = 6;
+
+    // --- clearCanvas lambda ---
+    // Removes the QCPColorScale (column 1 of plotLayout), all plottables, and all
+    // annotation items (contour labels).  Resets the color cycling counters.
+    auto clearCanvas = [=]() {
+        if (customPlot->plotLayout()->hasElement(0, 1)) {
+            customPlot->plotLayout()->remove(customPlot->plotLayout()->element(0, 1));
+            customPlot->plotLayout()->simplify();
+        }
+        customPlot->clearPlottables();
+        customPlot->clearItems();
+        *hasContent      = false;
+        *contourColorIdx = 0;
+        *scatterColorIdx = 0;
+        customPlot->replot();
+    };
+
+    // --- doScatter lambda ---
+    auto doScatter = [=]() {
+        const int xIdx = xScatterCombo->currentIndex();
+        const bool useRowIdx = (xIdx == 0);
+        const std::string xKey = useRowIdx
+            ? std::string()
+            : plottableX[static_cast<size_t>(xIdx - 1)].name;
+        const std::string yKey =
+            plottableY[static_cast<size_t>(yScatterCombo->currentIndex())].name;
+
+        std::vector<std::shared_ptr<QCPGraph>> graphs;
+        try {
+            graphs = useRowIdx
+                ? QtFITSviewer::QtScatter(customPlot, tab, yKey)
+                : QtFITSviewer::QtScatter(customPlot, tab, xKey, yKey);
+        } catch (const std::exception& e) {
+            QMessageBox::critical(nullptr, "Scatter error", QString::fromStdString(e.what()));
+            return;
+        }
+
+        const QColor col = scatterPalette[(*scatterColorIdx)++ % nScatterColors];
+        for (auto& g : graphs) {
+            g->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 4));
+            g->setPen(QPen(col));
+        }
+
+        const QString xLabel = useRowIdx
+            ? QString("Row index")
+            : colLabel(plottableX[static_cast<size_t>(xIdx - 1)]);
+        const QString yLabel = colLabel(plottableY[static_cast<size_t>(yScatterCombo->currentIndex())]);
+        customPlot->xAxis->setLabel(xLabel);
+        customPlot->yAxis->setLabel(yLabel);
+
+        customPlot->rescaleAxes();
+        customPlot->replot(QCustomPlot::rpQueuedReplot);
+        *hasContent = true;
+    };
+
+    // --- doHistogram lambda ---
+    auto doHistogram = [=]() {
+        if (plottableX.empty()) {
+            QMessageBox::warning(nullptr, "Histogram", "No suitable columns available.");
+            return;
+        }
+        const std::string colName =
+            plottableX[static_cast<size_t>(histCombo->currentIndex())].name;
+
+        const size_t nBins   = static_cast<size_t>(histNBins->value()); // 0 = auto
+        const bool   logBins = histLogX->isChecked();
+        const bool   logY    = histLogY->isChecked();
+
+        std::vector<std::shared_ptr<QCPGraph>> graphs;
+        try {
+            graphs = QtFITSviewer::QtHistogram(customPlot, tab, colName, nBins);
+        } catch (const std::exception& e) {
+            QMessageBox::critical(nullptr, "Histogram error", QString::fromStdString(e.what()));
+            return;
+        }
+
+        // Apply log scale types after the fact (QtHistogram's FITStable overload
+        // hardcodes logFlag=0; we set the axis scale directly on the plot).
+        customPlot->xAxis->setScaleType(logBins ? QCPAxis::stLogarithmic : QCPAxis::stLinear);
+        customPlot->yAxis->setScaleType(logY    ? QCPAxis::stLogarithmic : QCPAxis::stLinear);
+
+        const QColor col = scatterPalette[(*scatterColorIdx)++ % nScatterColors];
+        for (auto& g : graphs)
+            g->setPen(QPen(col));
+
+        customPlot->xAxis->setLabel(colLabel(plottableX[static_cast<size_t>(histCombo->currentIndex())]));
+        customPlot->yAxis->setLabel("count");
+
+        customPlot->rescaleAxes();
+        customPlot->replot(QCustomPlot::rpQueuedReplot);
+        *hasContent = true;
+    };
+
+    // --- doDensity lambda ---
+    // When Retain is unchecked: draws a filled QCPColorMap (QtDensityPlot).
+    // When Retain is checked: computes the density grid, then discards the color map
+    // and overlays QCustomContours contour lines instead, using a new uniform color
+    // on each call so successive overlaid contour layers are visually distinct.
+    auto doDensity = [=](bool retain) {
+        const int xDensIdx = xDensCombo->currentIndex(); // 0 = "-- (none) --"
+        const int yDensIdx = yDensCombo->currentIndex();
+        const bool xIsNone = (xDensIdx == 0);
+        const bool yIsNone = (yDensIdx == 0);
+
+        // Validate: at least one axis must be selected
+        if (xIsNone && yIsNone) {
+            QMessageBox::warning(nullptr, "Density Plot",
+                "Select at least one axis column.");
+            return;
+        }
+        // If one axis is "-- (none) --" the other must be complex so the
+        // single-column overload of QtDensityPlot can split real/imag parts.
+        if (xIsNone || yIsNone) {
+            const std::string checkCol = xIsNone
+                ? plottableY[static_cast<size_t>(yDensIdx - 1)].name
+                : plottableY[static_cast<size_t>(xDensIdx - 1)].name;
+            const DSL::dtype t = tab->getColumn(checkCol)->getType();
+            if (t != DSL::dtype::tcplx && t != DSL::dtype::tdbcplx) {
+                QMessageBox::warning(nullptr, "Density Plot",
+                    "A single-axis selection requires a complex-type column "
+                    "(real and imaginary parts are used as X and Y).");
+                return;
+            }
+        }
+
+        // Compute the density map (always needed: either to display directly, or
+        // to extract the binned grid for QCustomContours).
+        const size_t  nBinsX  = static_cast<size_t>(densNBinsX->value());
+        const size_t  nBinsY  = static_cast<size_t>(densNBinsY->value());
+        // logFlag bitmask: 0x1=log₁₀(x), 0x2=log₁₀(y), 0x4=log₁₀(bin count/z)
+        const uint8_t logFlag = static_cast<uint8_t>(
+            (densLogX->isChecked() ? 0x1 : 0) |
+            (densLogY->isChecked() ? 0x2 : 0) |
+            (densLogZ->isChecked() ? 0x4 : 0));
+
+        std::shared_ptr<QCPColorMap> colorMap;
+        try {
+            if (xIsNone || yIsNone) {
+                // Single complex column: real→X, imag→Y
+                const std::string singleCol = xIsNone
+                    ? plottableY[static_cast<size_t>(yDensIdx - 1)].name
+                    : plottableY[static_cast<size_t>(xDensIdx - 1)].name;
+                colorMap = QtFITSviewer::QtDensityPlot(customPlot, tab, singleCol,
+                                                        nBinsX, nBinsY, logFlag);
+            } else {
+                const std::string xCol = plottableY[static_cast<size_t>(xDensIdx - 1)].name;
+                const std::string yCol = plottableY[static_cast<size_t>(yDensIdx - 1)].name;
+                const int zIdx = zDensCombo->currentIndex();
+                const std::string zCol = (zIdx == 0)
+                    ? std::string()
+                    : plottableX[static_cast<size_t>(zIdx - 1)].name;
+                colorMap = QtFITSviewer::QtDensityPlot(customPlot, tab, xCol, yCol, zCol,
+                                                        nBinsX, nBinsY, logFlag);
+            }
+        } catch (const std::exception& e) {
+            QMessageBox::critical(nullptr, "Density error", QString::fromStdString(e.what()));
+            return;
+        }
+        if (!colorMap) {
+            QMessageBox::critical(nullptr, "Density error", "Density plot returned null.");
+            return;
+        }
+
+        if (!retain) {
+            // No-retain path: keep the filled color map as-is.
+            // Axis labels and replot were already handled inside QtDensityPlot.
+            *hasContent = true;
+            return;
+        }
+
+        // Retain path: extract the binned grid, remove the temporary color map,
+        // and overlay contour lines with a fresh uniform color.
+
+        auto* mapData = colorMap->data();
+        const int gridW = mapData->keySize();
+        const int gridH = mapData->valueSize();
+        QCPRange xRange, yRange;
+        xRange = mapData->keyRange();
+        yRange = mapData->valueRange();
+
+        // Build row-major Z grid: Z[row][col] = mapData->cell(col, row)
+        std::vector<std::vector<double>> Z(
+            static_cast<size_t>(gridH),
+            std::vector<double>(static_cast<size_t>(gridW)));
+        for (int row = 0; row < gridH; ++row)
+            for (int col = 0; col < gridW; ++col)
+                Z[static_cast<size_t>(row)][static_cast<size_t>(col)] =
+                    mapData->cell(col, row);
+
+        // Remove temporary density map and its color scale from the layout
+        customPlot->removePlottable(colorMap.get());
+        if (customPlot->plotLayout()->hasElement(0, 1)) {
+            customPlot->plotLayout()->remove(customPlot->plotLayout()->element(0, 1));
+            customPlot->plotLayout()->simplify();
+        }
+
+        // Compute contours (8 levels)
+        QCustomContours contour(Z, 8);
+        if (contour.lines().isEmpty()) {
+            QMessageBox::warning(nullptr, "Density / Contour",
+                "No contour levels could be computed (all bins may be equal or empty).");
+            return;
+        }
+
+        // Each successive Retain+Plot call uses the next color in the palette
+        const QColor cColor = contourPalette[(*contourColorIdx)++ % nContourColors];
+        contour.setPen(QPen(cColor, 1.5));
+        contour.clearColorGradient(); // uniform line color per spec
+        contour.setLabelFontSize(0);  // suppress labels — clutters overlay
+
+        // Render contour lines with coordinate remapping from grid-index space
+        // to data space.  QCustomContours::render() uses raw grid indices [0, nBins)
+        // as coordinates; we bypass it and remap manually so the contours align
+        // with any scatter / histogram overlay already on the canvas.
+        const double xScale = (gridW > 1)
+            ? (xRange.upper - xRange.lower) / static_cast<double>(gridW - 1) : 1.0;
+        const double yScale = (gridH > 1)
+            ? (yRange.upper - yRange.lower) / static_cast<double>(gridH - 1) : 1.0;
+        const double nanVal = std::numeric_limits<double>::quiet_NaN();
+
+        for (const auto& lvlLines : contour.lines()) {
+            const QVector<double>& xs = lvlLines.first;
+            const QVector<double>& ys = lvlLines.second;
+            auto* curve = new QCPCurve(customPlot->xAxis, customPlot->yAxis);
+            curve->setPen(QPen(cColor, 1.5));
+            curve->setScatterStyle(QCPScatterStyle::ssNone);
+            for (int i = 0; i < xs.size(); ++i) {
+                if (std::isnan(xs[i])) {
+                    curve->addData(nanVal, nanVal);
+                } else {
+                    curve->addData(
+                        xRange.lower + xs[i] * xScale,
+                        yRange.lower + ys[i] * yScale);
+                }
+            }
+        }
+
+        customPlot->rescaleAxes();
+        customPlot->replot(QCustomPlot::rpQueuedReplot);
+        *hasContent = true;
+    };
+
+    // --- Right panel: tab widget + Plot/Clear/Retain below it ---
+    auto* rightPanel  = new QWidget;
+    auto* rightLayout = new QVBoxLayout(rightPanel);
+    rightLayout->setContentsMargins(4, 4, 4, 4);
+    rightLayout->addWidget(tabWidget);
+
+    auto* plotBtn  = new QPushButton("Plot");
+    auto* clearBtn = new QPushButton("Clear");
+    auto* retainBox = new QCheckBox("Retain plot");
+
+    auto* btnLayout = new QHBoxLayout;
+    btnLayout->addWidget(plotBtn);
+    btnLayout->addWidget(clearBtn);
+    rightLayout->addLayout(btnLayout);
+    rightLayout->addWidget(retainBox);
+    rightPanel->setMinimumWidth(160);
+
+    // --- Central container: splitter only ---
+    auto* splitter = new QSplitter(Qt::Horizontal);
+    splitter->addWidget(leftPanel);
+    splitter->addWidget(customPlot);
+    splitter->addWidget(rightPanel);
+    splitter->setSizes({100, 600, 170});
+
+    win->setCentralWidget(splitter);
+    win->resize(1100, 680);
+
+    // --- Wire connections ---
+    // Plot button: dispatch to the active tab's draw function
+    QObject::connect(plotBtn, &QPushButton::clicked, win, [=]() {
+        const bool retain = retainBox->isChecked();
+        if (!retain) clearCanvas();
+        switch (tabWidget->currentIndex()) {
+            case 0: doScatter();      break;
+            case 1: doDensity(retain); break;
+            case 2: doHistogram();    break;
+            default: break;
+        }
+    });
+
+    // Clear button: unconditional canvas wipe
+    QObject::connect(clearBtn, &QPushButton::clicked, win, [=]() {
+        clearCanvas();
+    });
+
+    // No auto-draw on combo change: the canvas stays blank until Plot is clicked.
+
+    addCommandBar(win, tab->HDU());
     return win;
 }
 
@@ -1040,7 +1669,7 @@ static QWidget* makeViewer(const HduInfo& hdu,
     if (hdu.type == HduInfo::Type::IMG) {
         switch (hdu.naxis) {
             case 0:
-                return notYetImpl("Empty image HDU (NAXIS=0)", hdu);
+                return makeHeaderOnlyViewer(hdu, fitsPath);
             case 1:
                 QMessageBox::warning(nullptr, "Not implemented",
                     QString("1D image viewer not yet implemented (HDU %1).").arg(hdu.index));
@@ -1055,9 +1684,7 @@ static QWidget* makeViewer(const HduInfo& hdu,
                 return notYetImpl("N-D image viewer (NAXIS > 3)", hdu);
         }
     } else if (hdu.type == HduInfo::Type::TBL || hdu.type == HduInfo::Type::BTBL) {
-        QMessageBox::warning(nullptr, "Not implemented",
-            QString("Table viewer not yet implemented (HDU %1).").arg(hdu.index));
-        return notYetImpl("Table viewer", hdu);
+        return makeFITSTableViewer(hdu, fitsPath);
     } else {
         QMessageBox::warning(nullptr, "Unsupported HDU",
             QString("Unknown HDU type (HDU %1).").arg(hdu.index));
