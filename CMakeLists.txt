@@ -458,9 +458,8 @@ target_link_libraries(FitsViewer DSTfits DSTCore DSTdisplay DSTools DSTmath cfit
 # attempt to rewrite it on every subsequent "make install", which causes
 # duplicate-path errors on macOS when the binary is already up to date.
 set_target_properties(FitsViewer PROPERTIES
-    BUILD_WITH_INSTALL_RPATH TRUE
+    BUILD_RPATH   "${CMAKE_CURRENT_BINARY_DIR}/build/lib;${DeepSkyROOT}/lib"
     INSTALL_RPATH "${CMAKE_INSTALL_RPATH}"
-    SKIP_BUILD_RPATH FALSE
 )
 
 #-------------------- ADD DISTCLEAN CUSTOM TARGET
