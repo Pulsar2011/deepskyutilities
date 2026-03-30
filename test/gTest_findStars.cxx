@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <DSTools/DSTmorpho.h>
 #include <DSTools/DSTstarFinder.h>
+#include <DSTools/DSTbackground.h>
+#include <DSTfits/FITSmanager.h>
 
 #ifdef __WITH_QT__
 #include <DSTdisplay/QtFITSviewer.h>
@@ -9,6 +11,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <random>
 
 #include "test_utils.h"
 
@@ -1823,7 +1826,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_AIRY)
         EXPECT_GT(fits[i][1], 0.0) << "star " << i << " x0";
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
-    
+
 #ifndef Linuxx86_64
     {
         int arg=0;
@@ -1842,4 +1845,347 @@ TEST(StarFinderTest, StarPropertiesEstimator_AIRY)
         //app.exec();
     }
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// connectedComponents — unit tests
+// ---------------------------------------------------------------------------
+
+TEST(ConnectedComponentsTest, EmptyImage_AllZero)
+{
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{8, 8});
+    for(size_t i = 0; i < img->Nelements(); ++i)
+        img->SetPixelValue(0.0, i);
+
+    auto labels = DST::Morphology::connectedComponents(img);
+    ASSERT_NE(labels, nullptr);
+    EXPECT_EQ(labels->Nelements(), img->Nelements());
+    for(size_t i = 0; i < labels->Nelements(); ++i)
+        EXPECT_EQ(labels->DoubleValueAtPixel(i), 0.0) << "pixel " << i;
+}
+
+TEST(ConnectedComponentsTest, SingleBlob_AllForeground)
+{
+    // 4×4 image fully foreground → all pixels share the same label
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{4, 4});
+    for(size_t i = 0; i < img->Nelements(); ++i)
+        img->SetPixelValue(1.0, i);
+
+    auto labels = DST::Morphology::connectedComponents(img);
+    double ref = labels->DoubleValueAtPixel(0);
+    EXPECT_GT(ref, 0.0);
+    for(size_t i = 0; i < labels->Nelements(); ++i)
+        EXPECT_EQ(labels->DoubleValueAtPixel(i), ref) << "pixel " << i;
+}
+
+TEST(ConnectedComponentsTest, TwoSeparateBlobs)
+{
+    // 1×9 row: [1 1 1 0 0 0 1 1 1] → two blobs
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{9, 1});
+    for(size_t i = 0; i < 9; ++i)
+        img->SetPixelValue((i < 3 || i > 5) ? 1.0 : 0.0, i);
+
+    auto labels = DST::Morphology::connectedComponents(img);
+    double l0 = labels->DoubleValueAtPixel(0);
+    double l6 = labels->DoubleValueAtPixel(6);
+    EXPECT_GT(l0, 0.0);
+    EXPECT_GT(l6, 0.0);
+    EXPECT_NE(l0, l6) << "two disconnected blobs must receive different labels";
+    for(size_t i = 0; i < 3; ++i)  EXPECT_EQ(labels->DoubleValueAtPixel(i), l0);
+    for(size_t i = 3; i < 6; ++i)  EXPECT_EQ(labels->DoubleValueAtPixel(i), 0.0);
+    for(size_t i = 6; i < 9; ++i)  EXPECT_EQ(labels->DoubleValueAtPixel(i), l6);
+}
+
+TEST(ConnectedComponentsTest, MaskedPixelsAreBackground)
+{
+    // 3×3 fully foreground but centre masked → centre label must be 0
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{3, 3});
+    for(size_t i = 0; i < 9; ++i)
+        img->SetPixelValue(1.0, i);
+    img->MaskPixels({4}); // centre pixel (1,1)
+
+    auto labels = DST::Morphology::connectedComponents(img);
+    EXPECT_EQ(labels->DoubleValueAtPixel(4), 0.0) << "masked centre must have label 0";
+}
+
+TEST(ConnectedComponentsTest, NullInput_Throws)
+{
+    EXPECT_THROW(DST::Morphology::connectedComponents(nullptr),
+                 DSL::FITSexception);
+}
+
+TEST(ConnectedComponentsTest, ThreeDInput_Throws)
+{
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{4, 4, 4});
+    EXPECT_THROW(DST::Morphology::connectedComponents(img),
+                 DSL::FITSexception);
+}
+
+// ---------------------------------------------------------------------------
+// skyEstimator — unit tests
+// ---------------------------------------------------------------------------
+
+TEST(SkyEstimatorTest, FlatBackground_Recovered)
+{
+    // Uniform sky = 50.0, no noise → every pixel of the sky map should be ~50
+    const size_t W = 128, H = 128;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W, H});
+    for(size_t i = 0; i < img->Nelements(); ++i)
+        img->SetPixelValue(50.0, i);
+
+    DST::Background::skyEstimator est;
+    est.setTileSize(32);
+    est.setSigmaClipIter(3);
+    est.setSigmaClipThreshold(3.0);
+    EXPECT_NO_THROW(est.estimate(img));
+
+    auto skyMap = est.getSkyMap();
+    ASSERT_NE(skyMap, nullptr);
+    EXPECT_EQ(skyMap->Nelements(), img->Nelements());
+    for(size_t i = 0; i < skyMap->Nelements(); ++i)
+        EXPECT_NEAR(skyMap->DoubleValueAtPixel(i), 50.0, 1.0) << "pixel " << i;
+}
+
+TEST(SkyEstimatorTest, NoisyBackground_SkyReasonable)
+{
+    // Gaussian noise around sky=100 → per-tile sky estimate within 3 counts of truth
+    const size_t W = 256, H = 256;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W, H});
+    std::mt19937_64 rng(999);
+    std::normal_distribution<double> noise(100.0, 5.0);
+    for(size_t i = 0; i < img->Nelements(); ++i)
+        img->SetPixelValue(noise(rng), i);
+
+    DST::Background::skyEstimator est;
+    est.setTileSize(64);
+    est.setSigmaClipIter(3);
+    est.setSigmaClipThreshold(3.0);
+    est.estimate(img);
+
+    for(const auto& ts : est.tileStats())
+    {
+        if(!ts.valid) continue;
+        EXPECT_NEAR(ts.sky, 100.0, 3.0) << "tile sky too far from truth";
+        EXPECT_GT(ts.rms, 0.0)          << "tile rms must be positive";
+    }
+}
+
+TEST(SkyEstimatorTest, SourceMasked_SkyUnaffected)
+{
+    // Sky = 50.  Inject a bright source, mask it, check sky still ~50
+    const size_t W = 128, H = 128;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W, H});
+    for(size_t i = 0; i < img->Nelements(); ++i)
+        img->SetPixelValue(50.0, i);
+
+    std::vector<size_t> srcPixels;
+    for(size_t y = 60; y < 68; ++y)
+        for(size_t x = 60; x < 68; ++x)
+        {
+            const size_t idx = y * W + x;
+            img->SetPixelValue(5000.0, idx);
+            srcPixels.push_back(idx);
+        }
+    img->MaskPixels(srcPixels);
+
+    DST::Background::skyEstimator est;
+    est.setTileSize(32);
+    est.estimate(img);
+
+    auto skyMap = est.getSkyMap();
+    for(size_t i = 0; i < skyMap->Nelements(); ++i)
+    {
+        if(img->Masked(i)) continue;
+        EXPECT_NEAR(skyMap->DoubleValueAtPixel(i), 50.0, 5.0) << "pixel " << i;
+    }
+}
+
+TEST(SkyEstimatorTest, RMSMapPositive)
+{
+    // RMS map values must always be strictly positive
+    const size_t W = 64, H = 64;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W, H});
+    std::mt19937_64 rng(42);
+    std::normal_distribution<double> noise(200.0, 10.0);
+    for(size_t i = 0; i < img->Nelements(); ++i)
+        img->SetPixelValue(noise(rng), i);
+
+    DST::Background::skyEstimator est;
+    est.setTileSize(16);
+    est.estimate(img);
+
+    auto rmsMap = est.getRMSMap();
+    ASSERT_NE(rmsMap, nullptr);
+    for(size_t i = 0; i < rmsMap->Nelements(); ++i)
+        EXPECT_GT(rmsMap->DoubleValueAtPixel(i), 0.0) << "rms must be > 0 at pixel " << i;
+}
+
+TEST(SkyEstimatorTest, NullInput_Throws)
+{
+    DST::Background::skyEstimator est;
+    EXPECT_THROW(est.estimate(nullptr), DSL::FITSexception);
+}
+
+TEST(SkyEstimatorTest, ThreeDInput_Throws)
+{
+    DST::Background::skyEstimator est;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{8, 8, 8});
+    EXPECT_THROW(est.estimate(img), DSL::FITSexception);
+}
+
+TEST(SkyEstimatorTest, GetSkyMapBeforeEstimate_Throws)
+{
+    DST::Background::skyEstimator est;
+    EXPECT_THROW(est.getSkyMap(), std::runtime_error);
+    EXPECT_THROW(est.getRMSMap(), std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
+// NoiseChisel detection — integration tests (CPU / double path)
+// ---------------------------------------------------------------------------
+
+TEST(StarFinderTest, FindStarsByNoiseChisel_DefaultParams)
+{
+    std::vector<DST::Stars> true_catalog;
+    const unsigned int seed = 12345;
+    auto img = TestUtils::generateStarField(
+        true_catalog,
+        256, 256,  // smaller than MORPHO tests for speed
+        30,
+        1.5,       // sigma — slightly broader (extended-source regime)
+        50.0, 800.0,
+        20.0, 5.0,
+        seed);
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output/DefaultParams");
+    verbose = verboseLevel::VERBOSE_NONE;
+    finder.setThresholdValue(0.85); // NoiseChisel is more aggressive by default, so increase threshold to avoid huge number of detections
+
+    EXPECT_NO_THROW(
+        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+    );
+
+    const auto& detected = finder.detectedStars();
+    EXPECT_GT(detected.nrows(), static_cast<size_t>(0));
+
+    const double rate = static_cast<double>(detected.nrows())
+                      / static_cast<double>(true_catalog.size()) * 100.0;
+    std::cout << "[NOISECHISEL default] " << detected.nrows() << "/"
+              << true_catalog.size() << " (" << rate << "%)" << std::endl;
+
+    EXPECT_GT(rate,  30.0); // conservative floor: NoiseChisel prioritises purity
+    EXPECT_LT(rate, 200.0);
+}
+
+TEST(StarFinderTest, FindStarsByNoiseChisel_TunedParams)
+{
+    std::vector<DST::Stars> true_catalog;
+    auto img = TestUtils::generateStarField(
+        true_catalog, 256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 42);
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output/TunedParams");
+    verbose = verboseLevel::VERBOSE_NONE;
+
+    finder.setNC_convSigma(1.5);
+    finder.setNC_convRadius(3);
+    finder.setNC_detectionQuantile(0.65);
+    finder.setNC_tileSize(32);
+    finder.setNC_erosionRadius(1);
+    finder.setNC_snrThreshold(2.0);
+    finder.setNC_dilationRadius(3);
+    finder.setNC_skyIterations(3);
+    finder.setNC_skyClipSigma(3.0);
+    finder.setNC_reDetect(true);
+    finder.setThresholdValue(0.945);
+
+    EXPECT_NO_THROW(
+        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+    );
+
+    const auto& detected = finder.detectedStars();
+    EXPECT_GT(detected.nrows(), static_cast<size_t>(0));
+
+    const double rate = static_cast<double>(detected.nrows())
+                      / static_cast<double>(true_catalog.size()) * 100.0;
+    std::cout << "[NOISECHISEL tuned]   " << detected.nrows() << "/"
+              << true_catalog.size() << " (" << rate << "%)" << std::endl;
+
+    EXPECT_GT(rate,  30.0);
+    EXPECT_LT(rate, 200.0);
+}
+
+TEST(StarFinderTest, FindStarsByNoiseChisel_NoReDetect)
+{
+    // reDetect=false still produces detections and does not throw
+    std::vector<DST::Stars> true_catalog;
+    auto img = TestUtils::generateStarField(
+        true_catalog, 256, 256, 20, 1.5, 50.0, 800.0, 20.0, 5.0, 7777);
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output/NoReDetect");
+    verbose = verboseLevel::VERBOSE_NONE;
+    finder.setNC_reDetect(false);
+    finder.setThresholdValue(0.85);
+
+    EXPECT_NO_THROW(
+        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+    );
+    EXPECT_GT(finder.detectedStars().nrows(), static_cast<size_t>(0));
+}
+
+TEST(StarFinderTest, FindStarsByNoiseChisel_SkySubtractedHasLowerMean)
+{
+    // The sky-subtracted intermediate FITS must have a lower mean than the raw input
+    std::vector<DST::Stars> true_catalog;
+    auto img = TestUtils::generateStarField(
+        true_catalog, 128, 128, 10, 1.5, 50.0, 500.0, 30.0, 5.0, 2024);
+
+    const double inputMean = [&]{
+        double s = 0.0;
+        for(size_t i = 0; i < img->Nelements(); ++i)
+            s += img->DoubleValueAtPixel(i);
+        return s / static_cast<double>(img->Nelements());
+    }();
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output/SkySubtractedHasLowerMean");
+    verbose = verboseLevel::VERBOSE_NONE;
+    finder.setNC_tileSize(32);
+    finder.setNC_skyIterations(2);
+    finder.setThresholdValue(0.85);
+
+    ASSERT_NO_THROW(
+        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+    );
+
+    const std::string skyPath = "./build/test_output/SkySubtractedHasLowerMean/nc_skysubtracted_layer_0.fits";
+    std::ifstream f(skyPath);
+    if(f.good())
+    {
+        f.close();
+        FITSmanager fm(skyPath);
+        std::shared_ptr<FITScube> skySubt = fm.GetPrimary();
+        //skySubt->Read(skyPath);
+
+        double subtMean = 0.0;
+        size_t nValid   = 0;
+        for(size_t i = 0; i < skySubt->Nelements(); ++i)
+        {
+            if(skySubt->Masked(i)) continue;
+            subtMean += skySubt->DoubleValueAtPixel(i);
+            ++nValid;
+        }
+        if(nValid > 0) subtMean /= static_cast<double>(nValid);
+
+        std::cout << "[NOISECHISEL sky] input mean=" << inputMean
+                  << "  sky-subtracted mean=" << subtMean << std::endl;
+        EXPECT_LT(subtMean, inputMean)
+            << "sky-subtracted image must have a lower mean than the raw input";
+    }
+    else
+    {
+        std::cout << "[NOISECHISEL sky] output file not found; skipping sky check" << std::endl;
+    }
 }

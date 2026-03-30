@@ -17,6 +17,8 @@
 #include <cmath>
 #include <thread>                 // added for std::thread
 #include <future>                 // added for std::async / std::future
+#include <queue>                  // added for std::queue (connectedComponents)
+#include <vector>
 
 #include <DSTfits/FITSdata.h>
 #include <DSTfits/FITSexception.h>
@@ -1675,6 +1677,90 @@ namespace DST
             }
 
             throw FITSexception(BAD_DIMEN,"DST","gradiant","Unsupported pixel type.["+std::to_string(__LINE__)+"]");
+        }
+#pragma endregion
+
+#pragma region - connectedComponents
+        /**
+         * @brief Label connected foreground blobs in a binary 2D image (4-connectivity).
+         *
+         * Each pixel whose value is non-zero and not masked is considered foreground.
+         * The function performs a BFS scan and assigns each contiguous group a unique
+         * positive integer label.  Background and masked pixels receive label 0.
+         *
+         * @param binary    Input 2D FITScube; non-zero + unmasked pixels = foreground.
+         * @param nThreads  Accepted for API consistency; BFS merge is sequential.
+         * @return          \c FITSimg<int32_t> label image with the same shape as \a binary.
+         *                  Label 0 = background/masked.  Labels start at 1.
+         * @throw FITSexception if \a binary is null or not 2-dimensional.
+         */
+        inline std::shared_ptr<FITScube>
+        connectedComponents(const std::shared_ptr<FITScube>& binary,
+                            size_t /*nThreads*/ = 1)
+        {
+            if(binary == nullptr)
+                throw FITSexception(BAD_DIMEN, "DST", "connectedComponents",
+                                    "Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
+            if(binary->GetDimension() != 2)
+                throw FITSexception(BAD_DIMEN, "DST", "connectedComponents",
+                                    "Input FITScube must be 2D.["+std::to_string(__LINE__)+"]");
+
+            const size_t W = binary->Size(1);
+            const size_t H = binary->Size(2);
+            const size_t N = W * H;
+
+            // Local label array (avoids repeated DoubleValueAtPixel calls on the output)
+            std::vector<int32_t> labels(N, 0);
+            int32_t nextLabel = 0;
+
+            std::queue<size_t> q;
+
+            for(size_t seed = 0; seed < N; ++seed)
+            {
+                if(binary->Masked(seed))                           continue;
+                if(binary->DoubleValueAtPixel(seed) == 0.0)       continue;
+                if(labels[seed] != 0)                              continue;
+
+                ++nextLabel;
+                labels[seed] = nextLabel;
+                q.push(seed);
+
+                while(!q.empty())
+                {
+                    size_t idx = q.front();
+                    q.pop();
+
+                    const size_t x = idx % W;
+                    const size_t y = idx / W;
+
+                    // 4-connected neighbours (sentinel N = out-of-bounds)
+                    const size_t neigh[4] = {
+                        (x > 0)   ? idx - 1 : N,
+                        (x < W-1) ? idx + 1 : N,
+                        (y > 0)   ? idx - W : N,
+                        (y < H-1) ? idx + W : N
+                    };
+
+                    for(size_t ni : neigh)
+                    {
+                        if(ni >= N)                                    continue;
+                        if(binary->Masked(ni))                         continue;
+                        if(binary->DoubleValueAtPixel(ni) == 0.0)      continue;
+                        if(labels[ni] != 0)                            continue;
+
+                        labels[ni] = nextLabel;
+                        q.push(ni);
+                    }
+                }
+            }
+
+            // Write labels to output FITSimg<int32_t>
+            auto out = std::make_shared<FITSimg<int32_t>>(std::vector<size_t>{W, H});
+            for(size_t i = 0; i < N; ++i)
+                out->SetPixelValue(static_cast<double>(labels[i]), i);
+            out->MaskPixels(binary->GetMask());
+
+            return std::shared_ptr<FITScube>(out);
         }
 #pragma endregion
     }

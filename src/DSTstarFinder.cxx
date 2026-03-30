@@ -924,6 +924,9 @@ namespace DST
                         case detectionMethod::SNR:
                             _findStarsSNR(layer,quantizationStep,layerIdx);
                             break;
+                        case detectionMethod::NOISECHISEL:
+                            _findStarsNoiseChisel(layer,quantizationStep,layerIdx);
+                            break;
                         case detectionMethod::CUSTOM:
                             _findStarsCustom(layer,quantizationStep,layerIdx);
                             break;
@@ -1251,6 +1254,443 @@ namespace DST
 
             _watershedFlooding(snrMap, fthresholdValue, fquantumStepQueue, iLayer);
             snrMap.reset();
+        }
+
+        /**
+         * @brief Find extended sources using the NoiseChisel algorithm
+         *        (Akhlaghi & Ichikawa 2015, ApJS 220, 1).
+         *
+         * Pipeline:
+         *  1. Gaussian convolution of the input image.
+         *  2. Per-tile quantile thresholding → binary detection map.
+         *  3. Morphological erosion to remove noise spikes.
+         *  4. Connected component labeling of surviving blobs.
+         *  5. Per-blob S/N filter: reject blobs below fNC.snrThreshold.
+         *  6. Dilation to recover the true extent of surviving detections.
+         *  7. Sky background estimation on the source-masked image.
+         *  8. Sky subtraction.
+         *  9. Optional re-detection on the sky-subtracted image.
+         * 10. Watershed flooding to label individual sources.
+         *
+         * All tunable parameters are read from the fNC struct; none are hard-coded.
+         * GPU/CPU dispatch follows the same pattern as _findStarsMorpho().
+         */
+        void starFinder::_findStarsNoiseChisel(const std::shared_ptr<FITScube>& img,
+                                                const double& fquantumStepQueue,
+                                                const size_t& iLayer)
+        {
+            if(img == nullptr)
+                throw FITSexception(BAD_DIMEN, "DST",
+                    "starFinder::_findStarsNoiseChisel",
+                    "Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
+            if(img->GetDimension() != 2)
+                throw FITSexception(BAD_DIMEN, "DST",
+                    "starFinder::_findStarsNoiseChisel",
+                    "Input FITScube must be 2D.["+std::to_string(__LINE__)+"]");
+
+            size_t maxThreads = std::thread::hardware_concurrency();
+            if(maxThreads == 0) maxThreads = 1;
+
+            const size_t W    = img->Size(1);
+            const size_t H    = img->Size(2);
+            const bool   gpuOk = fbackend_->available() && isGPUEligible(img);
+
+            // ------------------------------------------------------------------
+            // Inner lambda: runs detection steps 1–6 (convolve → binarise →
+            // erode → CCL → S/N filter → dilate) on an arbitrary source image
+            // and returns the dilated detection mask (FITScube with values 0/1).
+            // ------------------------------------------------------------------
+            auto runDetection = [&](const std::shared_ptr<FITScube>& src)
+                -> std::shared_ptr<FITScube>
+            {
+                // ---- Step 1: Gaussian convolution ----------------------------
+                const size_t kDim = 2 * fNC.convRadius + 1;
+                std::valarray<double> gw(kDim * kDim);
+                double gsum = 0.0;
+                for(size_t j = 0; j < kDim; ++j)
+                {
+                    const double dy = static_cast<double>(j) - static_cast<double>(fNC.convRadius);
+                    for(size_t i = 0; i < kDim; ++i)
+                    {
+                        const double dx = static_cast<double>(i) - static_cast<double>(fNC.convRadius);
+                        const double v  = std::exp(-(dx*dx + dy*dy)
+                                                    / (2.0 * fNC.convSigma * fNC.convSigma));
+                        gw[j * kDim + i] = v;
+                        gsum += v;
+                    }
+                }
+                gw /= gsum; // normalise manually → use CORRELATE (not nCORRELATE)
+
+                DST::Morphology::kernel<double> gaussKernel(
+                    gw, {kDim, kDim}, DST::Morphology::ktype::CORRELATE);
+
+                std::shared_ptr<FITScube> convImg;
+                if(gpuOk)
+                {
+                    std::lock_guard<std::mutex> gpuLock(fgpuMutex);
+                    auto gk_f = convertKernel<float>(gaussKernel);
+                    convImg = Morphology::GPU::correlate<float>(
+                        src, gk_f, *fbackend_, maxThreads, false);
+                }
+                else
+                {
+                    convImg = Morphology::correlate<double>(
+                        src, gaussKernel, maxThreads, false);
+                }
+                convImg->MaskPixels(src->GetMask());
+
+                if(foutURL != "")
+                {
+                    convImg->SetName("nc_convolved_layer_"+std::to_string(iLayer));
+                    convImg->Write(foutURL+"/nc_convolved_layer_"
+                                   +std::to_string(iLayer)+".fits", true);
+                }
+
+                // ---- Step 2: Per-tile quantile threshold map -----------------
+                const size_t nTX = (W + fNC.tileSize - 1) / fNC.tileSize;
+                const size_t nTY = (H + fNC.tileSize - 1) / fNC.tileSize;
+                std::vector<double> tileThresh(nTX * nTY,
+                                               std::numeric_limits<double>::max());
+
+                for(size_t ty = 0; ty < nTY; ++ty)
+                {
+                    for(size_t tx = 0; tx < nTX; ++tx)
+                    {
+                        const size_t x0 = tx * fNC.tileSize;
+                        const size_t y0 = ty * fNC.tileSize;
+                        const size_t x1 = std::min(x0 + fNC.tileSize, W);
+                        const size_t y1 = std::min(y0 + fNC.tileSize, H);
+
+                        std::vector<double> tileVals;
+                        tileVals.reserve((x1-x0)*(y1-y0));
+                        for(size_t y = y0; y < y1; ++y)
+                            for(size_t x = x0; x < x1; ++x)
+                            {
+                                const size_t idx = y * W + x;
+                                if(!convImg->Masked(idx))
+                                    tileVals.push_back(convImg->DoubleValueAtPixel(idx));
+                            }
+
+                        if(tileVals.empty()) continue;
+
+                        const size_t qIdx = static_cast<size_t>(
+                            fNC.detectionQuantile
+                            * static_cast<double>(tileVals.size() - 1));
+                        std::nth_element(tileVals.begin(),
+                                         tileVals.begin() + qIdx,
+                                         tileVals.end());
+                        tileThresh[ty * nTX + tx] = tileVals[qIdx];
+                    }
+                }
+
+                // ---- Step 3: Binarise ----------------------------------------
+                auto binary = std::make_shared<FITSimg<uint8_t>>(
+                    std::vector<size_t>{W, H});
+                std::vector<size_t> binaryMasked;
+                
+                for(size_t y = 0; y < H; ++y)
+                {
+                    for(size_t x = 0; x < W; ++x)
+                    {
+                        const size_t idx = y * W + x;
+                        if(src->Masked(idx))
+                        {
+                            binary->SetPixelValue(0.0, idx);
+                            binaryMasked.push_back(idx);
+                        }
+                        else
+                        {
+                            const size_t tx     = std::min(x / fNC.tileSize, nTX - 1);
+                            const size_t ty     = std::min(y / fNC.tileSize, nTY - 1);
+                            const double thresh = tileThresh[ty * nTX + tx];
+                            binary->SetPixelValue(
+                                (convImg->DoubleValueAtPixel(idx) > thresh) ? 1.0 : 0.0,
+                                idx);
+                        }
+                    }
+                }
+
+                
+                if(!binaryMasked.empty())
+                    binary->MaskPixels(binaryMasked);
+                convImg.reset();
+
+                if(foutURL != "")
+                {
+                    binary->SetName("nc_binary_layer_"+std::to_string(iLayer));
+                    binary->Write(foutURL+"/nc_binary_layer_"
+                                   +std::to_string(iLayer)+".fits", true);
+                }
+
+                // ---- Step 4: Erosion -----------------------------------------
+                const size_t eDim = 2 * fNC.erosionRadius + 1;
+                std::valarray<double> ew(1.0, eDim * eDim);
+                DST::Morphology::kernel<double> erodeKernel(
+                    ew, {eDim, eDim}, DST::Morphology::ktype::ERODE);
+
+                std::shared_ptr<FITScube> erodedBinary;
+                if(gpuOk)
+                {
+                    std::lock_guard<std::mutex> gpuLock(fgpuMutex);
+                    auto ek_f = convertKernel<float>(erodeKernel);
+                    erodedBinary = Morphology::GPU::erosion<float>(
+                        binary, ek_f, *fbackend_, maxThreads);
+                }
+                else
+                {
+                    erodedBinary = Morphology::erosion<double>(
+                        binary, erodeKernel, maxThreads);
+                }
+                erodedBinary->MaskPixels(src->GetMask());
+                binary.reset();
+
+                if(foutURL != "")
+                {
+                    erodedBinary->SetName("nc_eroded_layer_"+std::to_string(iLayer));
+                    erodedBinary->Write(foutURL+"/nc_eroded_layer_"
+                                         +std::to_string(iLayer)+".fits", true);
+                }
+
+                // ---- Step 5: Connected component labeling -------------------
+                // connectedComponents() requires double-typed input for DoubleValueAtPixel.
+                std::shared_ptr<FITScube> erodedDbl;
+                if(erodedBinary->GetEqBitPerPixel() != DOUBLE_IMG)
+                {
+                    auto tmp = std::make_shared<FITSimg<double>>(
+                        std::vector<size_t>{W, H});
+                    for(size_t i = 0; i < erodedBinary->Nelements(); ++i)
+                        tmp->SetPixelValue(erodedBinary->DoubleValueAtPixel(i), i);
+                    tmp->MaskPixels(erodedBinary->GetMask());
+                    erodedDbl = tmp;
+                }
+                else
+                {
+                    erodedDbl = erodedBinary;
+                }
+                erodedBinary.reset();
+
+                std::shared_ptr<FITScube> labelImg =
+                    DST::Morphology::connectedComponents(erodedDbl);
+                erodedDbl.reset();
+
+                if(foutURL != "")
+                {
+                    labelImg->SetName("nc_labels_layer_"+std::to_string(iLayer));
+                    labelImg->Write(foutURL+"/nc_labels_layer_"
+                                     +std::to_string(iLayer)+".fits", true);
+                }
+
+                // ---- Step 6: Per-blob S/N filter ----------------------------
+                // Collect label → pixel index mapping
+                std::map<int32_t, std::vector<size_t>> blobPixels;
+                for(size_t i = 0; i < W * H; ++i)
+                {
+                    if(labelImg->Masked(i)) continue;
+                    const int32_t lbl =
+                        static_cast<int32_t>(labelImg->DoubleValueAtPixel(i));
+                    if(lbl == 0) continue;
+                    blobPixels[lbl].push_back(i);
+                }
+
+                // Estimate per-tile sky and noise from the source image
+                const size_t nTX2 = (W + fNC.tileSize - 1) / fNC.tileSize;
+                const size_t nTY2 = (H + fNC.tileSize - 1) / fNC.tileSize;
+                DST::Background::skyEstimator snrSkyEst;
+                snrSkyEst.setTileSize(fNC.tileSize);
+                snrSkyEst.setSigmaClipIter(fNC.skyIterations);
+                snrSkyEst.setSigmaClipThreshold(fNC.skyClipSigma);
+                snrSkyEst.estimate(src);
+                const auto& tileStats = snrSkyEst.tileStats();
+
+                std::set<int32_t> rejectedLabels;
+                for(const auto& kv : blobPixels)
+                {
+                    const int32_t lbl       = kv.first;
+                    const auto&   pixels    = kv.second;
+                    const double  nPix      = static_cast<double>(pixels.size());
+
+                    // Blob centroid (pixel coords)
+                    size_t cx_sum = 0, cy_sum = 0;
+                    double sumSig = 0.0;
+                    for(size_t idx : pixels)
+                    {
+                        sumSig  += src->DoubleValueAtPixel(idx);
+                        cx_sum  += idx % W;
+                        cy_sum  += idx / W;
+                    }
+                    const double meanSig = sumSig / nPix;
+                    const size_t cx = cx_sum / pixels.size();
+                    const size_t cy = cy_sum / pixels.size();
+
+                    // Tile containing the centroid
+                    const size_t tx  = std::min(cx / fNC.tileSize, nTX2 - 1);
+                    const size_t ty  = std::min(cy / fNC.tileSize, nTY2 - 1);
+                    const auto&  ts  = tileStats[ty * nTX2 + tx];
+                    const double sky   = ts.valid ? ts.sky : 0.0;
+                    const double noise = ts.valid ? ts.rms : 1.0;
+
+                    if((meanSig - sky) / noise < fNC.snrThreshold)
+                        rejectedLabels.insert(lbl);
+                }
+
+                // Build surviving-blob mask
+                auto survivingMask = std::make_shared<FITSimg<uint8_t>>(
+                    std::vector<size_t>{W, H});
+                std::vector<size_t> survMasked;
+                for(size_t i = 0; i < W * H; ++i)
+                {
+                    if(src->Masked(i)) { survMasked.push_back(i); continue; }
+                    const int32_t lbl =
+                        static_cast<int32_t>(labelImg->DoubleValueAtPixel(i));
+                    survivingMask->SetPixelValue(
+                        (lbl != 0 && rejectedLabels.find(lbl) == rejectedLabels.end())
+                            ? 1.0 : 0.0,
+                        i);
+                }
+                if(!survMasked.empty())
+                    survivingMask->MaskPixels(survMasked);
+                labelImg.reset();
+
+                if(foutURL != "")
+                {
+                    survivingMask->SetName("nc_surviving_layer_"+std::to_string(iLayer));
+                    survivingMask->Write(foutURL+"/nc_surviving_layer_"
+                                          +std::to_string(iLayer)+".fits", true);
+                }
+
+                // ---- Step 7: Dilation to recover true source extent ----------
+                const size_t dDim = 2 * fNC.dilationRadius + 1;
+                std::valarray<double> dw(1.0, dDim * dDim);
+                DST::Morphology::kernel<double> dilateKernel(
+                    dw, {dDim, dDim}, DST::Morphology::ktype::DILATE);
+
+                std::shared_ptr<FITScube> detectionMask;
+                if(gpuOk)
+                {
+                    std::lock_guard<std::mutex> gpuLock(fgpuMutex);
+                    auto dk_f = convertKernel<float>(dilateKernel);
+                    detectionMask = Morphology::GPU::dilation<float>(
+                        survivingMask, dk_f, *fbackend_, maxThreads);
+                }
+                else
+                {
+                    detectionMask = Morphology::dilation<double>(
+                        survivingMask, dilateKernel, maxThreads);
+                }
+                detectionMask->MaskPixels(src->GetMask());
+                survivingMask.reset();
+
+                if(foutURL != "")
+                {
+                    detectionMask->SetName("nc_detection_mask_layer_"+std::to_string(iLayer));
+                    detectionMask->Write(foutURL+"/nc_detection_mask_layer_"
+                                          +std::to_string(iLayer)+".fits", true);
+                }
+
+                return detectionMask;
+            }; // end runDetection lambda
+
+            // ------------------------------------------------------------------
+            // First detection pass (on the raw input image)
+            // ------------------------------------------------------------------
+            std::shared_ptr<FITScube> detectionMask = runDetection(img);
+
+            // ------------------------------------------------------------------
+            // Step 8: Sky estimation on source-masked image
+            // ------------------------------------------------------------------
+            auto maskedForSky = std::make_shared<FITSimg<double>>(
+                std::vector<size_t>{W, H});
+            std::vector<size_t> skyMaskIdx;
+            for(size_t i = 0; i < W * H; ++i)
+            {
+                if(img->Masked(i) || detectionMask->DoubleValueAtPixel(i) > 0.0)
+                {
+                    maskedForSky->SetPixelValue(0.0, i);
+                    skyMaskIdx.push_back(i);
+                }
+                else
+                {
+                    maskedForSky->SetPixelValue(img->DoubleValueAtPixel(i), i);
+                }
+            }
+            if(!skyMaskIdx.empty())
+                maskedForSky->MaskPixels(skyMaskIdx);
+            skyMaskIdx.clear();
+
+            DST::Background::skyEstimator skyEst;
+            skyEst.setTileSize(fNC.tileSize);
+            skyEst.setSigmaClipIter(fNC.skyIterations);
+            skyEst.setSigmaClipThreshold(fNC.skyClipSigma);
+            skyEst.estimate(maskedForSky);
+            maskedForSky.reset();
+
+            auto skyMap = skyEst.getSkyMap();
+            auto rmsMap = skyEst.getRMSMap();
+
+            if(foutURL != "")
+            {
+                skyMap->SetName("nc_skymap_layer_"+std::to_string(iLayer));
+                skyMap->Write(foutURL+"/nc_skymap_layer_"
+                               +std::to_string(iLayer)+".fits", true);
+                rmsMap->SetName("nc_rmsmap_layer_"+std::to_string(iLayer));
+                rmsMap->Write(foutURL+"/nc_rmsmap_layer_"
+                               +std::to_string(iLayer)+".fits", true);
+            }
+
+            // ------------------------------------------------------------------
+            // Step 9: Sky subtraction
+            // ------------------------------------------------------------------
+            auto skySubtracted = std::make_shared<FITSimg<double>>(
+                std::vector<size_t>{W, H});
+            for(size_t i = 0; i < W * H; ++i)
+            {
+                skySubtracted->SetPixelValue(
+                    img->Masked(i)
+                        ? 0.0
+                        : img->DoubleValueAtPixel(i) - skyMap->DoubleValueAtPixel(i),
+                    i);
+            }
+            skySubtracted->MaskPixels(img->GetMask());
+            skyMap.reset();
+            rmsMap.reset();
+
+            if(foutURL != "")
+            {
+                skySubtracted->SetName("nc_skysubtracted_layer_"+std::to_string(iLayer));
+                skySubtracted->Write(foutURL+"/nc_skysubtracted_layer_"
+                                      +std::to_string(iLayer)+".fits", true);
+            }
+
+            // ------------------------------------------------------------------
+            // Step 10: Optional re-detection on sky-subtracted image.
+            // The result replaces the first-pass detection mask so that the
+            // watershed only floods within confirmed source footprints.
+            // ------------------------------------------------------------------
+            if(fNC.reDetect)
+                detectionMask = runDetection(skySubtracted);
+
+            // ------------------------------------------------------------------
+            // Step 11: Restrict watershed to detected source footprints.
+            // Pixels outside the detection mask are masked out so that the
+            // watershed cannot create labels for background noise peaks.
+            // The threshold is 0.0: after sky subtraction the background is
+            // near zero; only positive (source) pixels are flooded.
+            // ------------------------------------------------------------------
+            std::vector<size_t> outsideFootprint;
+            for(size_t i = 0; i < W * H; ++i)
+            {
+                if(skySubtracted->Masked(i)) continue;
+                if(detectionMask->DoubleValueAtPixel(i) == 0.0)
+                    outsideFootprint.push_back(i);
+            }
+            if(!outsideFootprint.empty())
+                skySubtracted->MaskPixels(outsideFootprint);
+            
+
+            double threshold = skySubtracted->Getpercentil(fthresholdValue);
+            _watershedFlooding(skySubtracted, threshold, fquantumStepQueue, iLayer);
+            skySubtracted.reset();
+            detectionMask.reset();
         }
 
         void starFinder::_findStarsCustom(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)

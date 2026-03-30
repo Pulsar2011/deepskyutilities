@@ -38,6 +38,7 @@
 
 #include "DSTmorpho.h"
 #include "DSTmorph_gpu.h"
+#include "DSTbackground.h"
 
 #ifdef __WITH_QT__
 #include <DSTdisplay/QtDisplay.h>
@@ -231,6 +232,7 @@ namespace DST
                     MORPHO,
                     THRESHOLD,
                     SNR,
+                    NOISECHISEL,
                     CUSTOM
                 };
 
@@ -249,9 +251,25 @@ namespace DST
                 //-- GPU backend (always created; falls back to CPUBackend when no GPU hardware)
                 std::unique_ptr<DST::GPU::Backend> fbackend_;
 
+                //-- NoiseChisel tunable parameters
+                struct NoiseChiselParams
+                {
+                    double convSigma         = 1.5;  ///< Gaussian kernel sigma [pixels]
+                    size_t convRadius        = 3;    ///< Gaussian kernel half-size [pixels]
+                    double detectionQuantile = 0.70; ///< Per-tile quantile threshold (0–1)
+                    size_t tileSize          = 50;   ///< Tessellation tile side [pixels]
+                    size_t erosionRadius     = 2;    ///< Erosion structuring element half-size [pixels]
+                    double snrThreshold      = 3.0;  ///< Minimum blob S/N to survive S/N filter
+                    size_t dilationRadius    = 4;    ///< Dilation half-size for detection mask growth [pixels]
+                    size_t skyIterations     = 3;    ///< Sky sigma-clipping iterations
+                    double skyClipSigma      = 3.0;  ///< Sky sigma-clipping rejection threshold
+                    bool   reDetect          = true; ///< Re-detect on sky-subtracted image
+                } fNC;
+
                 void _findStarsMorpho(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsThreshold(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsSNR(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
+                void _findStarsNoiseChisel(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _findStarsCustom(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
                 void _watershedFlooding(const std::shared_ptr<FITScube>&, const double&, const double&, const size_t& iLayer=0);
                 void _evalStellarPropertiesMoment  (Stars& star);
@@ -284,6 +302,18 @@ namespace DST
                 void switchfBEkernelType(const DST::Morphology::ktype& t) {fBE.setType(t);}
                 void switchfBMkernel(DST::Morphology::kernel<double>& k) {fBM = k;}
                 void switchfBMkernelType(const DST::Morphology::ktype& t) {fBM.setType(t);}
+
+                //-- NoiseChisel parameter setters
+                void setNC_convSigma(double v)         { fNC.convSigma         = v; }
+                void setNC_convRadius(size_t v)        { fNC.convRadius        = v; }
+                void setNC_detectionQuantile(double v) { fNC.detectionQuantile = v; }
+                void setNC_tileSize(size_t v)          { fNC.tileSize          = v; }
+                void setNC_erosionRadius(size_t v)     { fNC.erosionRadius     = v; }
+                void setNC_snrThreshold(double v)      { fNC.snrThreshold      = v; }
+                void setNC_dilationRadius(size_t v)    { fNC.dilationRadius    = v; }
+                void setNC_skyIterations(size_t v)     { fNC.skyIterations     = v; }
+                void setNC_skyClipSigma(double v)      { fNC.skyClipSigma      = v; }
+                void setNC_reDetect(bool v)            { fNC.reDetect          = v; }
 #pragma endregion
 #pragma region -- accessors
                 FITStable detectedStars(const std::string& tblName) const;

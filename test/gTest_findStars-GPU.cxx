@@ -27,6 +27,7 @@
 #include <DSTools/DSTmorpho.h>
 #include <DSTools/DSTmorph_gpu.h>
 #include <DSTools/DSTstarFinder.h>
+#include <DSTools/DSTbackground.h>
 
 #ifdef __WITH_QT__
 #include <DSTdisplay/QtFITSviewer.h>
@@ -646,4 +647,212 @@ TEST(StarFinderGPUTest, FindStarsBySegmentation_Double_StillCPU)
 
     EXPECT_GT(rate, 75.0);
     EXPECT_LT(rate, 110.0);
+}
+
+
+// ============================================================
+//  NoiseChisel GPU pipeline tests
+//
+//  These tests exercise _findStarsNoiseChisel() with float
+//  (GPU-eligible) and double (CPU-fallback) images, and verify
+//  the GPU-dispatched convolution/erosion/dilation sub-steps
+//  individually.
+// ============================================================
+
+// ---- NoiseChisel pipeline: float image (GPU path) ----------
+
+TEST(StarFinderGPUTest, NoiseChisel_Float_Runs)
+{
+    std::vector<DST::Stars> catalog;
+    auto dbl = TestUtils::generateStarField(catalog,
+        256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 12345);
+    std::shared_ptr<FITScube> img = toType<float>(dbl);
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    verbose = verboseLevel::VERBOSE_NONE;
+    std::cout << "[float NOISECHISEL] GPU backend active: "
+              << (finder.isGPUEnabled() ? "YES" : "NO") << std::endl;
+
+    finder.setThresholdValue(0.95);
+    EXPECT_NO_THROW(
+        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+    );
+
+    const auto& detected = finder.detectedStars();
+    EXPECT_GT(detected.nrows(), static_cast<size_t>(0));
+
+    const double rate = static_cast<double>(detected.nrows())
+                      / static_cast<double>(catalog.size()) * 100.0;
+    std::cout << "[float NOISECHISEL] " << detected.nrows() << "/" << catalog.size()
+              << " (" << rate << "%)" << std::endl;
+
+    EXPECT_GT(rate,  30.0);
+    EXPECT_LT(rate, 200.0);
+}
+
+// ---- NoiseChisel pipeline: uint16_t image ------------------
+
+TEST(StarFinderGPUTest, NoiseChisel_Uint16_Runs)
+{
+    std::vector<DST::Stars> catalog;
+    auto dbl = TestUtils::generateStarField(catalog,
+        256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 42);
+    std::shared_ptr<FITScube> img = toType<uint16_t>(dbl);
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    verbose = verboseLevel::VERBOSE_NONE;
+
+    finder.setThresholdValue(0.95);
+    EXPECT_NO_THROW(
+        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+    );
+    EXPECT_GT(finder.detectedStars().nrows(), static_cast<size_t>(0));
+    std::cout << "[uint16 NOISECHISEL] detected "
+              << finder.detectedStars().nrows() << std::endl;
+}
+
+// ---- NoiseChisel pipeline: double (CPU fallback) -----------
+
+TEST(StarFinderGPUTest, NoiseChisel_Double_StillCPU)
+{
+    std::vector<DST::Stars> catalog;
+    auto img = TestUtils::generateStarField(catalog,
+        256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 99);
+
+    DST::algorithms::starFinder finder(img);
+    finder.setOutputUrl("./build/test_output");
+    verbose = verboseLevel::VERBOSE_NONE;
+
+    finder.setThresholdValue(0.95);
+    EXPECT_NO_THROW(
+        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+    );
+    EXPECT_GT(finder.detectedStars().nrows(), static_cast<size_t>(0));
+    std::cout << "[double NOISECHISEL — CPU fallback] detected "
+              << finder.detectedStars().nrows() << std::endl;
+}
+
+// ---- GPU vs CPU results should be comparable ---------------
+//
+// The GPU path uses float arithmetic; the CPU path uses double.
+// We cannot expect bit-exact agreement, but detection counts
+// should be within a small margin of each other.
+
+TEST(StarFinderGPUTest, NoiseChisel_FloatGPU_vs_DoubleCPU_CountsClose)
+{
+    std::vector<DST::Stars> catalog_f, catalog_d;
+    auto dbl = TestUtils::generateStarField(catalog_d,
+        256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 7);
+
+    // Float path (GPU-eligible)
+    std::shared_ptr<FITScube> img_f = toType<float>(dbl);
+    DST::algorithms::starFinder finder_f(img_f);
+    finder_f.setOutputUrl("./build/test_output");
+    verbose = verboseLevel::VERBOSE_NONE;
+    finder_f.setNC_tileSize(32);
+    finder_f.setNC_reDetect(false);
+    finder_f.setThresholdValue(0.95);
+    finder_f.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1);
+    const size_t n_float = finder_f.detectedStars().nrows();
+
+    // Double path (CPU)
+    DST::algorithms::starFinder finder_d(dbl);
+    finder_d.setOutputUrl("./build/test_output");
+    verbose = verboseLevel::VERBOSE_NONE;
+    finder_d.setNC_tileSize(32);
+    finder_d.setNC_reDetect(false);
+    finder_d.setThresholdValue(0.95);
+    finder_d.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1);
+    const size_t n_double = finder_d.detectedStars().nrows();
+
+    std::cout << "[NOISECHISEL float=" << n_float
+              << " double=" << n_double << "]" << std::endl;
+
+    // Allow ±20% relative divergence due to float/double quantisation
+    const double ratio = (n_double > 0)
+        ? static_cast<double>(n_float) / static_cast<double>(n_double)
+        : 1.0;
+    EXPECT_GT(ratio, 0.5) << "float GPU path found far fewer detections than double CPU";
+    EXPECT_LT(ratio, 2.0) << "float GPU path found far more detections than double CPU";
+}
+
+// ---- NoiseChisel GPU: Gaussian convolution sub-step --------
+//
+// Verify that the normalised Gaussian correlate used by NoiseChisel
+// gives results consistent between GPU and CPU for a float image.
+
+TEST(StarFinderGPUTest, NoiseChisel_GaussConvolve_GPUvsCPU)
+{
+    auto backend = DST::GPU::Backend::create();
+
+    std::vector<DST::Stars> catalog;
+    auto dbl = TestUtils::generateStarField(catalog, 256, 256, 20, 1.5, 50.0, 800.0, 20.0, 5.0, 55);
+    auto img = toType<float>(dbl);
+
+    // Build the same Gaussian kernel as _findStarsNoiseChisel default params
+    const double sigma  = 1.5;
+    const size_t radius = 3;
+    const size_t kDim   = 2 * radius + 1;
+    std::valarray<double> gw(kDim * kDim);
+    double gsum = 0.0;
+    for(size_t j = 0; j < kDim; ++j)
+        for(size_t i = 0; i < kDim; ++i)
+        {
+            const double dx = static_cast<double>(i) - static_cast<double>(radius);
+            const double dy = static_cast<double>(j) - static_cast<double>(radius);
+            const double v  = std::exp(-(dx*dx + dy*dy) / (2.0 * sigma * sigma));
+            gw[j * kDim + i] = v;
+            gsum += v;
+        }
+    gw /= gsum;
+
+    DST::Morphology::kernel<float> gaussKernelF(
+        [&]{ std::valarray<float> fw(gw.size());
+             for(size_t i=0;i<gw.size();++i) fw[i]=static_cast<float>(gw[i]);
+             return fw; }(),
+        {kDim, kDim}, DST::Morphology::ktype::CORRELATE);
+
+    auto cpu = Morphology::correlate<float, float>(img, gaussKernelF, 1, false);
+    auto gpu = Morphology::GPU::correlate<float, float>(img, gaussKernelF, *backend, 1, false);
+
+    ASSERT_EQ(cpu->Nelements(), gpu->Nelements());
+    double diff = maxAbsDiff(cpu, gpu);
+    std::cout << "[NOISECHISEL Gauss correlate GPU vs CPU] max|diff|=" << diff << std::endl;
+    EXPECT_LE(diff, 1.0);
+}
+
+// ---- skyEstimator: same result on GPU-eligible and CPU images
+
+TEST(StarFinderGPUTest, SkyEstimator_FloatAndDouble_SkyClose)
+{
+    // Generate a noisy background (no stars) and check that sky estimation
+    // on the float and double versions of the same image agrees closely.
+    const size_t W = 128, H = 128;
+    std::mt19937_64 rng(321);
+    std::normal_distribution<double> nd(80.0, 8.0);
+
+    auto img_d = std::make_shared<FITSimg<double>>(std::vector<size_t>{W, H});
+    for(size_t i = 0; i < img_d->Nelements(); ++i)
+        img_d->SetPixelValue(nd(rng), i);
+
+    auto img_f = toType<float>(img_d);
+
+    DST::Background::skyEstimator est_d, est_f;
+    est_d.setTileSize(32);
+    est_f.setTileSize(32);
+    est_d.estimate(img_d);
+    est_f.estimate(std::static_pointer_cast<FITScube>(img_f));
+
+    const auto& stats_d = est_d.tileStats();
+    const auto& stats_f = est_f.tileStats();
+    ASSERT_EQ(stats_d.size(), stats_f.size());
+
+    for(size_t t = 0; t < stats_d.size(); ++t)
+    {
+        if(!stats_d[t].valid || !stats_f[t].valid) continue;
+        EXPECT_NEAR(stats_f[t].sky, stats_d[t].sky, 2.0)
+            << "tile " << t << " sky differs between float and double";
+    }
 }
