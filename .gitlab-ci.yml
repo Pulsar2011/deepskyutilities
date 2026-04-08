@@ -36,7 +36,6 @@ deps:
     # Try using wget to download the repository archive instead of git clone
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskyfits.git
     - cd deepskyfits && git submodule update --init --recursive
-    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
     - cmake -DCMAKE_INSTALL_PREFIX=../deepskyproject -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2
     # Repeat make because sometime it fail when waiting for unfinish compilation of others src. I also need to repeat cmake because it seems to ignore some of the header at first run
@@ -46,21 +45,18 @@ deps:
     - cd -
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskysys
     - cd deepskysys && git submodule update --init --recursive
-    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
     - cmake -DCMAKE_INSTALL_PREFIX=../deepskyproject -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2 install
 
     - cd -
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskymath
     - cd deepskymath && git submodule update --init --recursive
-    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
     - cmake -DCMAKE_INSTALL_PREFIX=../deepskyproject -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2 install
 
     - cd -
     - git clone https://oauth2:${DEEPSKYFITS_TOKEN}@gitlab.in2p3.fr/deepskyproject/deepskydisplay.git
     - cd deepskydisplay && git submodule update --init --recursive
-    - export CFLAGS="-fPIC -O3" CXXFLAGS="-fPIC -O3"
     - cmake -DCMAKE_INSTALL_PREFIX=../deepskyproject -Wno-dev -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF .
     - make -j 2 install
     
@@ -78,7 +74,7 @@ build:
     - job: deps
       artifacts: true
   script:
-  - git fetch --tags --force
+  - git fetch --tags --force || true
   - export DeepSkyROOT=$(pwd)/deepskyproject   # absolu
   - export GNUTERM="pngcairo"
   - mkdir -p build && cd build

@@ -598,7 +598,7 @@ TEST(StarFinderGPUTest, FindStarsCube_Float)
     std::cout << "[float 3-layer cube MORPHO] Detected " << detected.nrows() << " stars" << std::endl;
     EXPECT_GT(detected.nrows(), static_cast<size_t>(0));
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);

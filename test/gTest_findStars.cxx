@@ -602,7 +602,7 @@ TEST(StarFitterFit, EvalConsistency_moffat2D)
 
 TEST(StarFitter, Plot)
 {
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     const size_t W = 11, H = 11;
     auto img = std::make_shared<DSL::FITSimg<double>>(std::vector<size_t>{W, H});
 
@@ -1002,7 +1002,7 @@ TEST(StarFinderTest, FindStarsCube)
     const auto& detectedStars = finder.detectedStars();
 
     detectedStars.toCSV(std::cout,';');
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1085,7 +1085,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_GAUSS)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1136,7 +1136,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_iGAUSS)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1191,7 +1191,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_GAUSS2D)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1245,7 +1245,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_iGAUSS2D)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1297,7 +1297,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_MOFFAT)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1353,7 +1353,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_MOFFAT2D)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1403,7 +1403,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_LORENTZIAN)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1456,7 +1456,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_LORENTZIAN2D)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
     
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1508,7 +1508,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_VOIGT)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
     
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1563,7 +1563,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_VOIGT2D)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
     
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1615,7 +1615,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_SERSIC)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
     
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1670,7 +1670,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_SERSIC2D)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
     
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1722,7 +1722,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_KING)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
     
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1777,7 +1777,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_KING2D)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
     
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
@@ -1827,7 +1827,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_AIRY)
         EXPECT_GT(fits[i][2], 0.0) << "star " << i << " y0";
     }
 
-#ifndef Linuxx86_64
+#if !defined(Linuxx86_64) && !defined(Linuxaarch64)
     {
         int arg=0;
         QApplication app(arg, nullptr);
