@@ -29,6 +29,13 @@
             "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_version",
             "group": "build",
             "problemMatcher": []
+        },
+        {
+            "label": "make gTest_imageStacking",
+            "type": "shell",
+            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_imageStacking",
+            "group": "build",
+            "problemMatcher": []
         }
     ]
 }

@@ -5,6 +5,8 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
 project(DeepSkyProject CXX)
 message("${Green}-- Project source directory :" ${CMAKE_SOURCE_DIR} "${ColourReset}")
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set(CMAKE_BUILD_DIRECTORY ${CMAKE_BINARY_DIR}/build)
 
 if(DEFINED ENV{DeepSkyROOT})
