@@ -291,14 +291,6 @@ else()
     message(WARNING "libDSTdisplay not found; install the library")
 endif()
 
-find_library(cfitsio NAMES cfitsio HINTS ${DeepSkyROOT}/lib)
-if(cfitsio)
-    include_directories(${DeepSkyROOT}/include/cfitsio)
-    message("-- ${Green}Found${ColourReset} cfitsio: ${cfitsio}")
-else()
-    message(WARNING "libcfitsio not found; install the library")
-endif()
-
 find_library(Minuit2 NAMES Minuit2 HINTS ${DeepSkyROOT}/lib)
 if(Minuit2)
     include_directories(${DeepSkyROOT}/include/Minuit2)
@@ -402,9 +394,9 @@ if(USE_VULKAN)
 endif()
 
 if(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${GPU_LIBS})
+    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath Minuit2 ${QT_LIBS} ${GPU_LIBS})
 else(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} ${GPU_LIBS})
+    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} ${GPU_LIBS})
 endif(COMPILER_SUPPORTS_CXX23)
 
 #-------------------- Configuration des test
@@ -423,9 +415,9 @@ foreach( test_source_file ${TEST_SRC} )
 	)
 
     if(COMPILER_SUPPORTS_CXX23)
-        target_link_libraries( ${tSRC} DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} gtest gtest_main)
+        target_link_libraries( ${tSRC} DSTools DSTfits DSTCore DSTdisplay DSTmath Minuit2 ${QT_LIBS} gtest gtest_main)
     else(COMPILER_SUPPORTS_CXX23)
-        target_link_libraries( ${tSRC} DSTools DSTfits DSTCore DSTdisplay DSTmath cfitsio Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
+        target_link_libraries( ${tSRC} DSTools DSTfits DSTCore DSTdisplay DSTmath Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
     endif(COMPILER_SUPPORTS_CXX23)
 
     set_target_properties(${tSRC} PROPERTIES
@@ -458,7 +450,7 @@ add_executable(
     utilities/FitsViewer/DSTfitsViewer.cxx
 )
 
-target_link_libraries(FitsViewer DSTfits DSTCore DSTdisplay DSTools DSTmath cfitsio Minuit2 ${QT_LIBS})
+target_link_libraries(FitsViewer DSTfits DSTCore DSTdisplay DSTools DSTmath Minuit2 ${QT_LIBS})
 
 # Embed the install RPATH at build time so that install_name_tool does not
 # attempt to rewrite it on every subsequent "make install", which causes
