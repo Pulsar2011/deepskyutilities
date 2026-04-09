@@ -291,6 +291,15 @@ else()
     message(WARNING "libDSTdisplay not found; install the library")
 endif()
 
+find_library(cfitsio NAMES cfitsio HINTS ${DeepSkyROOT}/lib)
+if(cfitsio)
+    include_directories(${DeepSkyROOT}/include/cfitsio)
+    message("-- ${Green}Found${ColourReset} cfitsio: ${cfitsio}")
+else()
+    message(WARNING "libcfitsio not found; install the library")
+endif()
+
+
 find_library(Minuit2 NAMES Minuit2 HINTS ${DeepSkyROOT}/lib)
 if(Minuit2)
     include_directories(${DeepSkyROOT}/include/Minuit2)
