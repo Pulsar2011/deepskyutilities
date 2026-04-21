@@ -36,6 +36,13 @@
             "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_imageStacking",
             "group": "build",
             "problemMatcher": []
+        },
+        {
+            "label": "make gTest_astrometry",
+            "type": "shell",
+            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_astrometry",
+            "group": "build",
+            "problemMatcher": []
         }
     ]
 }

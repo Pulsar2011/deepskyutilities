@@ -18,14 +18,15 @@ variables:
   GIT_DEPTH: "0"
 
 before_script:
-  - apt-get update
-  - apt-get install -y cmake make git
-  - apt-get install -y libgsl-dev qt6-base-dev
-  - apt-get install -y doxygen graphviz pkg-config libblas-dev liblapack-dev
-  - apt-get install -y build-essential clang pkg-config autoconf automake libtool ca-certificates libfftw3-dev
-  - apt-get install -y gdb libboost-filesystem-dev libboost-chrono-dev libboost-thread-dev libboost-regex-dev npm 
-  - apt-get install -y libpthread-stubs0-dev patchelf
-  - apt-get install -y gnuplot-nox libcairo2 libpango-1.0-0 libpangocairo-1.0-0
+  # Retry apt operations to survive transient Docker-Desktop network hiccups
+  - apt-get update --fix-missing 
+  - apt-get install --fix-missing -y cmake make git curl wget
+  - apt-get install --fix-missing -y libgsl-dev qt6-base-dev
+  - apt-get install --fix-missing -y doxygen graphviz pkg-config libblas-dev liblapack-dev libopenblas-dev
+  - apt-get install --fix-missing -y build-essential clang pkg-config autoconf automake libtool ca-certificates libfftw3-dev
+  - apt-get install --fix-missing -y gdb libboost-filesystem-dev libboost-chrono-dev libboost-thread-dev libboost-regex-dev npm 
+  - apt-get install --fix-missing -y libpthread-stubs0-dev patchelf astrometry.net liblapacke-dev
+  - apt-get install --fix-missing -y gnuplot-nox libcairo2 libpango-1.0-0 libpangocairo-1.0-0
 
 deps:
   stage: .pre
@@ -76,9 +77,8 @@ build:
   script:
   - git fetch --tags --force || true
   - export DeepSkyROOT=$(pwd)/deepskyproject   # absolu
-  - export GNUTERM="pngcairo"
   - mkdir -p build && cd build
-  - cmake -Wno-dev -DCMAKE_THREAD_LIBS_INIT="-lpthread" -DCMAKE_HAVE_THREADS_LIBRARY=1 -DCMAKE_USE_PTHREADS_INIT=1 ..
+  - cmake -Wno-dev -DCMAKE_THREAD_LIBS_INIT="-lpthread" -DCMAKE_USE_PTHREADS_INIT=1 ..
   - make -j 2
   artifacts:
     expire_in: 2 hrs

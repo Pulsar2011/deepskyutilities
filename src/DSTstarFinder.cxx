@@ -13,6 +13,7 @@
 #include <queue>
 #include <set>
 #include <mutex>
+#include <cstdlib>
 
 #ifdef __WITH_QT__
 
@@ -36,6 +37,8 @@
 #endif
 
 #include <cmath>
+#include <chrono>
+#include <ctime>
 
 
 std::mutex flabelMutex;
@@ -70,7 +73,7 @@ static bool isGPUEligible(const std::shared_ptr<DSL::FITScube>& img)
 
 namespace DST
 {
-#pragma region - DST::starFinder class implementation
+#pragma region - DST::Stars class implementation
 #pragma region -- ctor/dtor
     /** 
      * @brief Default constructor
@@ -389,6 +392,7 @@ namespace DST
               << finURL
               << std::endl;
     }
+
 #pragma endregion
 
 #pragma endregion
@@ -870,11 +874,153 @@ namespace DST
             return table;
         }
 
+        /**
+         * @brief Write the detected star catalog to a FITS-LDAC file compatible with SCAMP.
+         * @param filename Output FITS file path.
+         * @param method   PSF evaluation method to use. Pass Stars::evalType::UNDEFINED (default)
+         *                 to skip re-evaluation and assume properties are already measured.
+         *                 Any other method will re-evaluate (in parallel) every star whose stored
+         *                 evalMethod() differs from the requested one.
+         */
+        void starFinder::toFITS_LDAC(const std::string& filename, Stars::evalType method)
+        {
+            // ------------------------------------------------------------------
+            // 1.  Optionally re-evaluate stellar properties in parallel.
+            //     UNDEFINED → caller guarantees properties are ready; skip.
+            //     Any other method → re-evaluate stars whose stored method differs.
+            // ------------------------------------------------------------------
+            if (method != Stars::evalType::UNDEFINED)
+            {
+                std::vector<std::future<void>> futures;
+                for (auto& [id, star] : fdetectedStars)
+                {
+                    if (star.evalMethod() != method)
+                    {
+                        futures.push_back(
+                            std::async(std::launch::async,
+                                       [this, &star, method]()
+                                       { EvalStellarProperties(star, method); }));
+                    }
+                }
+                for (auto& f : futures) f.get();
+            }
+
+            // ------------------------------------------------------------------
+            // 2.  Create the FITS file and write primary HDU keywords.
+            // ------------------------------------------------------------------
+            DSL::FITSmanager fm = DSL::FITSmanager::Create(filename, /*replace=*/true);
+
+            {
+                auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                char buf[32] = {};
+                std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", std::gmtime(&t));
+                fm.AppendKeyToPrimary("ORIGIN",
+                    DSL::FITSkeyword("DeepSkyTools::DSTastrometry", "Library origin",   DSL::key_type::fChar));
+                fm.AppendKeyToPrimary("SOFTWARE",
+                    DSL::FITSkeyword(DST::gGIT::version(),           "Software version", DSL::key_type::fChar));
+                fm.AppendKeyToPrimary("DATE",
+                    DSL::FITSkeyword(std::string(buf),               "Creation date",    DSL::key_type::fChar));
+            }
+
+            // ------------------------------------------------------------------
+            // 3.  LDAC_IMHEAD: 1 row, 1 column = full source image header.
+            // ------------------------------------------------------------------
+            std::string rawHeader = fsky->HDU().asString();
+            while (rawHeader.size() % 80 != 0) rawHeader += ' ';
+            const int64_t hdrLen = static_cast<int64_t>(rawHeader.size());
+
+            DSL::FITStable imhead("LDAC_IMHEAD");
+            imhead.InsertColumn(std::make_shared< DSL::FITScolumn<std::string> >(
+                "Field Header Card", DSL::dtype::tstring, int64_t(1), hdrLen, std::string(""), size_t(0), /*fixedWidth=*/true));
+            imhead.push_back("Field Header Card", rawHeader);
+
+            // ------------------------------------------------------------------
+            // 4.  LDAC_OBJECTS: one row per detected star.
+            // ------------------------------------------------------------------
+            DSL::FITStable objects("LDAC_OBJECTS");
+            size_t col = 0;
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<int32_t>  >("NUMBER",           DSL::dtype::tint,   "",      col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("X_IMAGE",           DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("Y_IMAGE",           DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("XWIN_IMAGE",        DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("YWIN_IMAGE",        DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("ERRAWIN_IMAGE",     DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("ERRBWIN_IMAGE",     DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("ERRTHETAWIN_IMAGE", DSL::dtype::tfloat, "deg",   col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("A_IMAGE",           DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("B_IMAGE",           DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("THETA_IMAGE",       DSL::dtype::tfloat, "deg",   col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("AWIN_IMAGE",        DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("BWIN_IMAGE",        DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("THETAWIN_IMAGE",    DSL::dtype::tfloat, "deg",   col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("FLUX_AUTO",         DSL::dtype::tfloat, "ADU",   col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("FLUXERR_AUTO",      DSL::dtype::tfloat, "ADU",   col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("MAG_AUTO",          DSL::dtype::tfloat, "mag",   col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("MAGERR_AUTO",       DSL::dtype::tfloat, "mag",   col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("BACKGROUND",        DSL::dtype::tfloat, "ADU",   col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("FWHM_IMAGE",        DSL::dtype::tfloat, "pixel", col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("SNR_WIN",           DSL::dtype::tfloat, "",      col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("ELONGATION",        DSL::dtype::tfloat, "",      col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<float>    >("CLASS_STAR",        DSL::dtype::tfloat, "",      col++));
+            objects.InsertColumn(std::make_shared< DSL::FITScolumn<int16_t>  >("FLAGS",             DSL::dtype::tshort, "",      col++));
+
+            for (const auto& [id, star] : fdetectedStars)
+            {
+                const float x_img   = static_cast<float>(star.position().X() + 1.0);
+                const float y_img   = static_cast<float>(star.position().Y() + 1.0);
+                const float fwhm_x  = (star.FWHM().size() >= 1) ? static_cast<float>(star.FWHM().X()) : 0.f;
+                const float fwhm_y  = (star.FWHM().size() >= 2) ? static_cast<float>(star.FWHM().Y()) : fwhm_x;
+                const float sigma_x = fwhm_x / 2.355f;
+                const float sigma_y = fwhm_y / 2.355f;
+                const float snr     = static_cast<float>(star.SNR());
+                const float flux    = static_cast<float>(star.totalFlux());
+                const float fluxErr = (snr > 0.f) ? flux / snr : 0.f;
+                const float mag     = (flux > 0.f) ? static_cast<float>(-2.5 * std::log10(static_cast<double>(flux))) : 99.f;
+                const float magErr  = (snr > 0.f) ? static_cast<float>(1.0857 / snr) : 99.f;
+                const float errA    = (snr > 0.f) ? sigma_x / snr : 0.f;
+                const float errB    = (snr > 0.f) ? sigma_y / snr : 0.f;
+                const float theta   = static_cast<float>(star.angle() * 180.0 / M_PI);
+                const float elong   = (sigma_y > 0.f) ? sigma_x / sigma_y : 1.f;
+
+                size_t row = objects.push_back("NUMBER", static_cast<int32_t>(star.ID()));
+                objects.updateAt("X_IMAGE",           row, x_img);
+                objects.updateAt("Y_IMAGE",           row, y_img);
+                objects.updateAt("XWIN_IMAGE",        row, x_img);
+                objects.updateAt("YWIN_IMAGE",        row, y_img);
+                objects.updateAt("ERRAWIN_IMAGE",     row, errA);
+                objects.updateAt("ERRBWIN_IMAGE",     row, errB);
+                objects.updateAt("ERRTHETAWIN_IMAGE", row, 0.f);
+                objects.updateAt("A_IMAGE",           row, sigma_x);
+                objects.updateAt("B_IMAGE",           row, sigma_y);
+                objects.updateAt("THETA_IMAGE",       row, theta);
+                objects.updateAt("AWIN_IMAGE",        row, sigma_x);
+                objects.updateAt("BWIN_IMAGE",        row, sigma_y);
+                objects.updateAt("THETAWIN_IMAGE",    row, theta);
+                objects.updateAt("FLUX_AUTO",         row, flux);
+                objects.updateAt("FLUXERR_AUTO",      row, fluxErr);
+                objects.updateAt("MAG_AUTO",          row, mag);
+                objects.updateAt("MAGERR_AUTO",       row, magErr);
+                objects.updateAt("BACKGROUND",        row, static_cast<float>(star.background()));
+                objects.updateAt("FWHM_IMAGE",        row, (fwhm_x + fwhm_y) * 0.5f);
+                objects.updateAt("SNR_WIN",           row, snr);
+                objects.updateAt("ELONGATION",        row, elong);
+                objects.updateAt("CLASS_STAR",        row, 1.f);
+                objects.updateAt("FLAGS",             row, static_cast<int16_t>(0));
+            }
+
+            // ------------------------------------------------------------------
+            // 5.  Write extensions and flush.
+            // ------------------------------------------------------------------
+            fm.InsertTable(std::make_shared<DSL::FITStable>(imhead));
+            fm.InsertTable(std::make_shared<DSL::FITStable>(objects));
+            fm.Write();
+        }
+
 #pragma endregion
 #pragma region -- processing
         /**
          * @brief Find stars in the input image using the selected detection method
-         * 
+         *
          */
         void starFinder::findStars(const enum detectionMethod& method, double quantizationStep)
         {
