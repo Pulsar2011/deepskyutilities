@@ -24,4 +24,11 @@ LastTest*
 CTestCheckpoint*
 *.spv
 
+scamp_external*
+test/data
+DSTastrometry_config.h
+
 .DS_Store
+
+.gitlab-ci-local
+deepskyproject

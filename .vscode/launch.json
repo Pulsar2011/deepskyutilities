@@ -59,6 +59,17 @@
             "cwd": "${workspaceRoot}",
             "MIMode": "lldb",
             "preLaunchTask": "make gTest_imageStacking"
+        },
+        {
+            "type": "lldb-dap",
+            "request": "launch",
+            "name": "gTest_astrometry (LLDB)",
+            "program": "${workspaceRoot}/build/exe/gTest_astrometry",
+            "args": [],
+            "env": [],
+            "cwd": "${workspaceRoot}",
+            "MIMode": "lldb",
+            "preLaunchTask": "make gTest_astrometry"
         }
     ]
 }

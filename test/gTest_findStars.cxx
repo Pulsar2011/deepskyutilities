@@ -2189,3 +2189,55 @@ TEST(StarFinderTest, FindStarsByNoiseChisel_SkySubtractedHasLowerMean)
         std::cout << "[NOISECHISEL sky] output file not found; skipping sky check" << std::endl;
     }
 }
+
+// ---------------------------------------------------------------------------
+// FITS-LDAC export: artificial stellar field
+// ---------------------------------------------------------------------------
+TEST(starFinderTest, toFITS_LDAC_ArtificialField)
+{
+    std::vector<DST::Stars> true_catalog;
+    auto sky = TestUtils::generateStarField(
+        true_catalog, 128, 128, 10, 1.5, 50.0, 500.0, 30.0, 5.0, 2024);
+
+    // 2. Detect stars (findStars runs MOMENT eval internally)
+    DST::algorithms::starFinder finder(sky);
+    finder.setThresholdValue(0.97);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+    
+    ASSERT_GT(finder.detectedStars().nrows(), size_t(0))
+        << "No stars detected in artificial field";
+
+    // 3. Write FITS-LDAC — re-evaluate with MOMENT (ensures all properties are set)
+    const std::string outFile = "./build/test_output/artificial_field.ldac";
+    ASSERT_NO_THROW(finder.toFITS_LDAC(outFile, DST::Stars::evalType::MOMENT));
+
+    // 4. Validate file structure
+    DSL::FITSmanager fm(outFile);
+    EXPECT_EQ(fm.NumberOfHeader(), 3)   // primary + LDAC_IMHEAD + LDAC_OBJECTS
+        << "Expected 3 HDUs in FITS-LDAC file";
+
+    // HDU 2: LDAC_IMHEAD
+    auto imhead = fm.GetTableAtIndex(2);
+    ASSERT_NE(imhead, nullptr);
+    EXPECT_EQ(imhead->GetName(), "LDAC_IMHEAD");
+    EXPECT_EQ(imhead->nrows(),   size_t(1));
+    EXPECT_EQ(imhead->ncols(),   size_t(1));
+
+    // HDU 3: LDAC_OBJECTS
+    auto objTbl = fm.GetTableAtIndex(3);
+    ASSERT_NE(objTbl, nullptr);
+    EXPECT_EQ(objTbl->GetName(), "LDAC_OBJECTS");
+    EXPECT_GT(objTbl->nrows(),   size_t(0));
+
+    // All SCAMP-required columns must be present
+    for (const char* name : {"XWIN_IMAGE", "YWIN_IMAGE",
+                              "ERRAWIN_IMAGE", "ERRBWIN_IMAGE", "ERRTHETAWIN_IMAGE",
+                              "FLUX_AUTO", "FLUXERR_AUTO",
+                              "MAG_AUTO", "MAGERR_AUTO", "FLAGS"})
+        EXPECT_NO_THROW(objTbl->getColumn(name)) << "Missing SCAMP column: " << name;
+
+    // Pixel coordinates must be positive (1-based FITS convention)
+    const std::vector<float>& xVals = objTbl->column<float>("XWIN_IMAGE").data();
+    for (size_t r = 0; r < xVals.size(); ++r)
+        EXPECT_GT(xVals[r], 0.f) << "XWIN_IMAGE must be > 0 (1-based) at row " << r;
+}
