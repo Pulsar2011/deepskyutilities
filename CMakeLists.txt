@@ -427,18 +427,16 @@ message("${Green}-- FFTW lib:    ${ColourReset} ${FFTW_LIB_DIR}")
 # Linux multiarch paths (CMAKE_LIBRARY_ARCHITECTURE is e.g. aarch64-linux-gnu or x86_64-linux-gnu)
 # are listed explicitly so NO_DEFAULT_PATH does not block them on Debian/Ubuntu CI runners.
 find_path(OPENBLAS_INCLUDE_DIR cblas.h
-    HINTS /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
+    HINTS $ENV{CONDA_PREFIX}/include
+        $ENV{CONDA_PREFIX}/include/openblas
+        /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
           /usr/local/opt/openblas/include              # macOS Intel (keg-only)
-          /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}   # Debian/Ubuntu multiarch (arm64, x86_64 …)
-          /usr/include/openblas
-          /usr/include
     NO_DEFAULT_PATH
 )
 find_library(OPENBLAS_LIBRARY NAMES openblas
-    HINTS /opt/homebrew/opt/openblas/lib
+    HINTS $ENV{CONDA_PREFIX}/lib
+        /opt/homebrew/opt/openblas/lib
           /usr/local/opt/openblas/lib
-          /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}       # Debian/Ubuntu multiarch
-          /usr/lib
     NO_DEFAULT_PATH
 )
 if(NOT OPENBLAS_INCLUDE_DIR OR NOT OPENBLAS_LIBRARY)
@@ -465,11 +463,11 @@ message("${Green}-- OpenBLAS lib:    ${ColourReset} ${OPENBLAS_LIB_DIR}")
 # On macOS (Homebrew) OpenBLAS already bundles LAPACKE, so this is skipped.
 if(UNIX AND NOT APPLE)
     find_library(_LAPACKE_LIB NAMES lapacke
-        HINTS /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE} /usr/lib
+      HINTS $ENV{CONDA_PREFIX}/lib
     )
     find_path(_LAPACKE_INCLUDE_DIR lapacke.h
-        HINTS /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}
-              /usr/include
+      HINTS $ENV{CONDA_PREFIX}/include
+          $ENV{CONDA_PREFIX}/include/openblas
     )
     if(_LAPACKE_LIB)
         set(_OB_WRAPPER_DIR "${CMAKE_BINARY_DIR}/_openblas_wrapper")
@@ -516,7 +514,7 @@ endif()
 # even when the package is keg-only and not linked into /opt/homebrew/bin.
 add_custom_command(
     OUTPUT  ${CMAKE_SOURCE_DIR}/scamp/configure
-    COMMAND /usr/bin/env bash -c "export PATH=${AUTOMAKE_BIN_DIR}:$PATH && cd ${CMAKE_SOURCE_DIR}/scamp && ./autogen.sh"
+    COMMAND ${CMAKE_COMMAND} -E env PATH=${AUTOMAKE_BIN_DIR}:$ENV{PATH} bash -c "cd ${CMAKE_SOURCE_DIR}/scamp && ./autogen.sh"
     DEPENDS ${CMAKE_SOURCE_DIR}/scamp/configure.ac
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/scamp
     COMMENT "Running scamp/autogen.sh (generating configure script)"
@@ -531,10 +529,19 @@ ExternalProject_Add(
     scamp_external
     SOURCE_DIR      ${CMAKE_SOURCE_DIR}/scamp
     BINARY_DIR      ${CMAKE_SOURCE_DIR}/build/scamp
-    CONFIGURE_COMMAND /usr/bin/env bash -c
-        "CC=${CMAKE_C_COMPILER} CFLAGS=-fPIC CPPFLAGS=-I${OPENBLAS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/scamp/configure --prefix=${CMAKE_SOURCE_DIR}/build --with-fftw-incdir=${FFTW_INCLUDE_DIR} --with-fftw-libdir=${FFTW_LIB_DIR} --enable-openblas --with-openblas-incdir=${OPENBLAS_INCLUDE_DIR} --with-openblas-libdir=${OPENBLAS_LIB_DIR}"
-    BUILD_COMMAND     ${CMAKE_MAKE_PROGRAM} -j ${CMAKE_BUILD_PARALLEL_LEVEL} -C src
-    INSTALL_COMMAND   ${CMAKE_MAKE_PROGRAM} -C src install
+    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env
+        CC=${CMAKE_C_COMPILER}
+        CFLAGS=-fPIC
+        CPPFLAGS=-I${OPENBLAS_INCLUDE_DIR}
+        ${CMAKE_SOURCE_DIR}/scamp/configure
+        --prefix=${CMAKE_SOURCE_DIR}/build
+        --with-fftw-incdir=${FFTW_INCLUDE_DIR}
+        --with-fftw-libdir=${FFTW_LIB_DIR}
+        --enable-openblas
+        --with-openblas-incdir=${OPENBLAS_INCLUDE_DIR}
+        --with-openblas-libdir=${OPENBLAS_LIB_DIR}
+    BUILD_COMMAND     ${CMAKE_COMMAND} -E env MAKEFLAGS= ${CMAKE_MAKE_PROGRAM} -j ${CMAKE_BUILD_PARALLEL_LEVEL} -C src
+    INSTALL_COMMAND   ${CMAKE_COMMAND} -E env MAKEFLAGS= ${CMAKE_MAKE_PROGRAM} -C src install
     BUILD_BYPRODUCTS  ${CMAKE_SOURCE_DIR}/build/bin/scamp
 )
 
