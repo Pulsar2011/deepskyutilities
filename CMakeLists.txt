@@ -429,13 +429,15 @@ message("${Green}-- FFTW lib:    ${ColourReset} ${FFTW_LIB_DIR}")
 find_path(OPENBLAS_INCLUDE_DIR cblas.h
     HINTS $ENV{CONDA_PREFIX}/include
         $ENV{CONDA_PREFIX}/include/openblas
-        /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
+        $ENV{CONDA_PREFIX}/include 
+          /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
           /usr/local/opt/openblas/include              # macOS Intel (keg-only)
     NO_DEFAULT_PATH
 )
 find_library(OPENBLAS_LIBRARY NAMES openblas
     HINTS $ENV{CONDA_PREFIX}/lib
-        /opt/homebrew/opt/openblas/lib
+          $ENV{CONDA_PREFIX}/openblas/lib 
+          /opt/homebrew/opt/openblas/lib
           /usr/local/opt/openblas/lib
     NO_DEFAULT_PATH
 )
