@@ -427,7 +427,8 @@ message("${Green}-- FFTW lib:    ${ColourReset} ${FFTW_LIB_DIR}")
 # Linux multiarch paths (CMAKE_LIBRARY_ARCHITECTURE is e.g. aarch64-linux-gnu or x86_64-linux-gnu)
 # are listed explicitly so NO_DEFAULT_PATH does not block them on Debian/Ubuntu CI runners.
 find_path(OPENBLAS_INCLUDE_DIR cblas.h
-    HINTS /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
+    HINTS $ENV{CONDA_PREFIX}/include 
+          /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
           /usr/local/opt/openblas/include              # macOS Intel (keg-only)
           /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}   # Debian/Ubuntu multiarch (arm64, x86_64 …)
           /usr/include/openblas
@@ -435,7 +436,9 @@ find_path(OPENBLAS_INCLUDE_DIR cblas.h
     NO_DEFAULT_PATH
 )
 find_library(OPENBLAS_LIBRARY NAMES openblas
-    HINTS /opt/homebrew/opt/openblas/lib
+    HINTS $ENV{CONDA_PREFIX}/lib
+          $ENV{CONDA_PREFIX}/openblas/lib 
+          /opt/homebrew/opt/openblas/lib
           /usr/local/opt/openblas/lib
           /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}       # Debian/Ubuntu multiarch
           /usr/lib
