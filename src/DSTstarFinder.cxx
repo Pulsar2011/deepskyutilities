@@ -1193,9 +1193,9 @@ namespace DST
                 iN->SetName("BM_dilation_layer_"+std::to_string(iLayer));
                 iS->SetName("BE_erosion_layer_"+std::to_string(iLayer));
 
-                iK->Write(foutURL+"/BS_opening.fits",true);
-                iN->Write(foutURL+"/BM_dilation.fits",true);
-                iS->Write(foutURL+"/BE_erosion.fits",true);
+                iK->Write(foutURL+"/BS_opening_layer_"+std::to_string(iLayer)+".fits",true);
+                iN->Write(foutURL+"/BM_dilation_layer_"+std::to_string(iLayer)+".fits",true);
+                iS->Write(foutURL+"/BE_erosion_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
             // Compute significance map
@@ -1307,7 +1307,7 @@ namespace DST
 
             if(foutURL != "")
             {
-                smoothedImage->Write(foutURL+"/thresholded_image.fits",true);
+                smoothedImage->Write(foutURL+"/thresholded_image_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
             // The second step consists in searching for connected components above the threshold value using a watershed algorithm.
@@ -1387,9 +1387,9 @@ namespace DST
 
             if(foutURL != "")
             {
-                errMap->Write(foutURL+"/error_map.fits",true);
-                bkgMap->Write(foutURL+"/background_map.fits",true);
-                snrMap->Write(foutURL+"/snr_map.fits",true);
+                errMap->Write(foutURL+"/error_map_layer_"+std::to_string(iLayer)+".fits",true);
+                bkgMap->Write(foutURL+"/background_map_layer_"+std::to_string(iLayer)+".fits",true);
+                snrMap->Write(foutURL+"/snr_map_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
             errMap.reset();
@@ -1847,7 +1847,7 @@ namespace DST
 
             if(foutURL != "")
             {
-                customMap->Write(foutURL+"/userSignificance_map.fits",true);
+                customMap->Write(foutURL+"/userSignificance_map_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
             _watershedFlooding(customMap, fthresholdValue, fquantumStepQueue, iLayer);
