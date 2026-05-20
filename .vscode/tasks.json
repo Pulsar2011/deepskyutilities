@@ -16,10 +16,12 @@
             "problemMatcher": []
         },
         {
-
             "label": "make gTest_findStars",
             "type": "shell",
             "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_findStars",
+            "linux": {
+                "command": "eval \"$(pixi shell-hook --manifest-path ${workspaceFolder}/../pixi.toml --shell zsh)\" && export CONDA_BUILD_SYSROOT=\"${CONDA_PREFIX}/x86_64-conda-linux-gnu/sysroot\" && export DeepSkyROOT=\"${CONDA_PREFIX}\" && export LD_LIBRARY_PATH=\"${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}\" && export ASAN_OPTIONS=\"detect_odr_violation=0:detect_leaks=0\" && cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug && make gTest_findStars"
+            },
             "group": "build",
             "problemMatcher": []
         },

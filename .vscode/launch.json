@@ -32,11 +32,20 @@
             "request": "launch",
             "name": "gTest_findStars (LLDB)",
             "program": "${workspaceRoot}/build/exe/gTest_findStars",
-            "args": [],
-            "env": [],
-            "cwd": "${workspaceRoot}",
+            "mac":{
+                "args": [],
+                "env": [],
+                "cwd": "${workspaceRoot}"
+            },
             "MIMode": "lldb",
-            "preLaunchTask": "make gTest_findStars"
+            "preLaunchTask": "make gTest_findStars",
+            "linux": {
+                "env": {
+                    "LD_LIBRARY_PATH": "${workspaceFolder}/../.pixi/envs/default/lib",
+                    "DeepSkyROOT": "${workspaceFolder}/../.pixi/envs/default",
+                    "ASAN_OPTIONS": "detect_odr_violation=0:detect_leaks=0"
+                }
+            }
         },
         {
             "type": "lldb-dap",

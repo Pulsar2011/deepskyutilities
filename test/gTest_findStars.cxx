@@ -723,10 +723,10 @@ TEST(StarFinderTest, FindStarsBySegmentation)
         seed);
     
     img->Write("./build/test_output/synthetic_star_field.fits",true);
-    
+
     // Create star finder
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/FindStarsBySegmentation");
     
     // Run star detection
     verbose = verboseLevel::VERBOSE_BASIC;
@@ -792,7 +792,7 @@ TEST(StarFinderTest, FindStarsBySNR)
     
     // Create star finder
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/FindStarsBySNR");
     
     // Run star detection
     verbose = verboseLevel::VERBOSE_BASIC;
@@ -857,7 +857,7 @@ TEST(StarFinderTest, FindStarsByThreshold)
     
     // Create star finder
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/FindStarsByThreshold");
     
     // Run star detection
     verbose = verboseLevel::VERBOSE_BASIC;
@@ -991,7 +991,7 @@ TEST(StarFinderTest, FindStarsCube)
     
     // Create star finder
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/FindStarsCube");
     
     // Run star detection
     verbose = verboseLevel::VERBOSE_BASIC;
@@ -1068,7 +1068,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_GAUSS)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_GAUSS");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1119,7 +1119,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_iGAUSS)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_iGAUSS");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1173,7 +1173,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_GAUSS2D)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_GAUSS2D");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1227,7 +1227,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_iGAUSS2D)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_iGAUSS2D");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1279,7 +1279,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_MOFFAT)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_MOFFAT");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1334,7 +1334,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_MOFFAT2D)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_MOFFAT2D");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1386,7 +1386,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_LORENTZIAN)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_LORENTZIAN");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1439,7 +1439,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_LORENTZIAN2D)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_LORENTZIAN2D");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1490,7 +1490,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_VOIGT)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_VOIGT");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1545,7 +1545,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_VOIGT2D)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_VOIGT2D");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1597,7 +1597,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_SERSIC)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_SERSIC");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1652,7 +1652,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_SERSIC2D)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_SERSIC2D");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1704,7 +1704,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_KING)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_KING");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1759,7 +1759,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_KING2D)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_KING2D");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -1810,7 +1810,7 @@ TEST(StarFinderTest, StarPropertiesEstimator_AIRY)
         });
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output");
+    finder.setOutputUrl("./build/test_output/StarPropertiesEstimator_AIRY");
     finder.setThresholdValue(0.5);
     finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
 
@@ -2058,7 +2058,7 @@ TEST(StarFinderTest, FindStarsByNoiseChisel_DefaultParams)
         seed);
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output/DefaultParams");
+    finder.setOutputUrl("./build/test_output/FindStarsByNoiseChisel_DefaultParams");
     verbose = verboseLevel::VERBOSE_NONE;
     finder.setThresholdValue(0.85); // NoiseChisel is more aggressive by default, so increase threshold to avoid huge number of detections
 
@@ -2085,7 +2085,7 @@ TEST(StarFinderTest, FindStarsByNoiseChisel_TunedParams)
         true_catalog, 256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 42);
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output/TunedParams");
+    finder.setOutputUrl("./build/test_output/FindStarsByNoiseChisel_TunedParams");
     verbose = verboseLevel::VERBOSE_NONE;
 
     finder.setNC_convSigma(1.5);
@@ -2124,7 +2124,7 @@ TEST(StarFinderTest, FindStarsByNoiseChisel_NoReDetect)
         true_catalog, 256, 256, 20, 1.5, 50.0, 800.0, 20.0, 5.0, 7777);
 
     DST::algorithms::starFinder finder(img);
-    finder.setOutputUrl("./build/test_output/NoReDetect");
+    finder.setOutputUrl("./build/test_output/FindStarsByNoiseChisel_NoReDetect");
     verbose = verboseLevel::VERBOSE_NONE;
     finder.setNC_reDetect(false);
     finder.setThresholdValue(0.85);
