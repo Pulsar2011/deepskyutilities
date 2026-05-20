@@ -430,8 +430,11 @@ find_path(OPENBLAS_INCLUDE_DIR cblas.h
     HINTS $ENV{CONDA_PREFIX}/include
         $ENV{CONDA_PREFIX}/include/openblas
         $ENV{CONDA_PREFIX}/include 
-          /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
-          /usr/local/opt/openblas/include              # macOS Intel (keg-only)
+        /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
+        /usr/local/opt/openblas/include              # macOS Intel (keg-only)
+        /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}   # Debian/Ubuntu multiarch (arm64, x86_64 …)
+        /usr/include/openblas
+        /usr/include
     NO_DEFAULT_PATH
 )
 find_library(OPENBLAS_LIBRARY NAMES openblas
@@ -439,6 +442,8 @@ find_library(OPENBLAS_LIBRARY NAMES openblas
           $ENV{CONDA_PREFIX}/openblas/lib 
           /opt/homebrew/opt/openblas/lib
           /usr/local/opt/openblas/lib
+          /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}       # Debian/Ubuntu multiarch
+          /usr/lib
     NO_DEFAULT_PATH
 )
 if(NOT OPENBLAS_INCLUDE_DIR OR NOT OPENBLAS_LIBRARY)
@@ -466,10 +471,13 @@ message("${Green}-- OpenBLAS lib:    ${ColourReset} ${OPENBLAS_LIB_DIR}")
 if(UNIX AND NOT APPLE)
     find_library(_LAPACKE_LIB NAMES lapacke
       HINTS $ENV{CONDA_PREFIX}/lib
+            /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE} /usr/lib
     )
     find_path(_LAPACKE_INCLUDE_DIR lapacke.h
       HINTS $ENV{CONDA_PREFIX}/include
-          $ENV{CONDA_PREFIX}/include/openblas
+            $ENV{CONDA_PREFIX}/include/openblas
+            /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}
+            /usr/include
     )
     if(_LAPACKE_LIB)
         set(_OB_WRAPPER_DIR "${CMAKE_BINARY_DIR}/_openblas_wrapper")
