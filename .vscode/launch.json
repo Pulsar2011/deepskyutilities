@@ -40,6 +40,7 @@
             "MIMode": "lldb",
             "preLaunchTask": "make gTest_findStars",
             "linux": {
+                "args": ["--gtest_filter=StarFinderTest.FindStarsCube"],
                 "env": {
                     "LD_LIBRARY_PATH": "${workspaceFolder}/../.pixi/envs/default/lib",
                     "DeepSkyROOT": "${workspaceFolder}/../.pixi/envs/default",

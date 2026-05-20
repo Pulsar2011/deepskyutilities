@@ -44,6 +44,8 @@
 std::mutex flabelMutex;
 /// Serializes concurrent GPU folding calls — the Vulkan backend is not thread-safe.
 std::mutex fgpuMutex;
+/// Serializes concurrent FITS file writes — cfitsio global state is not thread-safe.
+std::mutex fwriteMutex;
 
 // -----------------------------------------------------------------------
 //  File-static GPU helpers
@@ -1189,6 +1191,7 @@ namespace DST
 
             if(foutURL != "")
             {
+                std::lock_guard<std::mutex> writeLock(fwriteMutex);
                 iK->SetName("BS_opening_layer_"+std::to_string(iLayer));
                 iN->SetName("BM_dilation_layer_"+std::to_string(iLayer));
                 iS->SetName("BE_erosion_layer_"+std::to_string(iLayer));
@@ -1239,6 +1242,7 @@ namespace DST
 
             if(foutURL != "")
             {
+                std::lock_guard<std::mutex> writeLock(fwriteMutex);
                 iK->SetName("significance_map_layer_"+std::to_string(iLayer));
                 iK->Write(foutURL+"/significance_map_layer_"+std::to_string(iLayer)+".fits",true);
             }
@@ -1307,6 +1311,7 @@ namespace DST
 
             if(foutURL != "")
             {
+                std::lock_guard<std::mutex> writeLock(fwriteMutex);
                 smoothedImage->Write(foutURL+"/thresholded_image_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
@@ -1387,6 +1392,7 @@ namespace DST
 
             if(foutURL != "")
             {
+                std::lock_guard<std::mutex> writeLock(fwriteMutex);
                 errMap->Write(foutURL+"/error_map_layer_"+std::to_string(iLayer)+".fits",true);
                 bkgMap->Write(foutURL+"/background_map_layer_"+std::to_string(iLayer)+".fits",true);
                 snrMap->Write(foutURL+"/snr_map_layer_"+std::to_string(iLayer)+".fits",true);
@@ -1487,6 +1493,7 @@ namespace DST
 
                 if(foutURL != "")
                 {
+                    std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     convImg->SetName("nc_convolved_layer_"+std::to_string(iLayer));
                     convImg->Write(foutURL+"/nc_convolved_layer_"
                                    +std::to_string(iLayer)+".fits", true);
@@ -1563,6 +1570,7 @@ namespace DST
 
                 if(foutURL != "")
                 {
+                    std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     binary->SetName("nc_binary_layer_"+std::to_string(iLayer));
                     binary->Write(foutURL+"/nc_binary_layer_"
                                    +std::to_string(iLayer)+".fits", true);
@@ -1592,6 +1600,7 @@ namespace DST
 
                 if(foutURL != "")
                 {
+                    std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     erodedBinary->SetName("nc_eroded_layer_"+std::to_string(iLayer));
                     erodedBinary->Write(foutURL+"/nc_eroded_layer_"
                                          +std::to_string(iLayer)+".fits", true);
@@ -1621,6 +1630,7 @@ namespace DST
 
                 if(foutURL != "")
                 {
+                    std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     labelImg->SetName("nc_labels_layer_"+std::to_string(iLayer));
                     labelImg->Write(foutURL+"/nc_labels_layer_"
                                      +std::to_string(iLayer)+".fits", true);
@@ -1699,6 +1709,7 @@ namespace DST
 
                 if(foutURL != "")
                 {
+                    std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     survivingMask->SetName("nc_surviving_layer_"+std::to_string(iLayer));
                     survivingMask->Write(foutURL+"/nc_surviving_layer_"
                                           +std::to_string(iLayer)+".fits", true);
@@ -1728,6 +1739,7 @@ namespace DST
 
                 if(foutURL != "")
                 {
+                    std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     detectionMask->SetName("nc_detection_mask_layer_"+std::to_string(iLayer));
                     detectionMask->Write(foutURL+"/nc_detection_mask_layer_"
                                           +std::to_string(iLayer)+".fits", true);
@@ -1775,6 +1787,7 @@ namespace DST
 
             if(foutURL != "")
             {
+                std::lock_guard<std::mutex> writeLock(fwriteMutex);
                 skyMap->SetName("nc_skymap_layer_"+std::to_string(iLayer));
                 skyMap->Write(foutURL+"/nc_skymap_layer_"
                                +std::to_string(iLayer)+".fits", true);
@@ -1802,6 +1815,7 @@ namespace DST
 
             if(foutURL != "")
             {
+                std::lock_guard<std::mutex> writeLock(fwriteMutex);
                 skySubtracted->SetName("nc_skysubtracted_layer_"+std::to_string(iLayer));
                 skySubtracted->Write(foutURL+"/nc_skysubtracted_layer_"
                                       +std::to_string(iLayer)+".fits", true);
@@ -1847,6 +1861,7 @@ namespace DST
 
             if(foutURL != "")
             {
+                std::lock_guard<std::mutex> writeLock(fwriteMutex);
                 customMap->Write(foutURL+"/userSignificance_map_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
