@@ -516,8 +516,6 @@ namespace DST
                 void _evalStellarPropertiesMoment(Stars& star);
                 /// @brief Fit a parametric PSF model to the star stamp via Minuit2.
                 void _evalStellarPropertiesModel(Stars& star, const DST::Stars::evalType& how);
-                /// @brief Compute aperture photometry for a star using the label mask.
-                void _evalApperturePhotometry(Stars& star);
                 /// @brief Return the pixel indices of the 4- or 8-connected neighbours of @p pixIdx.
                 std::vector<size_t> _getNeighborIndices(const size_t& pixIdx, const size_t& w, const size_t& h) const;
                 /// @brief Flood-fill a flat-topped plateau in the priority-queue watershed.
@@ -531,6 +529,8 @@ namespace DST
                 virtual void _evalStellarPropertiesCustom(Stars& star) {_evalStellarPropertiesMoment(star);} ///< Default: fall back to moment analysis; override for custom behaviour.
                 /// @brief Fit a parametric PSF model to the star stamp via Minuit2.
                 virtual void _evalStellarPropertiesCustomModel(Stars& star, const DST::Stars::evalType& how) {_evalStellarPropertiesModel(star, how);} ///< Default: fall back to built-in models; override for custom behaviour.
+                /// @brief Compute aperture photometry for a star using the label mask.
+                virtual void _evalApperturePhotometry(Stars& star);
 
                 /**
                  * @brief Override point for user-defined image pre-processing.
