@@ -2191,6 +2191,136 @@ TEST(StarFinderTest, FindStarsByNoiseChisel_SkySubtractedHasLowerMean)
 }
 
 // ---------------------------------------------------------------------------
+// Tests for _evalStellarPropertiesCustom and _evalStellarPropertiesCustomModel
+//
+// A derived class overrides both virtual hooks and writes sentinel values that
+// can never arise from moment analysis or aperture photometry.  After calling
+// EvalStellarProperties() with CUSTOM / CUSTOM_MODEL we verify that every
+// detected star has exactly those sentinel values in the output table.
+//
+// Fields checked (NOT overwritten by _evalApperturePhotometry that runs after):
+//   maxima, FWHM_X, FWHM_Y, angle, fits (PSF params), EvalMethod
+// Fields NOT checked (overwritten by _evalApperturePhotometry):
+//   Background, TotalFlux, SNR
+// ---------------------------------------------------------------------------
+namespace
+{
+    const double              kCustomMaxima  = 99999.0;
+    const double              kCustomFWHMx   =     7.7;
+    const double              kCustomFWHMy   =     3.3;
+    const double              kCustomAngle   =     1.23;
+    const std::vector<double> kCustomParams  = {11.0, 22.0, 33.0, 44.0};
+
+    const double              kCustomModelMaxima  = 55555.0;
+    const double              kCustomModelFWHMx   =     4.4;
+    const double              kCustomModelFWHMy   =     8.8;
+    const double              kCustomModelAngle   =     0.77;
+    const std::vector<double> kCustomModelParams  = {100.0, 200.0, 300.0};
+
+    class StubFinder : public DST::algorithms::starFinder
+    {
+    public:
+        explicit StubFinder(std::shared_ptr<FITScube> img) : starFinder(img) {}
+
+    protected:
+        void _evalStellarPropertiesCustom(DST::Stars& star) override
+        {
+            star.setMaxima(kCustomMaxima);
+            star.setFWHM(kCustomFWHMx, kCustomFWHMy);
+            star.setAngle(kCustomAngle);
+            star.setEvalMethod(DST::Stars::evalType::CUSTOM);
+            star.setPSFparameters(kCustomParams);
+        }
+
+        void _evalStellarPropertiesCustomModel(DST::Stars& star,
+                                               const DST::Stars::evalType& /*how*/) override
+        {
+            star.setMaxima(kCustomModelMaxima);
+            star.setFWHM(kCustomModelFWHMx, kCustomModelFWHMy);
+            star.setAngle(kCustomModelAngle);
+            star.setEvalMethod(DST::Stars::evalType::CUSTOM_MODEL);
+            star.setPSFparameters(kCustomModelParams);
+        }
+    };
+} // anonymous namespace
+
+TEST(StarFinderTest, EvalStellarPropertiesCustom)
+{
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [](double x, double y, double x0, double y0) {
+            return DST::Math::function::gauss2D(x, y, 5000.0, x0, y0, 2.0);
+        });
+
+    StubFinder finder(img);
+    finder.setOutputUrl("./build/test_output/EvalStellarPropertiesCustom");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    finder.EvalStellarProperties(DST::Stars::evalType::CUSTOM);
+
+    const FITStable& table  = finder.detectedStars();
+    const auto& maxima  = table.getColumn("maxima" )->values<double>();
+    const auto& fwhm_x  = table.getColumn("FWHM_X" )->values<double>();
+    const auto& fwhm_y  = table.getColumn("FWHM_Y" )->values<double>();
+    const auto& angle   = table.getColumn("angle"  )->values<double>();
+    const auto& fits    = table.getColumn("fits"   )->values<FITSform::doubleVector>();
+    const auto& method  = table.getColumn("EvalMethod")->values<std::string>();
+
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_DOUBLE_EQ(maxima[i], kCustomMaxima)     << "star " << i << " maxima";
+        EXPECT_DOUBLE_EQ(fwhm_x[i], kCustomFWHMx)     << "star " << i << " FWHM_X";
+        EXPECT_DOUBLE_EQ(fwhm_y[i], kCustomFWHMy)     << "star " << i << " FWHM_Y";
+        EXPECT_DOUBLE_EQ(angle[i],  kCustomAngle)      << "star " << i << " angle";
+        ASSERT_EQ(fits[i].size(), kCustomParams.size()) << "star " << i << " params size";
+        for (size_t j = 0; j < kCustomParams.size(); ++j)
+            EXPECT_DOUBLE_EQ(fits[i][j], kCustomParams[j]) << "star " << i << " param[" << j << "]";
+        EXPECT_EQ(method[i], DST::Stars::ModelString(DST::Stars::evalType::CUSTOM))
+            << "star " << i << " EvalMethod";
+    }
+}
+
+TEST(StarFinderTest, EvalStellarPropertiesCustomModel)
+{
+    auto img = TestUtils::makeModelImage(512, 512, kBkg, kStarPositions,
+        [](double x, double y, double x0, double y0) {
+            return DST::Math::function::gauss2D(x, y, 5000.0, x0, y0, 2.0);
+        });
+
+    StubFinder finder(img);
+    finder.setOutputUrl("./build/test_output/EvalStellarPropertiesCustomModel");
+    finder.setThresholdValue(0.5);
+    finder.findStars(DST::algorithms::starFinder::detectionMethod::MORPHO, 0.1);
+
+    ASSERT_EQ(finder.detectedStars().nrows(), static_cast<size_t>(10));
+
+    finder.EvalStellarProperties(DST::Stars::evalType::CUSTOM_MODEL);
+
+    const FITStable& table  = finder.detectedStars();
+    const auto& maxima  = table.getColumn("maxima" )->values<double>();
+    const auto& fwhm_x  = table.getColumn("FWHM_X" )->values<double>();
+    const auto& fwhm_y  = table.getColumn("FWHM_Y" )->values<double>();
+    const auto& angle   = table.getColumn("angle"  )->values<double>();
+    const auto& fits    = table.getColumn("fits"   )->values<FITSform::doubleVector>();
+    const auto& method  = table.getColumn("EvalMethod")->values<std::string>();
+
+    for (size_t i = 0; i < table.nrows(); ++i)
+    {
+        EXPECT_DOUBLE_EQ(maxima[i], kCustomModelMaxima)      << "star " << i << " maxima";
+        EXPECT_DOUBLE_EQ(fwhm_x[i], kCustomModelFWHMx)      << "star " << i << " FWHM_X";
+        EXPECT_DOUBLE_EQ(fwhm_y[i], kCustomModelFWHMy)      << "star " << i << " FWHM_Y";
+        EXPECT_DOUBLE_EQ(angle[i],  kCustomModelAngle)       << "star " << i << " angle";
+        ASSERT_EQ(fits[i].size(), kCustomModelParams.size()) << "star " << i << " params size";
+        for (size_t j = 0; j < kCustomModelParams.size(); ++j)
+            EXPECT_DOUBLE_EQ(fits[i][j], kCustomModelParams[j]) << "star " << i << " param[" << j << "]";
+        EXPECT_EQ(method[i], DST::Stars::ModelString(DST::Stars::evalType::CUSTOM_MODEL))
+            << "star " << i << " EvalMethod";
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FITS-LDAC export: artificial stellar field
 // ---------------------------------------------------------------------------
 TEST(starFinderTest, toFITS_LDAC_ArtificialField)

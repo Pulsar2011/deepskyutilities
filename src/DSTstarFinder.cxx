@@ -345,6 +345,10 @@ namespace DST
                 return "2D-KING-FIT";
             case evalType::AIRY:
                 return "AIRY-FIT";
+            case evalType::CUSTOM:
+                return "USER-DEFINED";
+            case evalType::CUSTOM_MODEL:
+                return "USER-MODEL";
             default:
                 return "UNKNOWN";
         }
@@ -849,11 +853,18 @@ namespace DST
                 // WCS coordinates
                 if(wcsColumns.size() > 0)
                 {
-                    worldCoords wcsPos = fsky->WorldCoordinates(star.position().GetPoint());
-                    for(size_t i=0; i<wcsColumns.size(); i++)
+                    try
                     {
-                        if(i < wcsPos.size())
-                            table.updateAt(wcsColumns[i].getName(), newRow, wcsPos[i]);
+                        worldCoords wcsPos = fsky->WorldCoordinates(star.position().GetPoint());
+                        for(size_t i=0; i<wcsColumns.size(); i++)
+                        {
+                            if(i < wcsPos.size())
+                                table.updateAt(wcsColumns[i].getName(), newRow, wcsPos[i]);
+                        }
+                    }
+                    catch(const std::exception& e)
+                    {
+                        std::cerr << "Error occurred while converting to WCS coordinates for star at index " << id << ": "<<std::endl<<"           "<< e.what() << std::endl;
                     }
                 }
 
@@ -1106,16 +1117,26 @@ namespace DST
             }
 
                         // Perform basicStellar properties assesment
-            for(std::map<size_t, Stars>::iterator it=fdetectedStars.begin(); it!=fdetectedStars.end(); ++it)
+            for(std::map<size_t, Stars>::iterator it=fdetectedStars.begin(); it!=fdetectedStars.end(); )
             {
-                if(it->second.FilledPixels().size() == 0)
+                if(it->second.FilledPixels().size() < 1)
                 {
-                    fdetectedStars.erase(it);
+                    it = fdetectedStars.erase(it);
                     continue;
                 }
 
                 // Compute star properties here (centroid, flux, FWHM, etc.)
-                EvalStellarProperties(it->second, Stars::evalType::MOMENT);
+                try
+                {
+                    EvalStellarProperties(it->second, Stars::evalType::MOMENT);
+                }
+                catch(const std::exception& e)
+                {
+                    std::cerr << "Error occurred while evaluating stellar properties for star at index " << it->first << ": " << e.what() << std::endl;
+                    it = fdetectedStars.erase(it);
+                    continue;
+                }
+                ++it;
             }
 
         }
@@ -2142,6 +2163,12 @@ namespace DST
             {
                 case Stars::evalType::MOMENT:
                     _evalStellarPropertiesMoment(star);
+                    break;
+                case Stars::evalType::CUSTOM:
+                     _evalStellarPropertiesCustom(star);
+                    break;
+                case Stars::evalType::CUSTOM_MODEL:
+                     _evalStellarPropertiesCustomModel(star, method);
                     break;
                 default:
                     _evalStellarPropertiesModel(star,method);

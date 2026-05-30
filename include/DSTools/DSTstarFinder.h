@@ -136,6 +136,8 @@ namespace DST
                     KING,         ///< Symmetric King profile + background.
                     KING2D,       ///< Asymmetric King profile + background.
                     AIRY,         ///< Symmetric Airy disk profile + background.
+                    CUSTOM,       ///< User-defined method implemented in `starFinder::_evalStellarPropertiesCustom()`.
+                    CUSTOM_MODEL, ///< User-defined method with custom PSF model implemented in `starFinder::_evalStellarPropertiesCustomModel()`.
                     UNDEFINED     ///< Sentinel — no evaluation performed yet.
                 };
 
@@ -461,11 +463,13 @@ namespace DST
                     CUSTOM      ///< User-defined pipeline via `_customPreprocessing()`.
                 };
 
+            protected:
+                std::map<size_t, Stars> fdetectedStars;         ///< All detected stars, keyed by ID.
+
             private:
                 const std::shared_ptr<FITScube> fsky;          ///< Input image (never null after construction).
                 std::shared_ptr<FITScube> flabel;               ///< Integer label image produced during detection.
                 detectionMethod fmethod = detectionMethod::MORPHO; ///< Active detection pipeline.
-                std::map<size_t, Stars> fdetectedStars;         ///< All detected stars, keyed by ID.
                 double fthresholdValue;                         ///< Pixel threshold for `THRESHOLD` mode (default: 97th percentile).
 
                 DST::Morphology::kernel<double> fBS; ///< Opening kernel (default: 3×3 flat, OPEN type).
@@ -522,6 +526,11 @@ namespace DST
             protected:
                 std::string foutURL; ///< Optional output directory for intermediate debug products.
                 bool is3D;           ///< `true` when the input image has 3 FITS axes.
+
+                /// @brief Compute stellar properties using user-defined method.
+                virtual void _evalStellarPropertiesCustom(Stars& star) {_evalStellarPropertiesMoment(star);} ///< Default: fall back to moment analysis; override for custom behaviour.
+                /// @brief Fit a parametric PSF model to the star stamp via Minuit2.
+                virtual void _evalStellarPropertiesCustomModel(Stars& star, const DST::Stars::evalType& how) {_evalStellarPropertiesModel(star, how);} ///< Default: fall back to built-in models; override for custom behaviour.
 
                 /**
                  * @brief Override point for user-defined image pre-processing.
@@ -619,6 +628,9 @@ namespace DST
                 /// @return `FITStable` containing all detected stars.
                 FITStable detectedStars() const;
 
+                /// @return the threshold value used by the `THRESHOLD` detection pipeline.
+                inline double thresholdValue() const { return fthresholdValue; }
+
                 /**
                  * @brief Export the star catalogue to a FITS-LDAC file for use with SCAMP.
                  *
@@ -674,6 +686,14 @@ namespace DST
                  * @param quantizationStep Watershed intensity step (default: 1000).
                  */
                 void findStars(const enum detectionMethod& method, double quantizationStep=1e3);
+
+                inline void EvalStellarProperties(const enum Stars::evalType& method)
+                {
+                    for (auto& [id, star] : fdetectedStars)
+                    {
+                        EvalStellarProperties(star, method);
+                    }
+                }
 
                 /**
                  * @brief Evaluate stellar properties for the star identified by @p id.
