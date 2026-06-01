@@ -430,7 +430,7 @@ namespace DST
                 }
             }
 
-            std::thread solverThread([this, imgFile, hdu, outString]()
+            std::thread solverThread([this, imgFile, outString]()
             {
                 try
                 {
