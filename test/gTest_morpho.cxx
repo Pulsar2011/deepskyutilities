@@ -1178,6 +1178,258 @@ TYPED_TEST(KernelFoldingTest, wTopHat_SinglePixel)
         EXPECT_EQ((*out)[i], (*data)[i]); // opening removes isolated bright pixel -> wTopHat == original
 }
 
+// ============================================================
+// ktype::wMEDIAN tests
+//
+// Motivation: MEDIAN on a sparse kernel (e.g. a diagonal line in a large
+// bounding box) returns 0 because zero-weight cells are multiplied into the
+// sorted buffer (ttmp = pixel * 0 = 0).  For an N-element kernel whose support
+// is only M << N/2 pixels, the majority of sorted values are 0, so the median
+// is 0.  wMEDIAN fixes this by only collecting pixels where kernel weight > 0.
+// ============================================================
+
+// 1. Dense all-ones kernel: wMEDIAN must equal MEDIAN at interior pixels
+//    (no OOB zero-padding difference at borders).
+TYPED_TEST(KernelFoldingTest, wMEDIAN_DenseKernelMatchesMedian)
+{
+    using T = TypeParam;
+    const size_t W = 11, H = 11;
+
+    auto img = std::make_shared<FITSimg<T>>(std::vector<size_t>{W, H});
+    auto data = img->template GetData<T>();
+    for(size_t y = 0; y < H; ++y)
+    for(size_t x = 0; x < W; ++x)
+        (*data)[img->PixelIndex({x,y})] = static_cast<T>((x*3 + y*7) % 13 + 1);
+
+    std::valarray<T> kdata = {T(1),T(1),T(1),
+                               T(1),T(1),T(1),
+                               T(1),T(1),T(1)};
+    kernel<T> km (kdata, {3,3}); km .setType(ktype::MEDIAN);
+    kernel<T> kwm(kdata, {3,3}); kwm.setType(ktype::wMEDIAN);
+
+    auto med_ptr  = folding<T>(std::dynamic_pointer_cast<FITScube>(img), km,  1);
+    auto wmed_ptr = folding<T>(std::dynamic_pointer_cast<FITScube>(img), kwm, 1);
+    auto med_img  = std::dynamic_pointer_cast<FITSimg<T>>(med_ptr);
+    auto wmed_img = std::dynamic_pointer_cast<FITSimg<T>>(wmed_ptr);
+    ASSERT_NE(med_img,  nullptr);
+    ASSERT_NE(wmed_img, nullptr);
+
+    auto med_data  = med_img->template GetData<T>();
+    auto wmed_data = wmed_img->template GetData<T>();
+
+    // Skip the 1-pixel border: OOB pixels are zero-padded by MEDIAN but
+    // excluded by wMEDIAN, so border results intentionally differ.
+    for(size_t y = 1; y < H-1; ++y)
+    for(size_t x = 1; x < W-1; ++x)
+    {
+        const size_t idx = med_img->PixelIndex({x,y});
+        EXPECT_EQ((*med_data)[idx], (*wmed_data)[idx])
+            << "Mismatch at (" << x << "," << y << ")";
+    }
+}
+
+// 2. Multi-thread and single-thread must produce identical results.
+TYPED_TEST(KernelFoldingTest, wMEDIAN_MultiThread_MatchesSingleThread)
+{
+    using T = TypeParam;
+    const size_t W = 51, H = 51;
+
+    auto img = std::make_shared<FITSimg<T>>(std::vector<size_t>{W, H});
+    auto data = img->template GetData<T>();
+    for(size_t y = 0; y < H; ++y)
+    for(size_t x = 0; x < W; ++x)
+        (*data)[img->PixelIndex({x,y})] = static_cast<T>((x*3 + y*7 + 1) % 20 + 1);
+
+    // 5×5 diagonal kernel: 5 non-zero cells out of 25 (flat index = x + y*5).
+    std::valarray<T> kdata(T(0), 25);
+    kdata[0]  = T(1);   // kIdx=(0,0) → offset (-2,-2)
+    kdata[6]  = T(1);   // kIdx=(1,1) → offset (-1,-1)
+    kdata[12] = T(1);   // kIdx=(2,2) → offset ( 0, 0) — center
+    kdata[18] = T(1);   // kIdx=(3,3) → offset (+1,+1)
+    kdata[24] = T(1);   // kIdx=(4,4) → offset (+2,+2)
+    kernel<T> kwm(kdata, {5,5});
+    kwm.setType(ktype::wMEDIAN);
+
+    auto st_ptr = folding<T>(std::dynamic_pointer_cast<FITScube>(img), kwm, 1);
+    auto mt_ptr = folding<T>(std::dynamic_pointer_cast<FITScube>(img), kwm, 4);
+
+    auto st_img = std::dynamic_pointer_cast<FITSimg<T>>(st_ptr);
+    auto mt_img = std::dynamic_pointer_cast<FITSimg<T>>(mt_ptr);
+    ASSERT_NE(st_img, nullptr);
+    ASSERT_NE(mt_img, nullptr);
+
+    auto st_data = st_img->template GetData<T>();
+    auto mt_data = mt_img->template GetData<T>();
+    for(size_t i = 0; i < st_data->size(); ++i)
+        EXPECT_EQ((*st_data)[i], (*mt_data)[i]) << "Mismatch at index " << i;
+}
+
+// ---- Non-typed wMEDIAN tests (double, specific values) ----
+
+// 3. Core regression: MEDIAN returns 0 on a sparse kernel (>50 % zero cells),
+//    wMEDIAN returns the true median of the support.
+//
+//    9×1 kernel: only positions 0, 4, 8 are non-zero (3 out of 9 = 67 % zeros).
+//    Uniform image = 10.
+//    MEDIAN: sorted buffer = {0,0,0,0,0,0,10,10,10} → median = 0.
+//    wMEDIAN: buffer = {10,10,10} → median = 10.
+TEST(MorphologywMEDIANTest, SparseKernel_MedianGivesZero_wMEDIANGivesCorrect)
+{
+    const size_t W = 20, H = 1;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W,H});
+    (*img->template GetData<double>()) = 10.0;
+
+    std::valarray<double> kdata(0.0, 9);
+    kdata[0] = 1.0;
+    kdata[4] = 1.0;
+    kdata[8] = 1.0;
+
+    kernel<double> km (kdata, {9,1}); km .setType(ktype::MEDIAN);
+    kernel<double> kwm(kdata, {9,1}); kwm.setType(ktype::wMEDIAN);
+
+    auto med_ptr  = folding<double>(std::dynamic_pointer_cast<FITScube>(img), km,  1);
+    auto wmed_ptr = folding<double>(std::dynamic_pointer_cast<FITScube>(img), kwm, 1);
+    auto med_img  = std::dynamic_pointer_cast<FITSimg<double>>(med_ptr);
+    auto wmed_img = std::dynamic_pointer_cast<FITSimg<double>>(wmed_ptr);
+    ASSERT_NE(med_img,  nullptr);
+    ASSERT_NE(wmed_img, nullptr);
+
+    // x=10: kCenter=4, support at x={6,10,14} — all in-bounds.
+    const size_t cx = 10;
+    EXPECT_DOUBLE_EQ((*med_img ->GetData<double>())[med_img ->PixelIndex(std::vector<size_t>({cx,0}))],  0.0);
+    EXPECT_DOUBLE_EQ((*wmed_img->GetData<double>())[wmed_img->PixelIndex(std::vector<size_t>({cx,0}))], 10.0);
+}
+
+// 4. Diagonal line kernel (realistic NISP dispersion kernel scenario):
+//    5×5 kernel, only the main diagonal set (5 ones out of 25 = 80 % zeros).
+//    Uniform image = 42.
+//    MEDIAN: 20 zeros dominate → median = 0.
+//    wMEDIAN: 5 support pixels, all 42 → median = 42.
+TEST(MorphologywMEDIANTest, DiagonalKernel_MedianZero_wMEDIANNonZero)
+{
+    const size_t KW = 5, KH = 5;
+    std::valarray<double> kdata(0.0, KW * KH);
+    kdata[0 + 0*KW] = 1.0;   // kIdx=(0,0) → offset (-2,-2)
+    kdata[1 + 1*KW] = 1.0;   // kIdx=(1,1) → offset (-1,-1)
+    kdata[2 + 2*KW] = 1.0;   // kIdx=(2,2) → center
+    kdata[3 + 3*KW] = 1.0;   // kIdx=(3,3) → offset (+1,+1)
+    kdata[4 + 4*KW] = 1.0;   // kIdx=(4,4) → offset (+2,+2)
+
+    kernel<double> km (kdata, {KW,KH}); km .setType(ktype::MEDIAN);
+    kernel<double> kwm(kdata, {KW,KH}); kwm.setType(ktype::wMEDIAN);
+
+    const size_t W = 21, H = 21;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W,H});
+    (*img->template GetData<double>()) = 42.0;
+
+    auto med_ptr  = folding<double>(std::dynamic_pointer_cast<FITScube>(img), km,  1);
+    auto wmed_ptr = folding<double>(std::dynamic_pointer_cast<FITScube>(img), kwm, 1);
+    auto med_img  = std::dynamic_pointer_cast<FITSimg<double>>(med_ptr);
+    auto wmed_img = std::dynamic_pointer_cast<FITSimg<double>>(wmed_ptr);
+    ASSERT_NE(med_img,  nullptr);
+    ASSERT_NE(wmed_img, nullptr);
+
+    const size_t cx = W/2, cy = H/2;
+    EXPECT_DOUBLE_EQ((*med_img ->GetData<double>())[med_img ->PixelIndex({cx,cy})],  0.0);
+    EXPECT_DOUBLE_EQ((*wmed_img->GetData<double>())[wmed_img->PixelIndex({cx,cy})], 42.0);
+}
+
+// 5. Odd support count: wMEDIAN returns the true middle value.
+//
+//    1D image, values 1..9.
+//    5×1 sparse kernel: weight > 0 at positions 0, 2, 4 (kCenter = 2).
+//    For pixel x=4: support at x={2,4,6} with values {3,5,7} → median = 5.
+TEST(MorphologywMEDIANTest, OddSupportCount_CorrectMedian)
+{
+    const size_t W = 9, H = 1;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W,H});
+    auto data = img->template GetData<double>();
+    for(size_t x = 0; x < W; ++x)
+        (*data)[img->PixelIndex(std::vector<size_t>({x,0}))] = static_cast<double>(x + 1);
+
+    std::valarray<double> kdata = {1.0, 0.0, 1.0, 0.0, 1.0};
+    kernel<double> kwm(kdata, {5,1});
+    kwm.setType(ktype::wMEDIAN);
+
+    auto out_ptr = folding<double>(std::dynamic_pointer_cast<FITScube>(img), kwm, 1);
+    auto out_img = std::dynamic_pointer_cast<FITSimg<double>>(out_ptr);
+    ASSERT_NE(out_img, nullptr);
+
+    EXPECT_DOUBLE_EQ((*out_img->GetData<double>())[out_img->PixelIndex({4,0})], 5.0);
+}
+
+// 6. Even support count: wMEDIAN returns the average of the two middle values.
+//
+//    1D image, values 1..9.
+//    7×1 sparse kernel: weight > 0 at positions 0, 2, 4, 6 (kCenter = 3).
+//    For pixel x=4: support at x={1,3,5,7} with values {2,4,6,8}.
+//    Sorted: {2,4,6,8} → median = (4+6)/2 = 5.0.
+TEST(MorphologywMEDIANTest, EvenSupportCount_MiddleAverage)
+{
+    const size_t W = 9, H = 1;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W,H});
+    auto data = img->template GetData<double>();
+    for(size_t x = 0; x < W; ++x)
+        (*data)[img->PixelIndex(std::vector<size_t>({x,0}))] = static_cast<double>(x + 1);
+
+    std::valarray<double> kdata = {1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0};
+    kernel<double> kwm(kdata, {7,1});
+    kwm.setType(ktype::wMEDIAN);
+
+    auto out_ptr = folding<double>(std::dynamic_pointer_cast<FITScube>(img), kwm, 1);
+    auto out_img = std::dynamic_pointer_cast<FITSimg<double>>(out_ptr);
+    ASSERT_NE(out_img, nullptr);
+
+    EXPECT_DOUBLE_EQ((*out_img->GetData<double>())[out_img->PixelIndex({4,0})], 5.0);
+}
+
+// 7. Masked pixels must be excluded from the wMEDIAN support.
+//
+//    Same 5×1 sparse kernel as test 5; mask x=6 (value 7).
+//    Support reduces to {x=2(val=3), x=4(val=5)} → even count → median = (3+5)/2 = 4.0.
+TEST(MorphologywMEDIANTest, MaskedPixelsExcluded)
+{
+    const size_t W = 9, H = 1;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W,H});
+    auto data = img->template GetData<double>();
+    for(size_t x = 0; x < W; ++x)
+        (*data)[img->PixelIndex(std::vector<size_t>({x,0}))] = static_cast<double>(x + 1);
+
+    img->MaskPixels({img->PixelIndex({6,0})});
+
+    std::valarray<double> kdata = {1.0, 0.0, 1.0, 0.0, 1.0};
+    kernel<double> kwm(kdata, {5,1});
+    kwm.setType(ktype::wMEDIAN);
+
+    auto out_ptr = folding<double>(std::dynamic_pointer_cast<FITScube>(img), kwm, 1);
+    auto out_img = std::dynamic_pointer_cast<FITSimg<double>>(out_ptr);
+    ASSERT_NE(out_img, nullptr);
+
+    EXPECT_DOUBLE_EQ((*out_img->GetData<double>())[out_img->PixelIndex({4,0})], 4.0);
+}
+
+// 8. When all support pixels are masked, wMEDIAN must return 0.
+TEST(MorphologywMEDIANTest, AllSupportMasked_ReturnsZero)
+{
+    const size_t W = 9, H = 1;
+    auto img = std::make_shared<FITSimg<double>>(std::vector<size_t>{W,H});
+    (*img->template GetData<double>()) = 10.0;
+
+    img->MaskPixels({img->PixelIndex({2,0}),
+                     img->PixelIndex({4,0}),
+                     img->PixelIndex({6,0})});
+
+    std::valarray<double> kdata = {1.0, 0.0, 1.0, 0.0, 1.0};
+    kernel<double> kwm(kdata, {5,1});
+    kwm.setType(ktype::wMEDIAN);
+
+    auto out_ptr = folding<double>(std::dynamic_pointer_cast<FITScube>(img), kwm, 1);
+    auto out_img = std::dynamic_pointer_cast<FITSimg<double>>(out_ptr);
+    ASSERT_NE(out_img, nullptr);
+
+    EXPECT_DOUBLE_EQ((*out_img->GetData<double>())[out_img->PixelIndex({4,0})], 0.0);
+}
+
 TYPED_TEST(KernelFoldingTest, bTopHat_SingleHole)
 {
     using T = TypeParam;

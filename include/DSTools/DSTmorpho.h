@@ -40,21 +40,25 @@ namespace DST
 #pragma region - kernel class
         enum ktype
         {
-            MIN,
-            MAX,
-            MEAN,
-            MEDIAN,
-            SUM,
-            RMS,
-            RMSE,
-            DILATE,
-            ERODE,
-            OPEN,
-            CLOSE,
-            WHITE_TOPHAT,
-            BLACK_TOPHAT,
-            CORRELATE,
-            nCORRELATE
+            MIN,           // 0
+            MAX,           // 1
+            MEAN,          // 2
+            MEDIAN,        // 3
+            SUM,           // 4
+            RMS,           // 5
+            RMSE,          // 6
+            DILATE,        // 7
+            ERODE,         // 8
+            OPEN,          // 9
+            CLOSE,         // 10
+            WHITE_TOPHAT,  // 11
+            BLACK_TOPHAT,  // 12
+            CORRELATE,     // 13
+            nCORRELATE,    // 14
+            wMEDIAN        // 15 — weighted median: only pixels where kernel weight > 0
+                           //      are included. Ignores zero-weight cells so sparse
+                           //      structural elements (e.g. diagonal lines) produce a
+                           //      true median along the support rather than 0.
         };
 
         template <typename T>

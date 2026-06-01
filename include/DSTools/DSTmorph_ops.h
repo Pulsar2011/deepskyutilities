@@ -53,16 +53,19 @@ static constexpr size_t MAX_KERNEL_SIZE = 512;
 // ---------------------------------------------------------------------------
 // fold_op: integer encoding of folding operations.
 // Values match ktype enum in DSTmorpho.h for direct static_cast compatibility.
+// ktype values 7–14 (DILATE..nCORRELATE) are dispatched before pixel_fold is
+// called and therefore have no fold_op counterpart.
 // ---------------------------------------------------------------------------
 enum class fold_op : int
 {
-    MIN    = 0,
-    MAX    = 1,
-    MEAN   = 2,
-    MEDIAN = 3,
-    SUM    = 4,
-    RMS    = 5,
-    RMSE   = 6
+    MIN     = 0,
+    MAX     = 1,
+    MEAN    = 2,
+    MEDIAN  = 3,
+    SUM     = 4,
+    RMS     = 5,
+    RMSE    = 6,
+    wMEDIAN = 15  // must match ktype::wMEDIAN
 };
 
 // ---------------------------------------------------------------------------
@@ -392,12 +395,31 @@ U pixel_fold(const K*         in_data,
     U      medBuf[MAX_KERNEL_SIZE];
     size_t medCount = 0;
 
+    // wMEDIAN stack buffer: raw pixel values for kernel positions where weight > 0.
+    // Skips zero-weight cells entirely so sparse structural elements (diagonal lines,
+    // etc.) produce the true median of the support instead of 0.
+    U      wmedBuf[MAX_KERNEL_SIZE];
+    size_t wmedCount = 0;
+
     for(size_t kj = 0; kj < kSize; ++kj)
     {
         const U w = kernelWeights[kj];
 
         size_t kIdx[MAX_KDIM];
         decode_kernel_idx_asc(kj, kSizes, kDim, kIdx);
+
+        // wMEDIAN fast path: only include pixels where kernel weight > 0.
+        if(op == fold_op::wMEDIAN)
+        {
+            if(!(w > U(0))) continue;
+            size_t tgtIdx_wm;
+            if(!neighbor_index(pxCoords, kIdx, kCenter, imgSizes, imgDim, kDim, &tgtIdx_wm))
+                continue;
+            if(mask && mask[tgtIdx_wm]) continue;
+            if(wmedCount < MAX_KERNEL_SIZE)
+                wmedBuf[wmedCount++] = static_cast<U>(in_data[tgtIdx_wm]);
+            continue;
+        }
 
         // Compute weighted value (ttmp[kj] = tmp[kj] * kernelWeight[kj])
         U ttmp_val;
@@ -434,7 +456,7 @@ U pixel_fold(const K*         in_data,
             medBuf[medCount++] = ttmp_val;
     }
 
-    if(count == 0) return U(0);
+    if(count == 0 && op != fold_op::wMEDIAN) return U(0);
 
     switch(op)
     {
@@ -466,6 +488,16 @@ U pixel_fold(const K*         in_data,
                 return (medBuf[medCount / 2 - 1] + medBuf[medCount / 2]) / U(2);
             else
                 return medBuf[medCount / 2];
+        }
+
+        case fold_op::wMEDIAN:
+        {
+            if(wmedCount == 0) return U(0);
+            sort_small(wmedBuf, wmedCount);
+            if(wmedCount % 2 == 0)
+                return (wmedBuf[wmedCount / 2 - 1] + wmedBuf[wmedCount / 2]) / U(2);
+            else
+                return wmedBuf[wmedCount / 2];
         }
 
         default:
