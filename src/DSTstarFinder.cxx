@@ -673,9 +673,10 @@ namespace DST
          * @brief Default constructor
          */
         starFinder::starFinder(const std::shared_ptr<FITScube>& skyImage):
+                                    fdetectedStars(),
                                     fsky(skyImage),
                                     flabel(nullptr),
-                                    fmethod(detectionMethod::MORPHO),fdetectedStars(),
+                                    fmethod(detectionMethod::MORPHO),
                                     fthresholdValue(std::numeric_limits<double>::min()),
                                     fBS(Morphology::kernel<double>::one({3,3})),
                                     fBE(Morphology::kernel<double>::one({9,9})),

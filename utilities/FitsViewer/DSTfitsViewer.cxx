@@ -62,6 +62,10 @@ std::thread _draw_grid;
 std::thread _print_info;
 std::thread _print_;
 
+// Set to true before joining background threads when switching images so that
+// DrawWCSgrid can abort its expensive work rather than running to completion.
+static std::atomic<bool> _cancel_wcs{false};
+
 using namespace DSL;
 
 typedef const std::vector<std::string> flist;
@@ -572,36 +576,244 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
         in->getWCS().CDELT(0,1) == 1 && in->getWCS().CDELT(0,2) == 1)
         return;
 
-    std::valarray<size_t> piX(in->Nelements());
-    for(size_t k=0; k< in->Nelements(); k++)
-        piX[k] = k;
-    
-    worldVectors world = in->WorldCoordinatesVector(piX);
+    const size_t nx = in->Size(1);
+    const size_t ny = in->Size(2);
 
-    // Create FITSimg<double> objects (concrete class), not abstract FITScube
-    auto xCoo = std::make_shared<DSL::FITSimg<double>>(std::vector<size_t>({in->Size(1), in->Size(2)}));
-    auto yCoo = std::make_shared<DSL::FITSimg<double>>(std::vector<size_t>({in->Size(1), in->Size(2)}));
+    // Direct grid-line tracing — no full-resolution WCS map, no contours.
+    //
+    // Approach: for each target coordinate value, scan columns (for Dec lines)
+    // or rows (for RA lines) and interpolate the pixel position where the WCS
+    // coordinate crosses the target.  Total WCS calls ≈ n_lines × image_dim/stride
+    // × N_PROBE ≈ a few thousand, vs O(nx·ny) for the old contour approach.
+    //
+    // The WCS cache avoids redundant evaluations when multiple grid lines probe
+    // the same (column, probe_y) or (probe_x, row) locations.
 
-    size_t k = 0;
-    for(worldVectors::const_iterator i = world.cbegin(); i != world.cend(); ++i)
+    static constexpr int    N_PROBE = 8;   // probe points per col/row to bracket crossings
+    static constexpr size_t N_MAX   = 256; // max columns/rows to trace per axis direction
+
+    const size_t col_stride = std::max(size_t(1), (nx + N_MAX - 1) / N_MAX);
+    const size_t row_stride = std::max(size_t(1), (ny + N_MAX - 1) / N_MAX);
+
+    // WCS cache keyed on the 1-D pixel index so repeated probes come for free.
+    // std::map is used (no extra include needed) since n is small (≤ N_MAX×N_PROBE×2).
+    std::map<size_t, worldCoords> cache;
+
+    auto wcs = [&](size_t ix, size_t iy) -> const worldCoords& {
+        size_t key = ix + iy * nx;
+        auto it = cache.find(key);
+        if (it == cache.end())
+            it = cache.emplace(key, in->WorldCoordinates(key)).first;
+        return it->second;
+    };
+
+    // Sample corners + centre to determine the visible RA/Dec extent.
+    const auto& w00  = wcs(0,    0);
+    const auto& w10  = wcs(nx-1, 0);
+    const auto& w01  = wcs(0,    ny-1);
+    const auto& w11  = wcs(nx-1, ny-1);
+    const auto& wMid = wcs(nx/2, ny/2);
+
+    double ra_min  = std::min({w00[0], w10[0], w01[0], w11[0], wMid[0]});
+    double ra_max  = std::max({w00[0], w10[0], w01[0], w11[0], wMid[0]});
+    double dec_min = std::min({w00[1], w10[1], w01[1], w11[1], wMid[1]});
+    double dec_max = std::max({w00[1], w10[1], w01[1], w11[1], wMid[1]});
+
+    // Pick a "nice" grid step that gives 4–6 lines per axis.
+    auto niceStep = [](double span) -> double {
+        if (span <= 0.0) return 1.0;
+        double raw = span / 5.0;
+        double e   = std::pow(10.0, std::floor(std::log10(raw)));
+        double m   = raw / e;
+        if (m <= 1.5) return e;
+        if (m <= 3.5) return 2.0 * e;
+        if (m <= 7.5) return 5.0 * e;
+        return 10.0 * e;
+    };
+
+    const double ra_step  = niceStep(ra_max  - ra_min);
+    const double dec_step = niceStep(dec_max - dec_min);
+
+    // Format a coordinate value with enough decimal places for the step size.
+    auto fmtCoord = [](double val, double step) -> std::string {
+        int dp = std::max(0, (int)std::ceil(-std::log10(std::max(step, 1e-10))));
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(dp) << val << "\xc2\xb0"; // UTF-8 °
+        return oss.str();
+    };
+
+    if(_cancel_wcs) return;
+
+    // Each grid line stores its polyline plus the position of its label (midpoint
+    // of the first valid segment) and the label text.
+    struct GridLine {
+        std::vector<double> xs, ys;
+        double lx = std::numeric_limits<double>::quiet_NaN();
+        double ly = std::numeric_limits<double>::quiet_NaN();
+        std::string label;
+        size_t npts = 0; // valid point count, used to pick the midpoint
+    };
+    std::vector<GridLine> grid_lines;
+
+    const double nan_ = std::numeric_limits<double>::quiet_NaN();
+
+    // ---- Lines of constant Dec (scan columns, find y-crossing) ----
     {
-        xCoo->SetPixelValue((*i)[0], k);
-        yCoo->SetPixelValue((*i)[1], k);
-        k++;
-    }
-    
-    // Cast to const FITScube shared_ptr (upcast from derived to base)
-    std::shared_ptr<const DSL::FITScube> xCoo_const = xCoo;
-    std::shared_ptr<const DSL::FITScube> yCoo_const = yCoo;
-    
-    std::thread xc = std::thread([=]() {QtFITSviewer::QtContours(plt, xCoo_const, 4);});
-    std::thread yc = std::thread([=]() {QtFITSviewer::QtContours(plt, yCoo_const, 4);});
+        double d = std::ceil((dec_min - 1e-9 * dec_step) / dec_step) * dec_step;
+        for (; d <= dec_max + dec_step * 1e-6; d += dec_step)
+        {
+            if(_cancel_wcs) return;
+            GridLine gl;
+            gl.label = fmtCoord(d, dec_step);
+            bool hadPoint = false;
 
-    xc.join();
-    yc.join();
-    
-    xCoo.reset();
-    yCoo.reset();
+            for (size_t ix = 0; ix < nx; ix += col_stride)
+            {
+                double found_y = nan_;
+                double prev_dec = nan_;
+                double prev_fy  = 0.0;
+
+                for (int k = 0; k <= N_PROBE; ++k)
+                {
+                    double fy  = double(k) / double(N_PROBE) * double(ny - 1);
+                    size_t iy  = static_cast<size_t>(std::round(fy));
+                    double dec = wcs(ix, iy)[1];
+
+                    if (k > 0 && std::isfinite(prev_dec) && std::isfinite(dec) &&
+                        (dec - prev_dec) != 0.0 &&
+                        (prev_dec - d) * (dec - d) <= 0.0)
+                    {
+                        double t = (d - prev_dec) / (dec - prev_dec);
+                        found_y = prev_fy + t * (fy - prev_fy);
+                        break;
+                    }
+                    prev_dec = dec;
+                    prev_fy  = fy;
+                }
+
+                if (std::isfinite(found_y))
+                {
+                    double px = static_cast<double>(ix);
+                    gl.xs.push_back(px);
+                    gl.ys.push_back(found_y);
+                    ++gl.npts;
+                    // Track midpoint of the first contiguous segment for the label.
+                    // We use every other valid point as the candidate so that the
+                    // label ends up near the middle of the line.
+                    if (gl.npts % 2 == 1) { gl.lx = px; gl.ly = found_y; }
+                    hadPoint = true;
+                }
+                else if (hadPoint)
+                {
+                    gl.xs.push_back(nan_);
+                    gl.ys.push_back(nan_);
+                    hadPoint = false;
+                }
+            }
+            if (gl.xs.size() > 1)
+                grid_lines.push_back(std::move(gl));
+        }
+    }
+
+    // ---- Lines of constant RA (scan rows, find x-crossing) ----
+    {
+        double r = std::ceil((ra_min - 1e-9 * ra_step) / ra_step) * ra_step;
+        for (; r <= ra_max + ra_step * 1e-6; r += ra_step)
+        {
+            if(_cancel_wcs) return;
+            GridLine gl;
+            gl.label = fmtCoord(r, ra_step);
+            bool hadPoint = false;
+
+            for (size_t iy = 0; iy < ny; iy += row_stride)
+            {
+                double found_x = nan_;
+                double prev_ra = nan_;
+                double prev_fx = 0.0;
+
+                for (int k = 0; k <= N_PROBE; ++k)
+                {
+                    double fx = double(k) / double(N_PROBE) * double(nx - 1);
+                    size_t ix = static_cast<size_t>(std::round(fx));
+                    double ra = wcs(ix, iy)[0];
+
+                    if (k > 0 && std::isfinite(prev_ra) && std::isfinite(ra) &&
+                        (ra - prev_ra) != 0.0 &&
+                        (prev_ra - r) * (ra - r) <= 0.0)
+                    {
+                        double t = (r - prev_ra) / (ra - prev_ra);
+                        found_x = prev_fx + t * (fx - prev_fx);
+                        break;
+                    }
+                    prev_ra = ra;
+                    prev_fx = fx;
+                }
+
+                if (std::isfinite(found_x))
+                {
+                    double py = static_cast<double>(iy);
+                    gl.xs.push_back(found_x);
+                    gl.ys.push_back(py);
+                    ++gl.npts;
+                    if (gl.npts % 2 == 1) { gl.lx = found_x; gl.ly = py; }
+                    hadPoint = true;
+                }
+                else if (hadPoint)
+                {
+                    gl.xs.push_back(nan_);
+                    gl.ys.push_back(nan_);
+                    hadPoint = false;
+                }
+            }
+            if (gl.xs.size() > 1)
+                grid_lines.push_back(std::move(gl));
+        }
+    }
+
+    if(_cancel_wcs || grid_lines.empty()) return;
+
+    QMetaObject::invokeMethod(plt, [plt, gls = std::move(grid_lines)]() mutable
+    {
+        {
+            std::lock_guard<std::mutex> lk(QtFITS::io_mutex);
+            for (const auto& gl : gls)
+            {
+                // Draw the polyline
+                if (!gl.xs.empty())
+                {
+                    auto* curve = new QCPCurve(plt->xAxis, plt->yAxis);
+                    curve->setPen(QPen(Qt::green, 1.0));
+                    curve->setScatterStyle(QCPScatterStyle::ssNone);
+                    for (size_t i = 0; i < gl.xs.size(); ++i)
+                        curve->addData(gl.xs[i], gl.ys[i]);
+                }
+
+                // Add a coordinate label at the midpoint of the line
+                if (std::isfinite(gl.lx) && std::isfinite(gl.ly) && !gl.label.empty())
+                {
+                    auto* lbl = new QCPItemText(plt);
+                    lbl->setPositionAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+                    lbl->position->setType(QCPItemPosition::ptPlotCoords);
+                    lbl->position->setCoords(gl.lx, gl.ly);
+                    lbl->setText(QString::fromStdString(gl.label));
+                    lbl->setColor(Qt::green);
+                    lbl->setFont(QFont("Monospace", 7));
+                    lbl->setPen(Qt::NoPen);
+                    // Semi-transparent dark background so the text is readable
+                    // over the image regardless of pixel intensity.
+                    lbl->setBrush(QBrush(QColor(0, 0, 0, 140)));
+                    lbl->setPadding(QMargins(2, 1, 2, 1));
+                }
+            }
+            plt->replot();
+        }
+        {
+            std::lock_guard<std::mutex> dk(QtFITS::msg_m);
+            if (!QtFITS::finished) QtFITS::finished |= true;
+            QtFITS::msg_cv.notify_one();
+            QtFITS::finished &= false;
+        }
+    });
 }
 
 QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
@@ -936,9 +1148,7 @@ static QWidget* make2DViewer(const HduInfo& hdu,
                               const std::string& fitsPath,
                               const UOption& opt)
 {
-    if (_draw_histo.joinable()) _draw_histo.join();
-    if (_draw_grid.joinable())  _draw_grid.join();
-    if (_print_info.joinable()) _print_info.join();
+    // Thread cleanup is now handled by makeViewer before dispatching here.
 
     FITSmanager fm(fitsPath);
     std::shared_ptr<FITScube> img = fm.GetImageAtIndex(hdu.index);
@@ -1666,6 +1876,16 @@ static QWidget* makeViewer(const HduInfo& hdu,
                             const std::string& fitsPath,
                             const UOption& opt)
 {
+    // Cancel and join every background thread from the previous 2D viewer before
+    // doing anything else.  This must happen here — not inside make2DViewer —
+    // because switching to a header-only or table HDU would otherwise leave the
+    // old threads alive and calling invokeMethod on a deleted QCustomPlot.
+    _cancel_wcs = true;
+    if (_draw_histo.joinable()) _draw_histo.join();
+    if (_draw_grid.joinable())  _draw_grid.join();
+    if (_print_info.joinable()) _print_info.join();
+    _cancel_wcs = false;
+
     if (hdu.type == HduInfo::Type::IMG) {
         switch (hdu.naxis) {
             case 0:
