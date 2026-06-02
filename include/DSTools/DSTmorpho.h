@@ -208,9 +208,10 @@ namespace DST
                  */
                 kernel<T>& operator=(const kernel<T>& k)
                 {
-                    kernel<T> temp(k.fkernel,k.fsize);
+                    kernel<T> temp(k.fkernel,k.fsize,k.ftype);
                     std::swap(fkernel,temp.fkernel);
                     std::swap(fsize,temp.fsize);
+                    std::swap(ftype,temp.ftype);
 
                     validityCheck();
                     return *this;
