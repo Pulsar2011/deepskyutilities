@@ -637,6 +637,10 @@ TEST(StarFitter, Plot)
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// starFinder: synthetic image generation and detection
+// ---------------------------------------------------------------------------
+
 TEST(StarFinderTest, SyntheticImageGeneration)
 {
     // Generate a synthetic star field with catalog
@@ -691,17 +695,64 @@ TEST(StarFinderTest,switchKernels)
     DST::Morphology::kernel<double> newBE = DST::Morphology::kernel<double>::one({13,13}); DST::Morphology::kernel<double> testBE = newBE;
     DST::Morphology::kernel<double> newBM = DST::Morphology::kernel<double>::one({3,3})  ; DST::Morphology::kernel<double> testBM = newBM;
 
-    finder.switchfBSkernel(newBS);
-    finder.switchfBEkernel(newBE);
-    finder.switchfBMkernel(newBM);
+    finder.updateKernel("BS", newBS);
+    finder.updateKernel("BE",newBE);
+    finder.updateKernel("BM", newBM);
 
-    const DST::Morphology::kernel<double>& currentBS = finder.getfBSkernel();
-    const DST::Morphology::kernel<double>& currentBE = finder.getfBEkernel();
-    const DST::Morphology::kernel<double>& currentBM = finder.getfBMkernel();
+    const DST::Morphology::kernel<double>& currentBS = finder.getKernel("BS");
+    const DST::Morphology::kernel<double>& currentBE = finder.getKernel("BE");
+    const DST::Morphology::kernel<double>& currentBM = finder.getKernel("BM");
 
     EXPECT_EQ(currentBS.size(), testBS.size()); for(size_t i=0; i<currentBS.size(); ++i) EXPECT_NEAR(currentBS.data()[i], testBS.data()[i],1e-6);
     EXPECT_EQ(currentBE.size(), testBE.size()); for(size_t i=0; i<currentBE.size(); ++i) EXPECT_NEAR(currentBE.data()[i], testBE.data()[i],1e-6);
     EXPECT_EQ(currentBM.size(), testBM.size()); for(size_t i=0; i<currentBM.size(); ++i) EXPECT_NEAR(currentBM.data()[i], testBM.data()[i],1e-6);
+
+}
+
+TEST(StarFinderTest,iterateKernels)
+{
+    std::shared_ptr<DSL::FITScube> img = std::shared_ptr<DSL::FITScube>(new DSL::FITSimg<int32_t>({512,512}));
+    DST::algorithms::starFinder finder(img);
+
+    DST::Morphology::kernel<double> newBS = DST::Morphology::kernel<double>::one({2,2});
+    DST::Morphology::kernel<double> newBE = DST::Morphology::kernel<double>::one({13,13});
+    DST::Morphology::kernel<double> newBM = DST::Morphology::kernel<double>::one({3,3});
+
+    for(DST::algorithms::starFinder::const_kIterator it = finder.Kbegin(); it != finder.Kend(); ++it)
+    {
+        if(it->first == "BS")
+        {
+            finder.updateKernel("BS", newBS);
+        }
+        else if(it->first == "BE")
+        {
+            finder.updateKernel("BE", newBE);
+        }
+        else if(it->first == "BM")
+        {
+            finder.updateKernel("BM", newBM);
+        }
+    }
+
+    const DST::Morphology::kernel<double>& currentBS = finder.getKernel("BS");
+    const DST::Morphology::kernel<double>& currentBE = finder.getKernel("BE");
+    const DST::Morphology::kernel<double>& currentBM = finder.getKernel("BM");
+
+    EXPECT_EQ(currentBS.size(), newBS.size()); for(size_t i=0; i<currentBS.size(); ++i) EXPECT_NEAR(currentBS.data()[i], newBS.data()[i],1e-6);
+    EXPECT_EQ(currentBE.size(), newBE.size()); for(size_t i=0; i<currentBE.size(); ++i) EXPECT_NEAR(currentBE.data()[i], newBE.data()[i],1e-6);
+    EXPECT_EQ(currentBM.size(), newBM.size()); for(size_t i=0; i<currentBM.size(); ++i) EXPECT_NEAR(currentBM.data()[i], newBM.data()[i],1e-6);
+
+}
+
+TEST(StarFinderTest,insertKernels)
+{
+    std::shared_ptr<DSL::FITScube> img = std::shared_ptr<DSL::FITScube>(new DSL::FITSimg<int32_t>({512,512}));
+    DST::algorithms::starFinder finder(img);
+
+    DST::Morphology::kernel<double> testBS = DST::Morphology::kernel<double>::one({2,2});
+    finder.insertKernel("TEST", testBS);
+
+    const DST::Morphology::kernel<double>& currentBS = finder.getKernel("TEST");
 
 }
 
@@ -797,8 +848,11 @@ TEST(StarFinderTest, FindStarsBySNR)
     // Run star detection
     verbose = verboseLevel::VERBOSE_BASIC;
     finder.setThresholdValue(5);
-    finder.findStars(DST::algorithms::starFinder::detectionMethod::SNR, 0.1);
-    
+    EXPECT_THROW(finder.findStars(DST::algorithms::starFinder::detectionMethod::SNR, 0.1), std::runtime_error);
+
+    finder.defaultSNRKernels();
+    EXPECT_NO_THROW(finder.findStars(DST::algorithms::starFinder::detectionMethod::SNR, 0.1));
+
     // Check that stars were found
     const FITStable& detectedStars = finder.detectedStars();
     EXPECT_GT(detectedStars.nrows(), static_cast<size_t>(0));
@@ -862,8 +916,11 @@ TEST(StarFinderTest, FindStarsByThreshold)
     // Run star detection
     verbose = verboseLevel::VERBOSE_BASIC;
     finder.setThresholdValue(70);
-    finder.findStars(DST::algorithms::starFinder::detectionMethod::THRESHOLD, 0.1);
-    
+    EXPECT_THROW(finder.findStars(DST::algorithms::starFinder::detectionMethod::THRESHOLD, 0.1), std::runtime_error);
+
+    finder.defaultThresholdKernels();
+    EXPECT_NO_THROW(finder.findStars(DST::algorithms::starFinder::detectionMethod::THRESHOLD, 0.1));
+
     // Check that stars were found
     const auto& detectedStars = finder.detectedStars();
     EXPECT_GT(detectedStars.nrows(), static_cast<size_t>(0));
@@ -921,7 +978,6 @@ TEST(StarFinderTest, FindStarsCustom)
         // Create star finder
     DST::algorithms::starFinder finder(img);
     EXPECT_ANY_THROW(finder.findStars(DST::algorithms::starFinder::detectionMethod::CUSTOM, 0.1));
-
 }
 
     
@@ -2062,9 +2118,10 @@ TEST(StarFinderTest, FindStarsByNoiseChisel_DefaultParams)
     verbose = verboseLevel::VERBOSE_NONE;
     finder.setThresholdValue(0.85); // NoiseChisel is more aggressive by default, so increase threshold to avoid huge number of detections
 
-    EXPECT_NO_THROW(
-        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
-    );
+    EXPECT_THROW(finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1),std::runtime_error);
+
+    finder.defaultNoiseChiselKernels(); // reset to defaults to ensure test stability if params were changed by previous tests
+    EXPECT_NO_THROW(finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1));
 
     const auto& detected = finder.detectedStars();
     EXPECT_GT(detected.nrows(), static_cast<size_t>(0));
@@ -2123,15 +2180,13 @@ TEST(StarFinderTest, FindStarsByNoiseChisel_NoReDetect)
     auto img = TestUtils::generateStarField(
         true_catalog, 256, 256, 20, 1.5, 50.0, 800.0, 20.0, 5.0, 7777);
 
-    DST::algorithms::starFinder finder(img);
+    DST::algorithms::starFinder finder(img,DST::algorithms::starFinder::detectionMethod::NOISECHISEL);
     finder.setOutputUrl("./build/test_output/FindStarsByNoiseChisel_NoReDetect");
     verbose = verboseLevel::VERBOSE_NONE;
     finder.setNC_reDetect(false);
     finder.setThresholdValue(0.85);
 
-    EXPECT_NO_THROW(
-        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
-    );
+    EXPECT_NO_THROW(finder.findStars(0.1));
     EXPECT_GT(finder.detectedStars().nrows(), static_cast<size_t>(0));
 }
 
@@ -2149,16 +2204,14 @@ TEST(StarFinderTest, FindStarsByNoiseChisel_SkySubtractedHasLowerMean)
         return s / static_cast<double>(img->Nelements());
     }();
 
-    DST::algorithms::starFinder finder(img);
+    DST::algorithms::starFinder finder(img,DST::algorithms::starFinder::detectionMethod::NOISECHISEL);
     finder.setOutputUrl("./build/test_output/SkySubtractedHasLowerMean");
     verbose = verboseLevel::VERBOSE_NONE;
     finder.setNC_tileSize(32);
     finder.setNC_skyIterations(2);
     finder.setThresholdValue(0.85);
 
-    ASSERT_NO_THROW(
-        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
-    );
+    ASSERT_NO_THROW(finder.findStars(0.1));
 
     const std::string skyPath = "./build/test_output/SkySubtractedHasLowerMean/nc_skysubtracted_layer_0.fits";
     std::ifstream f(skyPath);

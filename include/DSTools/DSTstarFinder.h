@@ -463,6 +463,10 @@ namespace DST
                     CUSTOM      ///< User-defined pipeline via `_customPreprocessing()`.
                 };
 
+                typedef std::map<const std::string, DST::Morphology::kernel<double> > kernelMap; ///< Type alias for a map of named morphology kernels.
+                typedef std::map<const std::string, DST::Morphology::kernel<double> >::iterator kIterator;
+                typedef std::map<const std::string, DST::Morphology::kernel<double> >::const_iterator const_kIterator;
+
             protected:
                 std::map<size_t, Stars> fdetectedStars;         ///< All detected stars, keyed by ID.
 
@@ -472,9 +476,7 @@ namespace DST
                 detectionMethod fmethod = detectionMethod::MORPHO; ///< Active detection pipeline.
                 double fthresholdValue;                         ///< Pixel threshold for `THRESHOLD` mode (default: 97th percentile).
 
-                DST::Morphology::kernel<double> fBS; ///< Opening kernel (default: 3×3 flat, OPEN type).
-                DST::Morphology::kernel<double> fBE; ///< Erosion kernel  (default: 9×9 flat, ERODE type).
-                DST::Morphology::kernel<double> fBM; ///< Dilation kernel (default: 13×13 annulus, DILATE type).
+                kernelMap fKernels;
 
                 std::unique_ptr<DST::GPU::Backend> fbackend_; ///< GPU backend; always set, falls back to CPU if no GPU is present.
 
@@ -489,35 +491,45 @@ namespace DST
                 struct NoiseChiselParams
                 {
                     double convSigma         = 1.5;  ///< Gaussian pre-smoothing kernel σ [pixels].
-                    size_t convRadius        = 3;    ///< Gaussian kernel half-size [pixels].
                     double detectionQuantile = 0.70; ///< Per-tile quantile that defines the detection threshold (0–1).
                     size_t tileSize          = 50;   ///< Tessellation tile side length [pixels].
-                    size_t erosionRadius     = 2;    ///< Erosion structuring element half-size [pixels].
                     double snrThreshold      = 3.0;  ///< Minimum blob S/N to survive the S/N filter.
-                    size_t dilationRadius    = 4;    ///< Dilation half-size for growing the detection mask [pixels].
                     size_t skyIterations     = 3;    ///< Number of σ-clipping iterations for sky estimation.
                     double skyClipSigma      = 3.0;  ///< Rejection threshold for sky σ-clipping.
                     bool   reDetect          = true; ///< If `true`, re-run detection on the sky-subtracted image.
                 } fNC;
 
+                void _init_NCgaussKernel(const size_t &);
+                void _init_NCerodeKernel(const size_t &);
+                void _init_NCdilateKernel(const size_t &);
+
                 /// @brief Run the morphological detection pipeline on a single 2-D layer.
                 void _findStarsMorpho(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
+
                 /// @brief Run the threshold-based detection pipeline on a single 2-D layer.
                 void _findStarsThreshold(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
+
                 /// @brief Run the S/N-based detection pipeline on a single 2-D layer.
                 void _findStarsSNR(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
+
                 /// @brief Run the NoiseChisel detection pipeline on a single 2-D layer.
                 void _findStarsNoiseChisel(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
+
                 /// @brief Run the custom detection pipeline on a single 2-D layer.
                 void _findStarsCustom(const std::shared_ptr<FITScube>&, const double&, const size_t& iLayer=0);
+
                 /// @brief Grow labelled blobs via priority-queue watershed flooding.
                 void _watershedFlooding(const std::shared_ptr<FITScube>&, const double&, const double&, const size_t& iLayer=0);
+
                 /// @brief Compute image-moment stellar properties (centroid, flux, FWHM).
                 void _evalStellarPropertiesMoment(Stars& star);
+
                 /// @brief Fit a parametric PSF model to the star stamp via Minuit2.
                 void _evalStellarPropertiesModel(Stars& star, const DST::Stars::evalType& how);
+
                 /// @brief Return the pixel indices of the 4- or 8-connected neighbours of @p pixIdx.
                 std::vector<size_t> _getNeighborIndices(const size_t& pixIdx, const size_t& w, const size_t& h) const;
+
                 /// @brief Flood-fill a flat-topped plateau in the priority-queue watershed.
                 std::vector<point> _floodingPlateau(const size_t&, std::valarray<size_t>&, const std::shared_ptr<FITScube>, const double&, const size_t&);
 
@@ -527,8 +539,10 @@ namespace DST
 
                 /// @brief Compute stellar properties using user-defined method.
                 virtual void _evalStellarPropertiesCustom(Stars& star) {_evalStellarPropertiesMoment(star);} ///< Default: fall back to moment analysis; override for custom behaviour.
+
                 /// @brief Fit a parametric PSF model to the star stamp via Minuit2.
                 virtual void _evalStellarPropertiesCustomModel(Stars& star, const DST::Stars::evalType& how) {_evalStellarPropertiesModel(star, how);} ///< Default: fall back to built-in models; override for custom behaviour.
+
                 /// @brief Compute aperture photometry for a star using the label mask.
                 virtual void _evalApperturePhotometry(Stars& star);
 
@@ -548,10 +562,16 @@ namespace DST
                 virtual std::shared_ptr<FITScube> _customPreprocessing(const std::shared_ptr<FITScube>&, const size_t& iLayer=0);
 
             public:
+#pragma region -- initilizers
+                void defaultMorphologicalKernels(); ///< @brief Set the default morphological kernels.
+                void defaultThresholdKernels();
+                void defaultSNRKernels();
+                void defaultNoiseChiselKernels();
+#pragma endregion
 
 #pragma region -- constructors / destructor
                 /**
-                 * @brief Construct a `starFinder` bound to a sky image.
+                 * @brief Construct a `starFinder` bound to a sky image with a specific detection method.
                  *
                  * @details
                  * Initialises the morphological kernels, selects the GPU backend via
@@ -559,18 +579,53 @@ namespace DST
                  * and sets the default threshold to the 97th image percentile.
                  *
                  * @param skyImage  Input 2-D or 3-D FITS image (shared ownership).
+                 * @param method    Detection algorithm to use (default overload uses `MORPHO`).
+                 * @throws FITSexception if @p skyImage is null or its dimension is not 2 or 3.
+                 */
+                starFinder(const std::shared_ptr<FITScube>& skyImage, const detectionMethod& method);
+                /**
+                 * @brief Construct a `starFinder` using the default `MORPHO` detection method.
+                 * @param skyImage  Input 2-D or 3-D FITS image (shared ownership).
                  * @throws FITSexception if @p skyImage is null or its dimension is not 2 or 3.
                  */
                 starFinder(const std::shared_ptr<FITScube>& skyImage);
                 ~starFinder();
 #pragma endregion
 #pragma region -- modifiers
+
+#pragma region kernel modifiers
+                
+                inline const bool kernelExists(const std::string& name) const {return fKernels.find(name) != fKernels.end();} ///< @brief Check if a kernel with the given name exists.
+
+                inline kIterator findKernel(const std::string& name) {return fKernels.find(name);} ///< @brief Retrieve a kernel by name;
+                inline const_kIterator findKernel(const std::string& name) const {return fKernels.find(name);} ///< @brief Retrieve a kernel by name (const version).
+
+                inline kIterator Kbegin() {return fKernels.begin();} ///< @brief Get an iterator to the first kernel in the map.
+                inline kIterator Kend() {return fKernels.end();} ///< @brief Get an iterator to one past the last kernel in the map.
+                
+                inline const_kIterator Kcbegin() const {return fKernels.cbegin();} ///< @brief Get a const iterator to the first kernel in the map.
+                inline const_kIterator Kcend() const {return fKernels.cend();} ///< @brief Get a const iterator to one past the last kernel in the map.
+
+                /// @brief Add a custom morphological kernel with a given name.
+                void insertKernel(const std::string& name, const DST::Morphology::kernel<double>& k);
+
+                void updateKernel(const std::string& name, const DST::Morphology::kernel<double>& k); ///< @brief Update an existing kernel by name; throws if the kernel does not exist.
+                
+                /// @brief Remove a custom kernel by name.
+                void removeKernel(const std::string& name);
+                
+#pragma endregion
+
+
                 /// @brief Select the detection algorithm for the next `findStars()` call.
                 inline void setDetectionMethod(const detectionMethod& m) {fmethod = m;}
+
                 /// @brief Remove all previously detected stars from the internal map.
                 inline void clearDetectedStars() {fdetectedStars.clear();}
+
                 /// @brief Set the pixel-value threshold used by the `THRESHOLD` pipeline.
                 inline void setThresholdValue(const double& v) {fthresholdValue = v;}
+
                 /**
                  * @brief Set the output directory for debug / intermediate products.
                  *
@@ -584,33 +639,32 @@ namespace DST
                  */
                 void setOutputUrl(const std::string& url);
 
-                /// @brief Replace the opening (BS) kernel with @p k.
-                void switchfBSkernel(DST::Morphology::kernel<double>& k) {fBS = k;}
-                /// @brief Change the operation type of the opening (BS) kernel.
-                void switchfBSkernelType(const DST::Morphology::ktype& t) {fBS.setType(t);}
-                /// @brief Replace the erosion (BE) kernel with @p k.
-                void switchfBEkernel(DST::Morphology::kernel<double>& k) {fBE = k;}
-                /// @brief Change the operation type of the erosion (BE) kernel.
-                void switchfBEkernelType(const DST::Morphology::ktype& t) {fBE.setType(t);}
-                /// @brief Replace the dilation (BM) kernel with @p k.
-                void switchfBMkernel(DST::Morphology::kernel<double>& k) {fBM = k;}
-                /// @brief Change the operation type of the dilation (BM) kernel.
-                void switchfBMkernelType(const DST::Morphology::ktype& t) {fBM.setType(t);}
+                /// @brief Change the operation type of a kernel.
+                inline void switchkernelType(const std::string& name, const DST::Morphology::ktype& t)
+                {
+                    kIterator it = findKernel(name);
+                    if(it == Kend())
+                        throw std::invalid_argument("Kernel with name '" + name + "' does not exist.");
+
+                    it->second.setType(t);
+                }
 
                 /// @name NoiseChisel parameter setters
                 /// @{
                 void setNC_convSigma(double v)         { fNC.convSigma         = v; } ///< Set Gaussian pre-smoothing σ [pixels].
-                void setNC_convRadius(size_t v)        { fNC.convRadius        = v; } ///< Set Gaussian kernel half-size [pixels].
-                void setNC_detectionQuantile(double v) { fNC.detectionQuantile = v; } ///< Set per-tile quantile threshold (0–1).
+                void setNC_convRadius(size_t v)        { _init_NCgaussKernel(v);} ///< Set Gaussian kernel half-size [pixels].
+                void setNC_detectionQuantile(double v) { fNC.detectionQuantile = v; } ///< Set per-tile quantile threshold (0-1).
                 void setNC_tileSize(size_t v)          { fNC.tileSize          = v; } ///< Set tessellation tile side [pixels].
-                void setNC_erosionRadius(size_t v)     { fNC.erosionRadius     = v; } ///< Set erosion element half-size [pixels].
+                void setNC_erosionRadius(size_t v)     { _init_NCerodeKernel(v); } ///< Set erosion element half-size [pixels].
                 void setNC_snrThreshold(double v)      { fNC.snrThreshold      = v; } ///< Set minimum blob S/N to survive the S/N filter.
-                void setNC_dilationRadius(size_t v)    { fNC.dilationRadius    = v; } ///< Set dilation half-size for mask growth [pixels].
+                void setNC_dilationRadius(size_t v)    { _init_NCdilateKernel(v); } ///< Set dilation half-size for mask growth [pixels].
                 void setNC_skyIterations(size_t v)     { fNC.skyIterations     = v; } ///< Set number of sky σ-clipping iterations.
                 void setNC_skyClipSigma(double v)      { fNC.skyClipSigma      = v; } ///< Set sky σ-clipping rejection threshold.
                 void setNC_reDetect(bool v)            { fNC.reDetect          = v; } ///< Enable/disable re-detection on sky-subtracted image.
                 /// @}
+
 #pragma endregion
+
 #pragma region -- accessors
                 /**
                  * @brief Build and return a `FITStable` with the given name containing all detected stars.
@@ -650,16 +704,20 @@ namespace DST
                                  Stars::evalType method = Stars::evalType::UNDEFINED);
 
                 /// @brief Return the active detection method.
-                inline const detectionMethod& detectionMethod() const {return fmethod;}
+                inline const detectionMethod& getDetectionMethod() const {return fmethod;}
                 /// @brief Return the active detection method as a string (e.g. `"MORPHO"`).
                 std::string detectionMethodString() const;
 
                 /// @brief Return the opening (BS) kernel (const reference).
-                const DST::Morphology::kernel<double>& getfBSkernel() const {return fBS;}
-                /// @brief Return the erosion (BE) kernel (const reference).
-                const DST::Morphology::kernel<double>& getfBEkernel() const {return fBE;}
-                /// @brief Return the dilation (BM) kernel (const reference).
-                const DST::Morphology::kernel<double>& getfBMkernel() const {return fBM;}
+                const DST::Morphology::kernel<double>& getKernel(const std::string& name) const
+                {
+                    const_kIterator it = findKernel(name);
+                    if (it == Kcend())
+                    {
+                        throw std::invalid_argument("Kernel with name '" + name + "' does not exist.");
+                    }
+                    return it->second;
+                }
 
                 /// @brief Return `true` when a real GPU backend (Vulkan/CUDA/HIP) is active.
                 /// When `false`, morphological operations run on CPU regardless of image type.

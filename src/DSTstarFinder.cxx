@@ -667,20 +667,125 @@ namespace DST
 #pragma endregion
 
 #pragma region - starFinder class implementation
+
+#pragma region -- initialization
+
+        void starFinder::defaultMorphologicalKernels()
+        {
+            Morphology::kernel<double> fBS = Morphology::kernel<double>::one({3,3});
+            Morphology::kernel<double> fBE = Morphology::kernel<double>::one({9,9});
+            Morphology::kernel<double> fBM = Morphology::kernel<double>::one({13,13});
+
+            std::valarray<double> bmData(1,13*13);
+            bmData[std::gslice(2+2*13,{13-4,13-4},{1,13})] = 0;
+            fBM *= bmData;
+
+            fBS.setType(Morphology::ktype::OPEN);
+            fBE.setType(Morphology::ktype::ERODE);
+            fBM.setType(Morphology::ktype::DILATE);
+
+            fKernels.insert(std::make_pair("BS", fBS));
+            fKernels.insert(std::make_pair("BE", fBE));
+            fKernels.insert(std::make_pair("BM", fBM));
+        }
+
+        void starFinder::defaultThresholdKernels()
+        {
+            Morphology::kernel<double> fBS = Morphology::kernel<double>::one({3,3});
+            Morphology::kernel<double> fBE = Morphology::kernel<double>::one({9,9});
+
+            fBS.setType(DST::Morphology::ktype::MEAN);
+            fBE.setType(DST::Morphology::ktype::MEDIAN);
+
+            fKernels.insert(std::make_pair("smoothing", fBS));
+            fKernels.insert(std::make_pair("background", fBE));
+        }
+
+        void starFinder::defaultSNRKernels()
+        {
+            Morphology::kernel<double> fBS = Morphology::kernel<double>::one({3,3});
+            Morphology::kernel<double> fBE = Morphology::kernel<double>::one({9,9});
+
+            fBS.setType(DST::Morphology::ktype::RMSE);
+            fBE.setType(DST::Morphology::ktype::MEDIAN);
+
+            fKernels.insert(std::make_pair("rmse", fBS));
+            fKernels.insert(std::make_pair("background", fBE));
+        }
+
+        void starFinder::_init_NCgaussKernel(const size_t& convRadius)
+        {
+            const size_t kDim = 2 * convRadius + 1;
+            std::valarray<double> gw(kDim * kDim);
+            double gsum = 0.0;
+            for(size_t j = 0; j < kDim; ++j)
+            {
+                const double dy = static_cast<double>(j) - static_cast<double>(convRadius);
+                for(size_t i = 0; i < kDim; ++i)
+                {
+                    const double dx = static_cast<double>(i) - static_cast<double>(convRadius);
+                    const double v  = std::exp(-(dx*dx + dy*dy)/(2.0 * fNC.convSigma * fNC.convSigma));
+                    gw[j * kDim + i] = v;
+                    gsum += v;
+                }
+            }
+            gw /= gsum; // normalise manually → use CORRELATE (not nCORRELATE)
+            DST::Morphology::kernel<double> gaussKernel(gw, {kDim, kDim}, DST::Morphology::ktype::CORRELATE);
+
+            if(findKernel("gaussKernel") == Kend() )
+                insertKernel("gaussKernel", gaussKernel);
+            else
+                updateKernel("gaussKernel", gaussKernel);
+        }
+
+        void starFinder::_init_NCerodeKernel(const size_t& erosionRadius)
+        {
+            const size_t eDim = 2 * erosionRadius + 1;
+            std::valarray<double> ew(1.0, eDim * eDim);
+            DST::Morphology::kernel<double> erodeKernel( ew, {eDim, eDim}, DST::Morphology::ktype::ERODE);
+
+            if(findKernel("erodeKernel") == Kend() )
+                insertKernel("erodeKernel", erodeKernel);
+            else
+                updateKernel("erodeKernel", erodeKernel);
+        }
+
+        void starFinder::_init_NCdilateKernel(const size_t& dilationRadius)
+        {
+            const size_t dDim = 2 * dilationRadius + 1;
+            std::valarray<double> dw(1.0, dDim * dDim);
+            DST::Morphology::kernel<double> dilateKernel( dw, {dDim, dDim}, DST::Morphology::ktype::DILATE);
+
+            if(findKernel("dilateKernel") == Kend() )
+                insertKernel("dilateKernel", dilateKernel);
+            else
+                updateKernel("dilateKernel", dilateKernel);
+        }
+
+        void starFinder::defaultNoiseChiselKernels()
+        {
+            // ---- Kernel 1: Gaussian convolution ----------------------------
+            size_t convRadius = 3;
+            _init_NCgaussKernel(convRadius);
+
+            // ---- Kernel 2: Erosion -----------------------------------------
+            size_t erosionRadius = 2;
+            _init_NCerodeKernel(erosionRadius);
+
+            // ---- Kernel 3: Dilation ----------
+            size_t dilationRadius = 4;
+            _init_NCdilateKernel(dilationRadius);
+        }
+#pragma endregion
 #pragma region -- ctor/dtor
 
-        /**
-         * @brief Default constructor
-         */
-        starFinder::starFinder(const std::shared_ptr<FITScube>& skyImage):
+        starFinder::starFinder(const std::shared_ptr<FITScube>& skyImage, const  detectionMethod& method):
                                     fdetectedStars(),
                                     fsky(skyImage),
                                     flabel(nullptr),
-                                    fmethod(detectionMethod::MORPHO),
+                                    fmethod(method),
                                     fthresholdValue(std::numeric_limits<double>::min()),
-                                    fBS(Morphology::kernel<double>::one({3,3})),
-                                    fBE(Morphology::kernel<double>::one({9,9})),
-                                    fBM(Morphology::kernel<double>::one({13,13})),
+                                    fKernels(),
                                     fbackend_(DST::GPU::Backend::create()),
                                     foutURL(""),
                                     is3D(false)
@@ -697,22 +802,76 @@ namespace DST
             // Set default threshold.
             fthresholdValue=fsky->Getpercentil(0.97);
 
-            std::valarray<double> bmData(1,13*13);
-            bmData[std::gslice(2+2*13,{13-4,13-4},{1,13})] = 0;
-            fBM *= bmData;
-
-            fBS.setType(Morphology::ktype::OPEN);
-            fBE.setType(Morphology::ktype::ERODE);
-            fBM.setType(Morphology::ktype::DILATE);
+            switch(fmethod)
+            {
+                case detectionMethod::MORPHO:
+                    defaultMorphologicalKernels();
+                    break;
+                case detectionMethod::THRESHOLD:
+                    defaultThresholdKernels();
+                    break;
+                case detectionMethod::SNR:
+                    defaultSNRKernels();
+                    break;
+                case detectionMethod::NOISECHISEL:
+                    defaultNoiseChiselKernels();
+                    break;
+                default:
+                    break;
+            }
         }
+
+        /**
+         * @brief Default constructor
+         */
+        starFinder::starFinder(const std::shared_ptr<FITScube>& skyImage): starFinder(skyImage, starFinder::detectionMethod::MORPHO)
+        {}
 
         starFinder::~starFinder()
         {
             fdetectedStars.clear();
             flabel.reset();
+            fKernels.clear();
         }
 #pragma endregion
 #pragma region -- modifiers
+
+#pragma region kernel modifiers
+
+        void starFinder::insertKernel(const std::string& name, const DST::Morphology::kernel<double>& k)
+        {
+            if(findKernel(name) != Kend() )
+            {
+                throw std::invalid_argument("DST::starFinder::insertKernel: Kernel with name '" + name + "' already exists.["+std::to_string(__LINE__)+"]");
+            }
+
+            fKernels.insert(std::make_pair(std::string(name), DST::Morphology::kernel<double>(k)));
+        }
+
+        void starFinder::updateKernel(const std::string& name, const DST::Morphology::kernel<double>& k)
+        {
+            auto it = findKernel(name);
+            if(it == Kend())
+            {
+                throw std::invalid_argument("DST::starFinder::updateKernel: Kernel with name '" + name + "' does not exist.["+std::to_string(__LINE__)+"]");
+            }
+
+            it->second = DST::Morphology::kernel<double>(k);
+        }
+
+        void starFinder::removeKernel(const std::string& name)
+        {
+            auto it = findKernel(name);
+            if(it == Kend())
+            {
+                throw std::invalid_argument("DST::starFinder::removeKernel: Kernel with name '" + name + "' does not exist.["+std::to_string(__LINE__)+"]");
+            }
+
+            fKernels.erase(it);
+        }
+
+#pragma endregion
+
         /**
          * @brief Set the output URL for star finder results
          * @param url Output URL (directory path)
@@ -1168,6 +1327,17 @@ namespace DST
 
             std::shared_ptr<FITScube> iK, iN, iS;
 
+            if(findKernel("BS") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsMorpho: Required kernel 'BS' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
+            if(findKernel("BM") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsMorpho: Required kernel 'BM' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
+            if(findKernel("BE") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsMorpho: Required kernel 'BE' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
+
+            const DST::Morphology::kernel<double>& fBS =  findKernel("BS")->second;
+            const DST::Morphology::kernel<double>& fBM =  findKernel("BM")->second;
+            const DST::Morphology::kernel<double>& fBE =  findKernel("BE")->second;
+
             if(gpuOk)
             {
                 // GPU path: the Vulkan backend is NOT thread-safe. When findStars() processes
@@ -1194,12 +1364,14 @@ namespace DST
 
                 auto futureIK = std::async(std::launch::async, [&img, this, nT]()
                     {
+                        const DST::Morphology::kernel<double>& fBS =  this->getKernel("BS");
                         auto r = Morphology::folding<double>(img, fBS, nT);
                         r->MaskPixels(img->GetMask());
                         return r;
                     });
                 auto futureIN = std::async(std::launch::async, [&img, this, nT]()
                     {
+                        const DST::Morphology::kernel<double>& fBM =  this->getKernel("BM");
                         auto r = Morphology::folding<double>(img, fBM, nT);
                         r->MaskPixels(img->GetMask());
                         return r;
@@ -1223,11 +1395,6 @@ namespace DST
                 iS->Write(foutURL+"/BE_erosion_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
-            // Compute significance map
-            //*(iK.get()) -= *(iS.get());
-            //double minVal = std::min(iK->GetMinimum(),iS->GetMinimum());
-            //*(iK.get()) -=  minVal; 
-
             double lowestValue = std::numeric_limits<double>::max();
             for(size_t iElem = 0; iElem < iK->Nelements(); ++iElem)
             {
@@ -1236,6 +1403,7 @@ namespace DST
 
                 double valK = iK->DoubleValueAtPixel(iElem);
                 double valS = iS->DoubleValueAtPixel(iElem);
+
                 // Guard against non-finite values propagating into significance map
                 if(!(std::isfinite(valK) && std::isfinite(valS)))
                 {
@@ -1243,6 +1411,7 @@ namespace DST
                     iK->MaskPixels({iElem});
                     continue;
                 }
+
                 double val = std::min(valK,valS);
                 iK->SetPixelValue((double) (valK - val),iElem);
 
@@ -1255,12 +1424,6 @@ namespace DST
                 lowestValue = 0.0;
             *(iK.get()) -=  lowestValue;
 
-
-            //for(size_t i=0; i<iK->Nelements(); ++i)
-            //{
-            //    if(iS->DoubleValueAtPixel(i) <= std::numeric_limits<double>::min())
-            //        (*(iK->GetData<double>()))[i] *= 0;
-            //}
 
             if(foutURL != "")
             {
@@ -1300,9 +1463,13 @@ namespace DST
             // The first step consists in smoothing the image to reduce the noise level.
             // NOTE: MEAN and MEDIAN are fold operations; the GPU FOLD shader is not reliable.
             // These always use the CPU parallel path.
-            fBS.setType(DST::Morphology::ktype::MEAN);
-            fBE.setType(DST::Morphology::ktype::MEDIAN);
 
+            if(findKernel("smoothing") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsThreshold: required 'smoothing' kernel not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
+
+            if(findKernel("background") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsThreshold: required 'background' kernel not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
+            
             std::shared_ptr<FITScube> smoothedImage, bkgMap;
 
             {
@@ -1313,12 +1480,14 @@ namespace DST
 
                 auto futureSI = std::async(std::launch::async, [&img, this, nT]()
                     {
+                        const DST::Morphology::kernel<double>& fBS =  this->getKernel("smoothing");
                         auto r = Morphology::folding<double>(img, fBS, nT);
                         r->MaskPixels(img->GetMask());
                         return r;
                     });
                 auto futureBK = std::async(std::launch::async, [&img, this, nT]()
                     {
+                        const DST::Morphology::kernel<double>& fBE =  this->getKernel("background");
                         auto r = Morphology::folding<double>(img, fBE, nT);
                         r->MaskPixels(img->GetMask());
                         return r;
@@ -1347,9 +1516,12 @@ namespace DST
         void starFinder::_findStarsSNR(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
         {
             // Define kernel to be used
-            fBS.setType(DST::Morphology::ktype::RMSE);
-            fBE.setType(DST::Morphology::ktype::MEDIAN);
 
+            if(findKernel("rmse") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsSNR: required 'rmse' kernel not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
+
+            if(findKernel("background") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsSNR: required 'background' kernel not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
             // The first step consists in estimating the background and noise level of the image.
             // NOTE: RMSE, MEDIAN and SUM are fold operations; the GPU FOLD shader is not reliable.
@@ -1364,12 +1536,14 @@ namespace DST
 
                 auto futureErr = std::async(std::launch::async, [&img, this, nT]()
                     {
+                        const DST::Morphology::kernel<double>& fBS =  this->getKernel("rmse");
                         auto r = Morphology::folding<double>(img, fBS, nT);
                         r->MaskPixels(img->GetMask());
                         return r;
                     });
                 auto futureBkg = std::async(std::launch::async, [&img, this, nT]()
                     {
+                        const DST::Morphology::kernel<double>& fBE =  this->getKernel("background");
                         auto r = Morphology::folding<double>(img, fBE, nT);
                         r->MaskPixels(img->GetMask());
                         return r;
@@ -1387,11 +1561,6 @@ namespace DST
                 bkgMap = futureBkg.get();
                 snrMap = futureSNR.get();
             }
-
-            // Compute Li & Ma SNR map
-            //*(snrMap.get()) -= *(bkgMap.get());
-            //*(errMap.get()) += 1e-10;               // Avoid division by zero
-            //*(snrMap.get()) /= *(errMap.get());
 
             for(size_t ik=0; ik<snrMap->Nelements(); ++ik)
             {
@@ -1454,13 +1623,19 @@ namespace DST
                                                 const size_t& iLayer)
         {
             if(img == nullptr)
-                throw FITSexception(BAD_DIMEN, "DST",
-                    "starFinder::_findStarsNoiseChisel",
-                    "Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
+                throw FITSexception(BAD_DIMEN, "DST", "starFinder::_findStarsNoiseChisel", "Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
+            
             if(img->GetDimension() != 2)
-                throw FITSexception(BAD_DIMEN, "DST",
-                    "starFinder::_findStarsNoiseChisel",
-                    "Input FITScube must be 2D.["+std::to_string(__LINE__)+"]");
+                throw FITSexception(BAD_DIMEN, "DST", "starFinder::_findStarsNoiseChisel", "Input FITScube must be 2D.["+std::to_string(__LINE__)+"]");
+
+            if(findKernel("gaussKernel") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsNoiseChisel: required 'gaussKernel' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
+
+            if(findKernel("erodeKernel") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsNoiseChisel: required 'erodeKernel' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
+
+            if(findKernel("dilateKernel") == Kend())
+                throw std::runtime_error("DST::starFinder::_findStarsNoiseChisel: required 'dilateKernel' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
             size_t maxThreads = std::thread::hardware_concurrency();
             if(maxThreads == 0) maxThreads = 1;
@@ -1470,46 +1645,25 @@ namespace DST
             const bool   gpuOk = fbackend_->available() && isGPUEligible(img);
 
             // ------------------------------------------------------------------
-            // Inner lambda: runs detection steps 1–6 (convolve → binarise →
+            // Inner lambda: runs detection steps 1-6 (convolve → binarise →
             // erode → CCL → S/N filter → dilate) on an arbitrary source image
             // and returns the dilated detection mask (FITScube with values 0/1).
             // ------------------------------------------------------------------
             auto runDetection = [&](const std::shared_ptr<FITScube>& src)
                 -> std::shared_ptr<FITScube>
             {
-                // ---- Step 1: Gaussian convolution ----------------------------
-                const size_t kDim = 2 * fNC.convRadius + 1;
-                std::valarray<double> gw(kDim * kDim);
-                double gsum = 0.0;
-                for(size_t j = 0; j < kDim; ++j)
-                {
-                    const double dy = static_cast<double>(j) - static_cast<double>(fNC.convRadius);
-                    for(size_t i = 0; i < kDim; ++i)
-                    {
-                        const double dx = static_cast<double>(i) - static_cast<double>(fNC.convRadius);
-                        const double v  = std::exp(-(dx*dx + dy*dy)
-                                                    / (2.0 * fNC.convSigma * fNC.convSigma));
-                        gw[j * kDim + i] = v;
-                        gsum += v;
-                    }
-                }
-                gw /= gsum; // normalise manually → use CORRELATE (not nCORRELATE)
-
-                DST::Morphology::kernel<double> gaussKernel(
-                    gw, {kDim, kDim}, DST::Morphology::ktype::CORRELATE);
+                DST::Morphology::kernel<double>& gaussKernel = findKernel("gaussKernel")->second;
 
                 std::shared_ptr<FITScube> convImg;
                 if(gpuOk)
                 {
                     std::lock_guard<std::mutex> gpuLock(fgpuMutex);
                     auto gk_f = convertKernel<float>(gaussKernel);
-                    convImg = Morphology::GPU::correlate<float>(
-                        src, gk_f, *fbackend_, maxThreads, false);
+                    convImg = Morphology::GPU::correlate<float>(src, gk_f, *fbackend_, maxThreads, false);
                 }
                 else
                 {
-                    convImg = Morphology::correlate<double>(
-                        src, gaussKernel, maxThreads, false);
+                    convImg = Morphology::correlate<double>(src, gaussKernel, maxThreads, false);
                 }
                 convImg->MaskPixels(src->GetMask());
 
@@ -1517,15 +1671,13 @@ namespace DST
                 {
                     std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     convImg->SetName("nc_convolved_layer_"+std::to_string(iLayer));
-                    convImg->Write(foutURL+"/nc_convolved_layer_"
-                                   +std::to_string(iLayer)+".fits", true);
+                    convImg->Write(foutURL+"/nc_convolved_layer_"+std::to_string(iLayer)+".fits", true);
                 }
 
                 // ---- Step 2: Per-tile quantile threshold map -----------------
                 const size_t nTX = (W + fNC.tileSize - 1) / fNC.tileSize;
                 const size_t nTY = (H + fNC.tileSize - 1) / fNC.tileSize;
-                std::vector<double> tileThresh(nTX * nTY,
-                                               std::numeric_limits<double>::max());
+                std::vector<double> tileThresh(nTX * nTY, std::numeric_limits<double>::max());
 
                 for(size_t ty = 0; ty < nTY; ++ty)
                 {
@@ -1578,9 +1730,7 @@ namespace DST
                             const size_t tx     = std::min(x / fNC.tileSize, nTX - 1);
                             const size_t ty     = std::min(y / fNC.tileSize, nTY - 1);
                             const double thresh = tileThresh[ty * nTX + tx];
-                            binary->SetPixelValue(
-                                (convImg->DoubleValueAtPixel(idx) > thresh) ? 1.0 : 0.0,
-                                idx);
+                            binary->SetPixelValue( (convImg->DoubleValueAtPixel(idx) > thresh) ? 1.0 : 0.0, idx);
                         }
                     }
                 }
@@ -1588,34 +1738,29 @@ namespace DST
                 
                 if(!binaryMasked.empty())
                     binary->MaskPixels(binaryMasked);
+
                 convImg.reset();
 
                 if(foutURL != "")
                 {
                     std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     binary->SetName("nc_binary_layer_"+std::to_string(iLayer));
-                    binary->Write(foutURL+"/nc_binary_layer_"
-                                   +std::to_string(iLayer)+".fits", true);
+                    binary->Write(foutURL+"/nc_binary_layer_"+std::to_string(iLayer)+".fits", true);
                 }
 
                 // ---- Step 4: Erosion -----------------------------------------
-                const size_t eDim = 2 * fNC.erosionRadius + 1;
-                std::valarray<double> ew(1.0, eDim * eDim);
-                DST::Morphology::kernel<double> erodeKernel(
-                    ew, {eDim, eDim}, DST::Morphology::ktype::ERODE);
+                const DST::Morphology::kernel<double>& erodeKernel = findKernel("erodeKernel")->second;
 
                 std::shared_ptr<FITScube> erodedBinary;
                 if(gpuOk)
                 {
                     std::lock_guard<std::mutex> gpuLock(fgpuMutex);
                     auto ek_f = convertKernel<float>(erodeKernel);
-                    erodedBinary = Morphology::GPU::erosion<float>(
-                        binary, ek_f, *fbackend_, maxThreads);
+                    erodedBinary = Morphology::GPU::erosion<float>(binary, ek_f, *fbackend_, maxThreads);
                 }
                 else
                 {
-                    erodedBinary = Morphology::erosion<double>(
-                        binary, erodeKernel, maxThreads);
+                    erodedBinary = Morphology::erosion<double>(binary, erodeKernel, maxThreads);
                 }
                 erodedBinary->MaskPixels(src->GetMask());
                 binary.reset();
@@ -1624,8 +1769,7 @@ namespace DST
                 {
                     std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     erodedBinary->SetName("nc_eroded_layer_"+std::to_string(iLayer));
-                    erodedBinary->Write(foutURL+"/nc_eroded_layer_"
-                                         +std::to_string(iLayer)+".fits", true);
+                    erodedBinary->Write(foutURL+"/nc_eroded_layer_"+std::to_string(iLayer)+".fits", true);
                 }
 
                 // ---- Step 5: Connected component labeling -------------------
@@ -1635,8 +1779,10 @@ namespace DST
                 {
                     auto tmp = std::make_shared<FITSimg<double>>(
                         std::vector<size_t>{W, H});
+
                     for(size_t i = 0; i < erodedBinary->Nelements(); ++i)
                         tmp->SetPixelValue(erodedBinary->DoubleValueAtPixel(i), i);
+
                     tmp->MaskPixels(erodedBinary->GetMask());
                     erodedDbl = tmp;
                 }
@@ -1646,27 +1792,29 @@ namespace DST
                 }
                 erodedBinary.reset();
 
-                std::shared_ptr<FITScube> labelImg =
-                    DST::Morphology::connectedComponents(erodedDbl);
+                std::shared_ptr<FITScube> labelImg = DST::Morphology::connectedComponents(erodedDbl);
                 erodedDbl.reset();
 
                 if(foutURL != "")
                 {
                     std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     labelImg->SetName("nc_labels_layer_"+std::to_string(iLayer));
-                    labelImg->Write(foutURL+"/nc_labels_layer_"
-                                     +std::to_string(iLayer)+".fits", true);
+                    labelImg->Write(foutURL+"/nc_labels_layer_"+std::to_string(iLayer)+".fits", true);
                 }
 
                 // ---- Step 6: Per-blob S/N filter ----------------------------
                 // Collect label → pixel index mapping
                 std::map<int32_t, std::vector<size_t>> blobPixels;
+                
                 for(size_t i = 0; i < W * H; ++i)
                 {
                     if(labelImg->Masked(i)) continue;
-                    const int32_t lbl =
-                        static_cast<int32_t>(labelImg->DoubleValueAtPixel(i));
-                    if(lbl == 0) continue;
+                    const int32_t lbl = static_cast<int32_t>(labelImg->DoubleValueAtPixel(i));
+                    if(lbl == 0)
+                    {
+                        continue;
+                    }
+
                     blobPixels[lbl].push_back(i);
                 }
 
@@ -1712,49 +1860,46 @@ namespace DST
                 }
 
                 // Build surviving-blob mask
-                auto survivingMask = std::make_shared<FITSimg<uint8_t>>(
-                    std::vector<size_t>{W, H});
+                auto survivingMask = std::make_shared<FITSimg<uint8_t>>(std::vector<size_t>{W, H});
                 std::vector<size_t> survMasked;
+                
                 for(size_t i = 0; i < W * H; ++i)
                 {
-                    if(src->Masked(i)) { survMasked.push_back(i); continue; }
-                    const int32_t lbl =
-                        static_cast<int32_t>(labelImg->DoubleValueAtPixel(i));
-                    survivingMask->SetPixelValue(
-                        (lbl != 0 && rejectedLabels.find(lbl) == rejectedLabels.end())
-                            ? 1.0 : 0.0,
-                        i);
+                    if(src->Masked(i))
+                    {
+                        survMasked.push_back(i);
+                        continue;
+                    }
+                    const int32_t lbl = static_cast<int32_t>(labelImg->DoubleValueAtPixel(i));
+                    
+                    survivingMask->SetPixelValue((lbl != 0 && rejectedLabels.find(lbl) == rejectedLabels.end()) ? 1.0 : 0.0, i);
                 }
+
                 if(!survMasked.empty())
                     survivingMask->MaskPixels(survMasked);
+                
                 labelImg.reset();
 
                 if(foutURL != "")
                 {
                     std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     survivingMask->SetName("nc_surviving_layer_"+std::to_string(iLayer));
-                    survivingMask->Write(foutURL+"/nc_surviving_layer_"
-                                          +std::to_string(iLayer)+".fits", true);
+                    survivingMask->Write(foutURL+"/nc_surviving_layer_"+std::to_string(iLayer)+".fits", true);
                 }
 
                 // ---- Step 7: Dilation to recover true source extent ----------
-                const size_t dDim = 2 * fNC.dilationRadius + 1;
-                std::valarray<double> dw(1.0, dDim * dDim);
-                DST::Morphology::kernel<double> dilateKernel(
-                    dw, {dDim, dDim}, DST::Morphology::ktype::DILATE);
+                const DST::Morphology::kernel<double>& dilateKernel = findKernel("dilateKernel")->second;
 
                 std::shared_ptr<FITScube> detectionMask;
                 if(gpuOk)
                 {
                     std::lock_guard<std::mutex> gpuLock(fgpuMutex);
                     auto dk_f = convertKernel<float>(dilateKernel);
-                    detectionMask = Morphology::GPU::dilation<float>(
-                        survivingMask, dk_f, *fbackend_, maxThreads);
+                    detectionMask = Morphology::GPU::dilation<float>(survivingMask, dk_f, *fbackend_, maxThreads);
                 }
                 else
                 {
-                    detectionMask = Morphology::dilation<double>(
-                        survivingMask, dilateKernel, maxThreads);
+                    detectionMask = Morphology::dilation<double>(survivingMask, dilateKernel, maxThreads);
                 }
                 detectionMask->MaskPixels(src->GetMask());
                 survivingMask.reset();
@@ -1763,8 +1908,7 @@ namespace DST
                 {
                     std::lock_guard<std::mutex> writeLock(fwriteMutex);
                     detectionMask->SetName("nc_detection_mask_layer_"+std::to_string(iLayer));
-                    detectionMask->Write(foutURL+"/nc_detection_mask_layer_"
-                                          +std::to_string(iLayer)+".fits", true);
+                    detectionMask->Write(foutURL+"/nc_detection_mask_layer_"+std::to_string(iLayer)+".fits", true);
                 }
 
                 return detectionMask;
@@ -1778,8 +1922,7 @@ namespace DST
             // ------------------------------------------------------------------
             // Step 8: Sky estimation on source-masked image
             // ------------------------------------------------------------------
-            auto maskedForSky = std::make_shared<FITSimg<double>>(
-                std::vector<size_t>{W, H});
+            auto maskedForSky = std::make_shared<FITSimg<double>>(std::vector<size_t>{W, H});
             std::vector<size_t> skyMaskIdx;
             for(size_t i = 0; i < W * H; ++i)
             {
@@ -1821,15 +1964,11 @@ namespace DST
             // ------------------------------------------------------------------
             // Step 9: Sky subtraction
             // ------------------------------------------------------------------
-            auto skySubtracted = std::make_shared<FITSimg<double>>(
-                std::vector<size_t>{W, H});
+            auto skySubtracted = std::make_shared<FITSimg<double>>(std::vector<size_t>{W, H});
+            
             for(size_t i = 0; i < W * H; ++i)
             {
-                skySubtracted->SetPixelValue(
-                    img->Masked(i)
-                        ? 0.0
-                        : img->DoubleValueAtPixel(i) - skyMap->DoubleValueAtPixel(i),
-                    i);
+                skySubtracted->SetPixelValue(img->Masked(i) ? 0.0 : img->DoubleValueAtPixel(i) - skyMap->DoubleValueAtPixel(i), i);
             }
             skySubtracted->MaskPixels(img->GetMask());
             skyMap.reset();
@@ -1839,8 +1978,7 @@ namespace DST
             {
                 std::lock_guard<std::mutex> writeLock(fwriteMutex);
                 skySubtracted->SetName("nc_skysubtracted_layer_"+std::to_string(iLayer));
-                skySubtracted->Write(foutURL+"/nc_skysubtracted_layer_"
-                                      +std::to_string(iLayer)+".fits", true);
+                skySubtracted->Write(foutURL+"/nc_skysubtracted_layer_"+std::to_string(iLayer)+".fits", true);
             }
 
             // ------------------------------------------------------------------
