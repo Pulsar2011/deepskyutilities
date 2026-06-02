@@ -115,13 +115,10 @@ double skyEstimator::_sigmaClippedMedian(std::vector<double>& v,
 void skyEstimator::estimate(const std::shared_ptr<FITScube>& img)
 {
     if(!img)
-        throw FITSexception(BAD_DIMEN, "DST::Background",
-                            "skyEstimator::estimate",
-                            "Input FITScube pointer is null.");
+        throw FITSexception(BAD_DIMEN, "DST::Background", "skyEstimator::estimate", "Input FITScube pointer is null.");
+    
     if(img->GetDimension() != 2)
-        throw FITSexception(BAD_DIMEN, "DST::Background",
-                            "skyEstimator::estimate",
-                            "Input FITScube must be 2-D.");
+        throw FITSexception(BAD_DIMEN, "DST::Background", "skyEstimator::estimate", "Input FITScube must be 2-D.");
 
     const size_t W   = img->Size(1);
     const size_t H   = img->Size(2);

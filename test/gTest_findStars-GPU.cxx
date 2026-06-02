@@ -9,8 +9,8 @@
 //      so the GPU dispatch path is exercised when a backend is available.
 //    • double images always fall back to CPU (static compile-time check).
 //    • Each morphological test compares the GPU result with the CPU result.
-//      – Integer types must be bit-exact.
-//      – float types must agree within 1 ULP (or relative tolerance 1e-5).
+//      — Integer types must be bit-exact.
+//      — float types must agree within 1 ULP (or relative tolerance 1e-5).
 //    • findStars tests feed float/uint16_t images to starFinder; the GPU
 //      dispatch is now automatic inside starFinder when the image type is
 //      GPU-eligible (GetEqBitPerPixel() check).
@@ -522,11 +522,11 @@ TEST(StarFinderGPUTest, FindStarsBySNR_Float)
         512, 512, 50, 0.7, 10.0, 1000.0, 10.0, 8.0, 12345);
     std::shared_ptr<FITScube> img = toType<float>(dbl);
 
-    DST::algorithms::starFinder finder(img);
+    DST::algorithms::starFinder finder(img, DST::algorithms::starFinder::detectionMethod::SNR);
     finder.setOutputUrl("./build/test_output");
     verbose = verboseLevel::VERBOSE_NONE;
     finder.setThresholdValue(5);
-    finder.findStars(DST::algorithms::starFinder::detectionMethod::SNR, 0.1);
+    finder.findStars(0.1);
 
     const auto& detected = finder.detectedStars();
     double rate = static_cast<double>(detected.nrows()) /
@@ -547,11 +547,11 @@ TEST(StarFinderGPUTest, FindStarsByThreshold_Float)
         512, 512, 50, 0.7, 10.0, 1000.0, 10.0, 8.0, 12345);
     std::shared_ptr<FITScube> img = toType<float>(dbl);
 
-    DST::algorithms::starFinder finder(img);
+    DST::algorithms::starFinder finder(img, DST::algorithms::starFinder::detectionMethod::THRESHOLD);
     finder.setOutputUrl("./build/test_output");
     verbose = verboseLevel::VERBOSE_NONE;
     finder.setThresholdValue(70);
-    finder.findStars(DST::algorithms::starFinder::detectionMethod::THRESHOLD, 0.1);
+    finder.findStars(0.1);
 
     const auto& detected = finder.detectedStars();
     double rate = static_cast<double>(detected.nrows()) /
@@ -668,7 +668,7 @@ TEST(StarFinderGPUTest, NoiseChisel_Float_Runs)
         256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 12345);
     std::shared_ptr<FITScube> img = toType<float>(dbl);
 
-    DST::algorithms::starFinder finder(img);
+    DST::algorithms::starFinder finder(img,DST::algorithms::starFinder::detectionMethod::NOISECHISEL);
     finder.setOutputUrl("./build/test_output");
     verbose = verboseLevel::VERBOSE_NONE;
     std::cout << "[float NOISECHISEL] GPU backend active: "
@@ -676,7 +676,7 @@ TEST(StarFinderGPUTest, NoiseChisel_Float_Runs)
 
     finder.setThresholdValue(0.95);
     EXPECT_NO_THROW(
-        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+        finder.findStars(0.1)
     );
 
     const auto& detected = finder.detectedStars();
@@ -700,13 +700,13 @@ TEST(StarFinderGPUTest, NoiseChisel_Uint16_Runs)
         256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 42);
     std::shared_ptr<FITScube> img = toType<uint16_t>(dbl);
 
-    DST::algorithms::starFinder finder(img);
+    DST::algorithms::starFinder finder(img, DST::algorithms::starFinder::detectionMethod::NOISECHISEL);
     finder.setOutputUrl("./build/test_output");
     verbose = verboseLevel::VERBOSE_NONE;
 
     finder.setThresholdValue(0.95);
     EXPECT_NO_THROW(
-        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+        finder.findStars(0.1)
     );
     EXPECT_GT(finder.detectedStars().nrows(), static_cast<size_t>(0));
     std::cout << "[uint16 NOISECHISEL] detected "
@@ -721,13 +721,13 @@ TEST(StarFinderGPUTest, NoiseChisel_Double_StillCPU)
     auto img = TestUtils::generateStarField(catalog,
         256, 256, 30, 1.5, 50.0, 800.0, 20.0, 5.0, 99);
 
-    DST::algorithms::starFinder finder(img);
+    DST::algorithms::starFinder finder(img, DST::algorithms::starFinder::detectionMethod::NOISECHISEL);
     finder.setOutputUrl("./build/test_output");
     verbose = verboseLevel::VERBOSE_NONE;
 
     finder.setThresholdValue(0.95);
     EXPECT_NO_THROW(
-        finder.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1)
+        finder.findStars(0.1)
     );
     EXPECT_GT(finder.detectedStars().nrows(), static_cast<size_t>(0));
     std::cout << "[double NOISECHISEL — CPU fallback] detected "
@@ -748,23 +748,23 @@ TEST(StarFinderGPUTest, NoiseChisel_FloatGPU_vs_DoubleCPU_CountsClose)
 
     // Float path (GPU-eligible)
     std::shared_ptr<FITScube> img_f = toType<float>(dbl);
-    DST::algorithms::starFinder finder_f(img_f);
+    DST::algorithms::starFinder finder_f(img_f,DST::algorithms::starFinder::detectionMethod::NOISECHISEL);
     finder_f.setOutputUrl("./build/test_output");
     verbose = verboseLevel::VERBOSE_NONE;
     finder_f.setNC_tileSize(32);
     finder_f.setNC_reDetect(false);
     finder_f.setThresholdValue(0.95);
-    finder_f.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1);
+    finder_f.findStars(0.1);
     const size_t n_float = finder_f.detectedStars().nrows();
 
     // Double path (CPU)
-    DST::algorithms::starFinder finder_d(dbl);
+    DST::algorithms::starFinder finder_d(dbl,DST::algorithms::starFinder::detectionMethod::NOISECHISEL);
     finder_d.setOutputUrl("./build/test_output");
     verbose = verboseLevel::VERBOSE_NONE;
     finder_d.setNC_tileSize(32);
     finder_d.setNC_reDetect(false);
     finder_d.setThresholdValue(0.95);
-    finder_d.findStars(DST::algorithms::starFinder::detectionMethod::NOISECHISEL, 0.1);
+    finder_d.findStars(0.1);
     const size_t n_double = finder_d.detectedStars().nrows();
 
     std::cout << "[NOISECHISEL float=" << n_float
