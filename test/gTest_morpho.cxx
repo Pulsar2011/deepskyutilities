@@ -107,6 +107,7 @@ TYPED_TEST(KernelOperatorTest, AssignmentOperator)
     k2 = k1;
     
     EXPECT_EQ(k2.data().size(), k1.data().size());
+    EXPECT_EQ(k2.type(), k1.type());
     for(size_t i = 0; i < k1.data().size(); ++i) {
         EXPECT_EQ(k2.data()[i], k1.data()[i]);
     }
