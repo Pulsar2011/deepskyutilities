@@ -703,10 +703,26 @@ TEST(StarFinderTest,switchKernels)
     const DST::Morphology::kernel<double>& currentBE = finder.getKernel("BE");
     const DST::Morphology::kernel<double>& currentBM = finder.getKernel("BM");
 
-    EXPECT_EQ(currentBS.size(), testBS.size()); for(size_t i=0; i<currentBS.size(); ++i) EXPECT_NEAR(currentBS.data()[i], testBS.data()[i],1e-6);
-    EXPECT_EQ(currentBE.size(), testBE.size()); for(size_t i=0; i<currentBE.size(); ++i) EXPECT_NEAR(currentBE.data()[i], testBE.data()[i],1e-6);
-    EXPECT_EQ(currentBM.size(), testBM.size()); for(size_t i=0; i<currentBM.size(); ++i) EXPECT_NEAR(currentBM.data()[i], testBM.data()[i],1e-6);
+    EXPECT_EQ(currentBS.size(), testBS.size());
+    EXPECT_EQ(currentBS.size(0), testBS.size(0));
+    EXPECT_EQ(currentBS.size(1), testBS.size(1));
+    EXPECT_EQ(currentBS.sizes().size(), testBS.sizes().size());
+    EXPECT_EQ(currentBS.type(), testBS.type());
+    for(size_t i=0; i<currentBS.size(); ++i) EXPECT_NEAR(currentBS.data()[i], testBS.data()[i],1e-6);
 
+    EXPECT_EQ(currentBE.size(), testBE.size());
+    EXPECT_EQ(currentBE.size(0), testBE.size(0));
+    EXPECT_EQ(currentBE.size(1), testBE.size(1));
+    EXPECT_EQ(currentBE.sizes().size(), testBE.sizes().size());
+    EXPECT_EQ(currentBE.type(), testBE.type());
+    for(size_t i=0; i<currentBE.size(); ++i) EXPECT_NEAR(currentBE.data()[i], testBE.data()[i],1e-6);
+
+    EXPECT_EQ(currentBM.size(), testBM.size());
+    EXPECT_EQ(currentBM.size(0), testBM.size(0));
+    EXPECT_EQ(currentBM.size(1), testBM.size(1));
+    EXPECT_EQ(currentBM.sizes().size(), testBM.sizes().size());
+    EXPECT_EQ(currentBM.type(), testBM.type());
+    for(size_t i=0; i<currentBM.size(); ++i) EXPECT_NEAR(currentBM.data()[i], testBM.data()[i],1e-6);
 }
 
 TEST(StarFinderTest,iterateKernels)
@@ -738,10 +754,26 @@ TEST(StarFinderTest,iterateKernels)
     const DST::Morphology::kernel<double>& currentBE = finder.getKernel("BE");
     const DST::Morphology::kernel<double>& currentBM = finder.getKernel("BM");
 
-    EXPECT_EQ(currentBS.size(), newBS.size()); for(size_t i=0; i<currentBS.size(); ++i) EXPECT_NEAR(currentBS.data()[i], newBS.data()[i],1e-6);
-    EXPECT_EQ(currentBE.size(), newBE.size()); for(size_t i=0; i<currentBE.size(); ++i) EXPECT_NEAR(currentBE.data()[i], newBE.data()[i],1e-6);
-    EXPECT_EQ(currentBM.size(), newBM.size()); for(size_t i=0; i<currentBM.size(); ++i) EXPECT_NEAR(currentBM.data()[i], newBM.data()[i],1e-6);
+    EXPECT_EQ(currentBS.size(), newBS.size());
+    EXPECT_EQ(currentBS.size(0), newBS.size(0));
+    EXPECT_EQ(currentBS.size(1), newBS.size(1));
+    EXPECT_EQ(currentBS.sizes().size(), newBS.sizes().size());
+    EXPECT_EQ(currentBS.type(), newBS.type());
+    for(size_t i=0; i<currentBS.size(); ++i) EXPECT_NEAR(currentBS.data()[i], newBS.data()[i],1e-6);
 
+    EXPECT_EQ(currentBE.size(), newBE.size());
+    EXPECT_EQ(currentBE.size(0), newBE.size(0));
+    EXPECT_EQ(currentBE.size(1), newBE.size(1));
+    EXPECT_EQ(currentBE.sizes().size(), newBE.sizes().size());
+    EXPECT_EQ(currentBE.type(), newBE.type());
+    for(size_t i=0; i<currentBE.size(); ++i) EXPECT_NEAR(currentBE.data()[i], newBE.data()[i],1e-6);
+
+    EXPECT_EQ(currentBM.size(), newBM.size());
+    EXPECT_EQ(currentBM.size(0), newBM.size(0));
+    EXPECT_EQ(currentBM.size(1), newBM.size(1));
+    EXPECT_EQ(currentBM.sizes().size(), newBM.sizes().size());
+    EXPECT_EQ(currentBM.type(), newBM.type());
+    for(size_t i=0; i<currentBM.size(); ++i) EXPECT_NEAR(currentBM.data()[i], newBM.data()[i],1e-6);
 }
 
 TEST(StarFinderTest,insertKernels)
@@ -749,11 +781,330 @@ TEST(StarFinderTest,insertKernels)
     std::shared_ptr<DSL::FITScube> img = std::shared_ptr<DSL::FITScube>(new DSL::FITSimg<int32_t>({512,512}));
     DST::algorithms::starFinder finder(img);
 
-    DST::Morphology::kernel<double> testBS = DST::Morphology::kernel<double>::one({2,2});
-    finder.insertKernel("TEST", testBS);
+    DST::Morphology::kernel<double> testK = DST::Morphology::kernel<double>::one({5,5});
+    testK.setType(DST::Morphology::ktype::MEAN);
+    finder.insertKernel("TEST", testK);
 
-    const DST::Morphology::kernel<double>& currentBS = finder.getKernel("TEST");
+    EXPECT_TRUE(finder.kernelExists("TEST"));
+    const DST::Morphology::kernel<double>& stored = finder.getKernel("TEST");
+    EXPECT_EQ(stored.size(0), static_cast<size_t>(5));
+    EXPECT_EQ(stored.size(1), static_cast<size_t>(5));
+    EXPECT_EQ(stored.sizes().size(), static_cast<size_t>(2));
+    EXPECT_EQ(stored.type(), DST::Morphology::ktype::MEAN);
+    for(size_t i = 0; i < stored.size(); ++i)
+        EXPECT_NEAR(stored.data()[i], 1.0, 1e-9);
+}
 
+// ---------------------------------------------------------------------------
+// starFinder: initialization — kernel names, shapes, types, content
+// ---------------------------------------------------------------------------
+
+TEST(StarFinderInitTest, MorphoDefaultConstructor_KernelNames)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    EXPECT_TRUE(finder.kernelExists("BS"));
+    EXPECT_TRUE(finder.kernelExists("BE"));
+    EXPECT_TRUE(finder.kernelExists("BM"));
+    // THRESHOLD/SNR names must not be present
+    EXPECT_FALSE(finder.kernelExists("smoothing"));
+    EXPECT_FALSE(finder.kernelExists("rmse"));
+    EXPECT_FALSE(finder.kernelExists("background"));
+}
+
+TEST(StarFinderInitTest, MorphoDefaultConstructor_KernelShapes)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    const auto& bs = finder.getKernel("BS");
+    EXPECT_EQ(bs.size(0), static_cast<size_t>(3));
+    EXPECT_EQ(bs.size(1), static_cast<size_t>(3));
+    EXPECT_EQ(bs.size(),  static_cast<size_t>(9));
+
+    const auto& be = finder.getKernel("BE");
+    EXPECT_EQ(be.size(0), static_cast<size_t>(9));
+    EXPECT_EQ(be.size(1), static_cast<size_t>(9));
+    EXPECT_EQ(be.size(),  static_cast<size_t>(81));
+
+    const auto& bm = finder.getKernel("BM");
+    EXPECT_EQ(bm.size(0), static_cast<size_t>(13));
+    EXPECT_EQ(bm.size(1), static_cast<size_t>(13));
+    EXPECT_EQ(bm.size(),  static_cast<size_t>(169));
+}
+
+TEST(StarFinderInitTest, MorphoDefaultConstructor_KernelTypes)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    EXPECT_EQ(finder.getKernel("BS").type(), DST::Morphology::ktype::OPEN);
+    EXPECT_EQ(finder.getKernel("BE").type(), DST::Morphology::ktype::ERODE);
+    EXPECT_EQ(finder.getKernel("BM").type(), DST::Morphology::ktype::DILATE);
+}
+
+TEST(StarFinderInitTest, MorphoDefaultConstructor_KernelContent)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    // BS: all-ones 3×3
+    const auto& bs = finder.getKernel("BS");
+    for(size_t i = 0; i < bs.size(); ++i)
+        EXPECT_NEAR(bs.data()[i], 1.0, 1e-9) << "BS[" << i << "] should be 1";
+
+    // BE: all-ones 9×9
+    const auto& be = finder.getKernel("BE");
+    for(size_t i = 0; i < be.size(); ++i)
+        EXPECT_NEAR(be.data()[i], 1.0, 1e-9) << "BE[" << i << "] should be 1";
+
+    // BM: 13×13 border-ring — inner 9×9 (rows 2-10, cols 2-10) = 0
+    // Sum = 13*13 - 9*9 = 169 - 81 = 88
+    const auto& bm = finder.getKernel("BM");
+    double bmSum = 0.0;
+    for(size_t i = 0; i < bm.size(); ++i) bmSum += bm.data()[i];
+    EXPECT_NEAR(bmSum, 88.0, 1e-9) << "BM sum should be 88 (border ring)";
+    EXPECT_NEAR(bm.data()[0],  1.0, 1e-9) << "BM corner (0,0) should be 1";
+    EXPECT_NEAR(bm.data()[84], 0.0, 1e-9) << "BM center (6,6) should be 0";
+}
+
+TEST(StarFinderInitTest, ThresholdConstructor_KernelShapesTypesContent)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img, DST::algorithms::starFinder::detectionMethod::THRESHOLD);
+
+    EXPECT_TRUE(finder.kernelExists("smoothing"));
+    EXPECT_TRUE(finder.kernelExists("background"));
+    EXPECT_FALSE(finder.kernelExists("BS"));
+
+    const auto& sm = finder.getKernel("smoothing");
+    EXPECT_EQ(sm.size(0), static_cast<size_t>(3));
+    EXPECT_EQ(sm.size(1), static_cast<size_t>(3));
+    EXPECT_EQ(sm.type(), DST::Morphology::ktype::MEAN);
+    for(size_t i = 0; i < sm.size(); ++i)
+        EXPECT_NEAR(sm.data()[i], 1.0, 1e-9) << "smoothing[" << i << "] should be 1";
+
+    const auto& bg = finder.getKernel("background");
+    EXPECT_EQ(bg.size(0), static_cast<size_t>(9));
+    EXPECT_EQ(bg.size(1), static_cast<size_t>(9));
+    EXPECT_EQ(bg.type(), DST::Morphology::ktype::MEDIAN);
+    for(size_t i = 0; i < bg.size(); ++i)
+        EXPECT_NEAR(bg.data()[i], 1.0, 1e-9) << "background[" << i << "] should be 1";
+}
+
+TEST(StarFinderInitTest, SNRConstructor_KernelShapesTypesContent)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img, DST::algorithms::starFinder::detectionMethod::SNR);
+
+    EXPECT_TRUE(finder.kernelExists("rmse"));
+    EXPECT_TRUE(finder.kernelExists("background"));
+    EXPECT_FALSE(finder.kernelExists("BS"));
+
+    const auto& rmse = finder.getKernel("rmse");
+    EXPECT_EQ(rmse.size(0), static_cast<size_t>(3));
+    EXPECT_EQ(rmse.size(1), static_cast<size_t>(3));
+    EXPECT_EQ(rmse.type(), DST::Morphology::ktype::RMSE);
+    for(size_t i = 0; i < rmse.size(); ++i)
+        EXPECT_NEAR(rmse.data()[i], 1.0, 1e-9) << "rmse[" << i << "] should be 1";
+
+    const auto& bg = finder.getKernel("background");
+    EXPECT_EQ(bg.size(0), static_cast<size_t>(9));
+    EXPECT_EQ(bg.size(1), static_cast<size_t>(9));
+    EXPECT_EQ(bg.type(), DST::Morphology::ktype::MEDIAN);
+    for(size_t i = 0; i < bg.size(); ++i)
+        EXPECT_NEAR(bg.data()[i], 1.0, 1e-9) << "background[" << i << "] should be 1";
+}
+
+TEST(StarFinderInitTest, NoiseChiselConstructor_KernelShapesTypesContent)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img, DST::algorithms::starFinder::detectionMethod::NOISECHISEL);
+
+    EXPECT_TRUE(finder.kernelExists("gaussKernel"));
+    EXPECT_TRUE(finder.kernelExists("erodeKernel"));
+    EXPECT_TRUE(finder.kernelExists("dilateKernel"));
+
+    // gaussKernel: {7,7}, CORRELATE, normalised (sum ≈ 1), center > corner
+    const auto& gk = finder.getKernel("gaussKernel");
+    EXPECT_EQ(gk.size(0), static_cast<size_t>(7));
+    EXPECT_EQ(gk.size(1), static_cast<size_t>(7));
+    EXPECT_EQ(gk.type(), DST::Morphology::ktype::CORRELATE);
+    double gsum = 0.0;
+    for(size_t i = 0; i < gk.size(); ++i) gsum += gk.data()[i];
+    EXPECT_NEAR(gsum, 1.0, 1e-9) << "gaussKernel must be normalised (sum≈1)";
+    EXPECT_GT(gk.data()[3+3*7], gk.data()[0]) << "Gaussian center must exceed corner";
+
+    // erodeKernel: {5,5}, ERODE, all-ones
+    const auto& ek = finder.getKernel("erodeKernel");
+    EXPECT_EQ(ek.size(0), static_cast<size_t>(5));
+    EXPECT_EQ(ek.size(1), static_cast<size_t>(5));
+    EXPECT_EQ(ek.type(), DST::Morphology::ktype::ERODE);
+    for(size_t i = 0; i < ek.size(); ++i)
+        EXPECT_NEAR(ek.data()[i], 1.0, 1e-9) << "erodeKernel[" << i << "] should be 1";
+
+    // dilateKernel: {9,9}, DILATE, all-ones
+    const auto& dk = finder.getKernel("dilateKernel");
+    EXPECT_EQ(dk.size(0), static_cast<size_t>(9));
+    EXPECT_EQ(dk.size(1), static_cast<size_t>(9));
+    EXPECT_EQ(dk.type(), DST::Morphology::ktype::DILATE);
+    for(size_t i = 0; i < dk.size(); ++i)
+        EXPECT_NEAR(dk.data()[i], 1.0, 1e-9) << "dilateKernel[" << i << "] should be 1";
+}
+
+TEST(StarFinderInitTest, CustomConstructor_KernelMapEmpty)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img, DST::algorithms::starFinder::detectionMethod::CUSTOM);
+
+    EXPECT_EQ(finder.Kbegin(), finder.Kend()) << "CUSTOM constructor must leave kernel map empty";
+}
+
+// ---------------------------------------------------------------------------
+// starFinder: kernel map CRUD — access, insert, update, remove, switch type
+// ---------------------------------------------------------------------------
+
+TEST(StarFinderKernelMapTest, kernelExists_TrueAndFalse)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    EXPECT_TRUE(finder.kernelExists("BS"));
+    EXPECT_TRUE(finder.kernelExists("BE"));
+    EXPECT_TRUE(finder.kernelExists("BM"));
+    EXPECT_FALSE(finder.kernelExists("phantom"));
+    EXPECT_FALSE(finder.kernelExists(""));
+}
+
+TEST(StarFinderKernelMapTest, getKernel_ReturnsCorrectKernel)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    const auto& k = finder.getKernel("BS");
+    EXPECT_EQ(k.size(0), static_cast<size_t>(3));
+    EXPECT_EQ(k.size(1), static_cast<size_t>(3));
+    EXPECT_EQ(k.type(), DST::Morphology::ktype::OPEN);
+}
+
+TEST(StarFinderKernelMapTest, getKernel_NonExistingThrows)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    EXPECT_THROW(finder.getKernel("phantom"), std::invalid_argument);
+}
+
+TEST(StarFinderKernelMapTest, findKernel_ExistingReturnsValidIterator)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    auto it = finder.findKernel("BE");
+    EXPECT_NE(it, finder.Kend());
+    EXPECT_EQ(it->first, "BE");
+    EXPECT_EQ(it->second.size(0), static_cast<size_t>(9));
+    EXPECT_EQ(it->second.size(1), static_cast<size_t>(9));
+    EXPECT_EQ(it->second.type(), DST::Morphology::ktype::ERODE);
+}
+
+TEST(StarFinderKernelMapTest, findKernel_NonExistingReturnsEnd)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    EXPECT_EQ(finder.findKernel("phantom"), finder.Kend());
+}
+
+TEST(StarFinderKernelMapTest, insertKernel_AddsKernelWithCorrectShapeTypeContent)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    DST::Morphology::kernel<double> k = DST::Morphology::kernel<double>::one({5,5});
+    k.setType(DST::Morphology::ktype::MEAN);
+    finder.insertKernel("MY_K", k);
+
+    EXPECT_TRUE(finder.kernelExists("MY_K"));
+    const auto& stored = finder.getKernel("MY_K");
+    EXPECT_EQ(stored.size(0), static_cast<size_t>(5));
+    EXPECT_EQ(stored.size(1), static_cast<size_t>(5));
+    EXPECT_EQ(stored.sizes().size(), static_cast<size_t>(2));
+    EXPECT_EQ(stored.type(), DST::Morphology::ktype::MEAN);
+    for(size_t i = 0; i < stored.size(); ++i)
+        EXPECT_NEAR(stored.data()[i], 1.0, 1e-9);
+}
+
+TEST(StarFinderKernelMapTest, insertKernel_DuplicateNameThrows)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    DST::Morphology::kernel<double> k = DST::Morphology::kernel<double>::one({3,3});
+    // BS already exists after MORPHO constructor
+    EXPECT_THROW(finder.insertKernel("BS", k), std::invalid_argument);
+}
+
+TEST(StarFinderKernelMapTest, updateKernel_UpdatesShapeTypeContent)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    DST::Morphology::kernel<double> newK = DST::Morphology::kernel<double>::one({7,7});
+    newK.setType(DST::Morphology::ktype::DILATE);
+    finder.updateKernel("BS", newK);
+
+    const auto& stored = finder.getKernel("BS");
+    EXPECT_EQ(stored.size(0), static_cast<size_t>(7));
+    EXPECT_EQ(stored.size(1), static_cast<size_t>(7));
+    EXPECT_EQ(stored.sizes().size(), static_cast<size_t>(2));
+    EXPECT_EQ(stored.type(), DST::Morphology::ktype::DILATE);
+    for(size_t i = 0; i < stored.size(); ++i)
+        EXPECT_NEAR(stored.data()[i], 1.0, 1e-9);
+}
+
+TEST(StarFinderKernelMapTest, updateKernel_NonExistingThrows)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    DST::Morphology::kernel<double> k = DST::Morphology::kernel<double>::one({3,3});
+    EXPECT_THROW(finder.updateKernel("phantom", k), std::invalid_argument);
+}
+
+TEST(StarFinderKernelMapTest, removeKernel_RemovesAndThrowsOnRepeat)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    ASSERT_TRUE(finder.kernelExists("BS"));
+    finder.removeKernel("BS");
+    EXPECT_FALSE(finder.kernelExists("BS"));
+    EXPECT_THROW(finder.removeKernel("BS"), std::invalid_argument);
+}
+
+TEST(StarFinderKernelMapTest, switchkernelType_ChangesType)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    ASSERT_EQ(finder.getKernel("BS").type(), DST::Morphology::ktype::OPEN);
+    finder.switchkernelType("BS", DST::Morphology::ktype::ERODE);
+    EXPECT_EQ(finder.getKernel("BS").type(), DST::Morphology::ktype::ERODE);
+    // Shape and content must be unchanged
+    EXPECT_EQ(finder.getKernel("BS").size(0), static_cast<size_t>(3));
+    EXPECT_EQ(finder.getKernel("BS").size(1), static_cast<size_t>(3));
+    for(size_t i = 0; i < finder.getKernel("BS").size(); ++i)
+        EXPECT_NEAR(finder.getKernel("BS").data()[i], 1.0, 1e-9);
+}
+
+TEST(StarFinderKernelMapTest, switchkernelType_NonExistingThrows)
+{
+    std::shared_ptr<DSL::FITScube> img(new DSL::FITSimg<int32_t>({64,64}));
+    DST::algorithms::starFinder finder(img);
+
+    EXPECT_THROW(finder.switchkernelType("phantom", DST::Morphology::ktype::ERODE), std::invalid_argument);
 }
 
 TEST(StarFinderTest, FindStarsBySegmentation)

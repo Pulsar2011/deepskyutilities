@@ -31,38 +31,41 @@ TYPED_TEST_SUITE(KernelConstructorTest, NumericTypes);
 TYPED_TEST(KernelConstructorTest, VectorConstructor)
 {
     kernel<TypeParam> k(this->test_data, this->test_size);
-    
+
     EXPECT_EQ(k.data().size(), 6);
     EXPECT_EQ(k.sizes().size(), 2);
     EXPECT_EQ(k.size(0), 2);
     EXPECT_EQ(k.size(1), 3);
     EXPECT_EQ(k.data()[0], TypeParam(1));
     EXPECT_EQ(k.data()[5], TypeParam(6));
+    EXPECT_EQ(k.type(), ktype::SUM);
 }
 
 TYPED_TEST(KernelConstructorTest, InitializerListConstructor)
 {
     kernel<TypeParam> k(this->test_data, {2, 3});
-    
+
     EXPECT_EQ(k.data().size(), 6);
     EXPECT_EQ(k.sizes().size(), 2);
     EXPECT_EQ(k.size(0), 2);
     EXPECT_EQ(k.size(1), 3);
+    EXPECT_EQ(k.type(), ktype::SUM);
 }
 
 TYPED_TEST(KernelConstructorTest, CopyConstructor)
 {
     kernel<TypeParam> k1(this->test_data, this->test_size);
+    k1.setType(ktype::DILATE);
     kernel<TypeParam> k2(k1);
-    
+
     EXPECT_EQ(k2.data().size(), k1.data().size());
     EXPECT_EQ(k2.sizes().size(), k1.sizes().size());
     EXPECT_EQ(k2.size(0), k1.size(0));
     EXPECT_EQ(k2.size(1), k1.size(1));
-    
-    for(size_t i = 0; i < k1.data().size(); ++i) {
+    EXPECT_EQ(k2.type(), k1.type());
+
+    for(size_t i = 0; i < k1.data().size(); ++i)
         EXPECT_EQ(k2.data()[i], k1.data()[i]);
-    }
 }
 
 TYPED_TEST(KernelConstructorTest, InvalidSizeThrows)
@@ -103,14 +106,75 @@ TYPED_TEST(KernelOperatorTest, AssignmentOperator)
 {
     kernel<TypeParam> k1(this->data1, this->size_vec);
     kernel<TypeParam> k2(this->data2, this->size_vec);
-    
+
     k2 = k1;
-    
+
     EXPECT_EQ(k2.data().size(), k1.data().size());
     EXPECT_EQ(k2.type(), k1.type());
-    for(size_t i = 0; i < k1.data().size(); ++i) {
+    // sizes vector must be copied — this is the check that catches the operator= sizes bug
+    EXPECT_EQ(k2.sizes().size(), k1.sizes().size());
+    for(size_t d = 0; d < k1.sizes().size(); ++d)
+        EXPECT_EQ(k2.size(d), k1.size(d));
+    for(size_t i = 0; i < k1.data().size(); ++i)
         EXPECT_EQ(k2.data()[i], k1.data()[i]);
-    }
+}
+
+TYPED_TEST(KernelOperatorTest, AssignmentOperator_NonDefaultType)
+{
+    std::valarray<TypeParam> d = {TypeParam(1), TypeParam(2), TypeParam(3), TypeParam(4)};
+    kernel<TypeParam> k1(d, {2,2});
+    k1.setType(ktype::DILATE);
+
+    std::valarray<TypeParam> d2 = {TypeParam(5), TypeParam(6)};
+    kernel<TypeParam> k2(d2, {1,2});
+
+    k2 = k1;
+
+    EXPECT_EQ(k2.type(), ktype::DILATE);
+    EXPECT_EQ(k2.size(0), static_cast<size_t>(2));
+    EXPECT_EQ(k2.size(1), static_cast<size_t>(2));
+    EXPECT_EQ(k2.sizes().size(), static_cast<size_t>(2));
+    EXPECT_EQ(k2.data().size(), static_cast<size_t>(4));
+}
+
+TYPED_TEST(KernelOperatorTest, AssignmentOperator_DifferentShape)
+{
+    std::valarray<TypeParam> d3x3(TypeParam(1), 9);
+    kernel<TypeParam> k1(d3x3, {3,3});
+
+    kernel<TypeParam> k2(this->data2, this->size_vec); // 2×2
+
+    k2 = k1;
+
+    EXPECT_EQ(k2.size(0), static_cast<size_t>(3));
+    EXPECT_EQ(k2.size(1), static_cast<size_t>(3));
+    EXPECT_EQ(k2.sizes().size(), static_cast<size_t>(2));
+    EXPECT_EQ(k2.data().size(), static_cast<size_t>(9));
+}
+
+TYPED_TEST(KernelOperatorTest, AssignmentOperator_DeepCopy)
+{
+    kernel<TypeParam> k1(this->data1, this->size_vec);
+    kernel<TypeParam> k2(this->data2, this->size_vec);
+
+    k2 = k1;
+    k2 += TypeParam(10);
+
+    for(size_t i = 0; i < k1.data().size(); ++i)
+        EXPECT_EQ(k1.data()[i], this->data1[i]) << "k1 must be unchanged after modifying k2";
+}
+
+TYPED_TEST(KernelOperatorTest, AssignmentOperator_SelfAssignment)
+{
+    kernel<TypeParam> k1(this->data1, this->size_vec);
+
+    k1 = k1;
+
+    EXPECT_EQ(k1.size(0), static_cast<size_t>(2));
+    EXPECT_EQ(k1.size(1), static_cast<size_t>(2));
+    EXPECT_EQ(k1.data().size(), static_cast<size_t>(4));
+    for(size_t i = 0; i < k1.data().size(); ++i)
+        EXPECT_EQ(k1.data()[i], this->data1[i]);
 }
 
 TYPED_TEST(KernelOperatorTest, KernelAdditionOperator)
@@ -322,6 +386,73 @@ TYPED_TEST(KernelStaticMethodTest, ZeroKernelInitializerList)
     for(size_t i = 0; i < k.data().size(); ++i) {
         EXPECT_EQ(k.data()[i], TypeParam(0));
     }
+}
+
+// Test fixture for modifier tests
+template <typename T>
+class KernelModifierTest : public ::testing::Test
+{
+    protected:
+        std::valarray<T> data;
+        std::vector<size_t> size_vec;
+
+        void SetUp() override
+        {
+            data = {T(1), T(2), T(3), T(4)};
+            size_vec = {2, 2};
+        }
+};
+
+TYPED_TEST_SUITE(KernelModifierTest, NumericTypes);
+
+TYPED_TEST(KernelModifierTest, SetType_ChangesType)
+{
+    kernel<TypeParam> k(this->data, this->size_vec);
+    EXPECT_EQ(k.type(), ktype::SUM);
+
+    k.setType(ktype::ERODE);
+    EXPECT_EQ(k.type(), ktype::ERODE);
+
+    k.setType(ktype::DILATE);
+    EXPECT_EQ(k.type(), ktype::DILATE);
+}
+
+TYPED_TEST(KernelModifierTest, SetWeightAt_ChangesValue)
+{
+    kernel<TypeParam> k(this->data, this->size_vec);
+
+    k.setWeightAt(0, TypeParam(99));
+    EXPECT_EQ(k.data()[0], TypeParam(99));
+    // Other values must be unchanged
+    EXPECT_EQ(k.data()[1], TypeParam(2));
+    EXPECT_EQ(k.data()[2], TypeParam(3));
+    EXPECT_EQ(k.data()[3], TypeParam(4));
+}
+
+TYPED_TEST(KernelModifierTest, SetWeightAt_OutOfRange_Throws)
+{
+    kernel<TypeParam> k(this->data, this->size_vec);
+    EXPECT_THROW(k.setWeightAt(k.size(), TypeParam(1)), std::out_of_range);
+    EXPECT_THROW(k.setWeightAt(k.size() + 5, TypeParam(1)), std::out_of_range);
+}
+
+TEST(KernelTypedConstruct, ExplicitKtype_InitializerList)
+{
+    std::valarray<double> d = {1.0, 1.0, 1.0, 1.0};
+    kernel<double> k(d, {2,2}, ktype::DILATE);
+    EXPECT_EQ(k.type(), ktype::DILATE);
+    EXPECT_EQ(k.size(0), static_cast<size_t>(2));
+    EXPECT_EQ(k.size(1), static_cast<size_t>(2));
+    EXPECT_EQ(k.data().size(), static_cast<size_t>(4));
+}
+
+TEST(KernelTypedConstruct, ExplicitKtype_VectorSizes)
+{
+    std::valarray<double> d(1.0, 9);
+    kernel<double> k(d, std::vector<size_t>{3,3}, ktype::ERODE);
+    EXPECT_EQ(k.type(), ktype::ERODE);
+    EXPECT_EQ(k.size(0), static_cast<size_t>(3));
+    EXPECT_EQ(k.size(1), static_cast<size_t>(3));
 }
 
 // New tests for folding
