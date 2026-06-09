@@ -1309,7 +1309,7 @@ namespace DST
          * @brief Find stars using morphological operators
          * 
          */
-        void starFinder::_findStarsMorpho(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+        std::shared_ptr<FITScube> starFinder::_morphologicalPreprocessing(const std::shared_ptr<FITScube>& img, const size_t& iLayer) const
         {
             size_t maxThreads = std::thread::hardware_concurrency();
             
@@ -1327,11 +1327,11 @@ namespace DST
 
             std::shared_ptr<FITScube> iK, iN, iS;
 
-            if(findKernel("BS") == Kend())
+            if(findKernel("BS") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsMorpho: Required kernel 'BS' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
-            if(findKernel("BM") == Kend())
+            if(findKernel("BM") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsMorpho: Required kernel 'BM' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
-            if(findKernel("BE") == Kend())
+            if(findKernel("BE") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsMorpho: Required kernel 'BE' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
             const DST::Morphology::kernel<double>& fBS =  findKernel("BS")->second;
@@ -1435,6 +1435,16 @@ namespace DST
             iS.reset();
             iN.reset();
 
+            return iK;
+        }
+
+        void starFinder::_findStarsMorpho(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+        {
+
+            std::shared_ptr<FITScube> iK = _morphologicalPreprocessing(img, iLayer);
+            if(iK == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFinder","_findStarsMorpho","Morphological preprocessing returned a null FITScube pointer.["+std::to_string(__LINE__)+"]");
+            
             // _watershedFlooding uses GetData<double>() internally.
             // If iK is a float image (GPU path), promote to double before calling it.
             if(iK->GetEqBitPerPixel() != DOUBLE_IMG)
@@ -1449,10 +1459,9 @@ namespace DST
             double threshold = iK->Getpercentil(fthresholdValue);
             _watershedFlooding(iK, threshold, fquantumStepQueue, iLayer);
             iK.reset();
- 
         }
 
-        void starFinder::_findStarsThreshold(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+        std::shared_ptr<FITScube> starFinder::_ThresholdPreprocessing(const std::shared_ptr<FITScube>& img, const size_t& iLayer) const
         {
 
             size_t maxThreads = std::thread::hardware_concurrency();
@@ -1464,10 +1473,10 @@ namespace DST
             // NOTE: MEAN and MEDIAN are fold operations; the GPU FOLD shader is not reliable.
             // These always use the CPU parallel path.
 
-            if(findKernel("smoothing") == Kend())
+            if(findKernel("smoothing") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsThreshold: required 'smoothing' kernel not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
-            if(findKernel("background") == Kend())
+            if(findKernel("background") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsThreshold: required 'background' kernel not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
             
             std::shared_ptr<FITScube> smoothedImage, bkgMap;
@@ -1485,6 +1494,7 @@ namespace DST
                         r->MaskPixels(img->GetMask());
                         return r;
                     });
+
                 auto futureBK = std::async(std::launch::async, [&img, this, nT]()
                     {
                         const DST::Morphology::kernel<double>& fBE =  this->getKernel("background");
@@ -1506,21 +1516,41 @@ namespace DST
                 smoothedImage->Write(foutURL+"/thresholded_image_layer_"+std::to_string(iLayer)+".fits",true);
             }
 
+            return smoothedImage;
+        }
+
+        void starFinder::_findStarsThreshold(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+        {
+            std::shared_ptr<FITScube> smoothedImage = _ThresholdPreprocessing(img, iLayer);
+            if(smoothedImage == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFinder","_findStarsThreshold","Threshold preprocessing returned a null FITScube pointer.["+std::to_string(__LINE__)+"]");
+
             // The second step consists in searching for connected components above the threshold value using a watershed algorithm.
+
+            // _watershedFlooding uses GetData<double>() internally.
+            // If iK is a float image (GPU path), promote to double before calling it.
+            if(smoothedImage->GetEqBitPerPixel() != DOUBLE_IMG)
+            {
+                auto iK_d = std::make_shared<FITSimg<double>>(std::vector<size_t>{smoothedImage->Size(1), smoothedImage->Size(2)});
+                for(size_t i = 0; i < smoothedImage->Nelements(); ++i)
+                    iK_d->SetPixelValue(smoothedImage->DoubleValueAtPixel(i), i);
+                iK_d->MaskPixels(smoothedImage->GetMask());
+                smoothedImage = iK_d;
+            }
 
             _watershedFlooding(smoothedImage, fthresholdValue, fquantumStepQueue,iLayer);
 
             smoothedImage.reset();
         }
 
-        void starFinder::_findStarsSNR(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+       std::shared_ptr<FITScube> starFinder::_SNRPreprocessing(const std::shared_ptr<FITScube>& img, const size_t& iLayer) const
         {
             // Define kernel to be used
 
-            if(findKernel("rmse") == Kend())
+            if(findKernel("rmse") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsSNR: required 'rmse' kernel not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
-            if(findKernel("background") == Kend())
+            if(findKernel("background") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsSNR: required 'background' kernel not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
             // The first step consists in estimating the background and noise level of the image.
@@ -1592,8 +1622,25 @@ namespace DST
             errMap.reset();
             bkgMap.reset();
 
+            return snrMap;
+        }
+
+        void starFinder::_findStarsSNR(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+        {
+            std::shared_ptr<FITScube> snrMap = _SNRPreprocessing(img, iLayer);
+            if(snrMap == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFinder","_findStarsSNR","SNR preprocessing returned a null FITScube pointer.["+std::to_string(__LINE__)+"]");
+            
             // The third step consists in grouping connected pixels above the SNR threshold into star candidates using a watershed algorithm.
 
+            if(snrMap->GetEqBitPerPixel() != DOUBLE_IMG)
+            {
+                auto snrMap_d = std::make_shared<FITSimg<double>>(std::vector<size_t>{snrMap->Size(1), snrMap->Size(2)});
+                for(size_t i = 0; i < snrMap->Nelements(); ++i)
+                    snrMap_d->SetPixelValue(snrMap->DoubleValueAtPixel(i), i);
+                snrMap_d->MaskPixels(snrMap->GetMask());
+                snrMap = snrMap_d;
+            }
 
             _watershedFlooding(snrMap, fthresholdValue, fquantumStepQueue, iLayer);
             snrMap.reset();
@@ -1618,9 +1665,7 @@ namespace DST
          * All tunable parameters are read from the fNC struct; none are hard-coded.
          * GPU/CPU dispatch follows the same pattern as _findStarsMorpho().
          */
-        void starFinder::_findStarsNoiseChisel(const std::shared_ptr<FITScube>& img,
-                                                const double& fquantumStepQueue,
-                                                const size_t& iLayer)
+        std::shared_ptr<FITScube> starFinder::_NoiseChiselPreprocessing(const std::shared_ptr<FITScube>& img, const size_t& iLayer) const
         {
             if(img == nullptr)
                 throw FITSexception(BAD_DIMEN, "DST", "starFinder::_findStarsNoiseChisel", "Input FITScube pointer is null.["+std::to_string(__LINE__)+"]");
@@ -1628,13 +1673,13 @@ namespace DST
             if(img->GetDimension() != 2)
                 throw FITSexception(BAD_DIMEN, "DST", "starFinder::_findStarsNoiseChisel", "Input FITScube must be 2D.["+std::to_string(__LINE__)+"]");
 
-            if(findKernel("gaussKernel") == Kend())
+            if(findKernel("gaussKernel") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsNoiseChisel: required 'gaussKernel' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
-            if(findKernel("erodeKernel") == Kend())
+            if(findKernel("erodeKernel") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsNoiseChisel: required 'erodeKernel' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
-            if(findKernel("dilateKernel") == Kend())
+            if(findKernel("dilateKernel") == Kcend())
                 throw std::runtime_error("DST::starFinder::_findStarsNoiseChisel: required 'dilateKernel' not found. Please insert it before calling findStars().["+std::to_string(__LINE__)+"]");
 
             size_t maxThreads = std::thread::hardware_concurrency();
@@ -1652,7 +1697,7 @@ namespace DST
             auto runDetection = [&](const std::shared_ptr<FITScube>& src)
                 -> std::shared_ptr<FITScube>
             {
-                DST::Morphology::kernel<double>& gaussKernel = findKernel("gaussKernel")->second;
+                const DST::Morphology::kernel<double>& gaussKernel = findKernel("gaussKernel")->second;
 
                 std::shared_ptr<FITScube> convImg;
                 if(gpuOk)
@@ -2006,11 +2051,29 @@ namespace DST
             if(!outsideFootprint.empty())
                 skySubtracted->MaskPixels(outsideFootprint);
             
+            detectionMask.reset();
+
+            return skySubtracted;
+        }
+
+        void starFinder::_findStarsNoiseChisel(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)
+        {
+            std::shared_ptr<FITScube> skySubtracted = _NoiseChiselPreprocessing(img, iLayer);
+            if(skySubtracted == nullptr)
+                throw FITSexception(BAD_DIMEN,"DST::starFinder","_findStarsNoiseChisel","NoiseChisel preprocessing returned a null FITScube pointer.["+std::to_string(__LINE__)+"]");
+
+            if(skySubtracted->GetEqBitPerPixel() != DOUBLE_IMG)
+            {
+                auto skySub_d = std::make_shared<FITSimg<double>>(std::vector<size_t>{skySubtracted->Size(1), skySubtracted->Size(2)});
+                for(size_t i = 0; i < skySubtracted->Nelements(); ++i)
+                    skySub_d->SetPixelValue(skySubtracted->DoubleValueAtPixel(i), i);
+                skySub_d->MaskPixels(skySubtracted->GetMask());
+                skySubtracted = skySub_d;
+            }
 
             double threshold = skySubtracted->Getpercentil(fthresholdValue);
             _watershedFlooding(skySubtracted, threshold, fquantumStepQueue, iLayer);
             skySubtracted.reset();
-            detectionMask.reset();
         }
 
         void starFinder::_findStarsCustom(const std::shared_ptr<FITScube>& img, const double& fquantumStepQueue, const size_t& iLayer)

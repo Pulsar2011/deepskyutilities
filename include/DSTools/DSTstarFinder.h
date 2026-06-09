@@ -561,6 +561,11 @@ namespace DST
                  */
                 virtual std::shared_ptr<FITScube> _customPreprocessing(const std::shared_ptr<FITScube>&, const size_t& iLayer=0);
 
+                std::shared_ptr<FITScube> _morphologicalPreprocessing(const std::shared_ptr<FITScube>&,const size_t& iLayer=0) const;
+                std::shared_ptr<FITScube> _SNRPreprocessing(const std::shared_ptr<FITScube>&,const size_t& iLayer=0) const;
+                std::shared_ptr<FITScube> _ThresholdPreprocessing(const std::shared_ptr<FITScube>&,const size_t& iLayer=0) const;
+                std::shared_ptr<FITScube> _NoiseChiselPreprocessing(const std::shared_ptr<FITScube>&,const size_t& iLayer=0) const;
+
             public:
 #pragma region -- initilizers
                 void defaultMorphologicalKernels(); ///< @brief Set the default morphological kernels.
