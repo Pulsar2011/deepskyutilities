@@ -221,5 +221,5 @@ Suites 4 and 5 are **automatically skipped** when `solve-field` is not present. 
 
 ## License
 
-Licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
+Licensed under [Non-Commercial Polyform](https://polyformproject.org/licenses/noncommercial/1.0.0/).
 Centre de Physique des Particules de Marseille — GILLARD William.
