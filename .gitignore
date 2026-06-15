@@ -32,3 +32,4 @@ DSTastrometry_config.h
 
 .gitlab-ci-local
 deepskyproject
+cmake_test*

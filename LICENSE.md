@@ -1,14 +1,35 @@
-This software and source code are licensed under the **Creative Commons Attribution-NonCommercial 4.0** International License (**CC BY-NC 4.0**).
+# License
 
-# You are free to:
-- Share -- copy and redistribute the material in any medium or format.
-- Adapt -- remix, transform, and build upon the material.
+This is the DeepSkyUtilities library and utilities.
+Copyright (c) 2026 William Gillard. All rights reserved except as expressly
+licensed below.
 
-# Under the following terms:
-- Attribution -- You must give appropriate credit to the original author, 
-  provide a link to the license, and indicate if changes were made.
-- NonCommercial -- You may not use the material for commercial purposes.
-- ShareAlike is NOT required, but this license must be included in any 
-  redistribution of the code.
+--------------------------------------------------------------------------
+## PolyForm Noncommercial License 1.0.0
+--------------------------------------------------------------------------
 
-Full license text: https://creativecommons.org/licenses/by-nc/4.0/
+This Software is licensed to you under the PolyForm Noncommercial License 1.0.0.
+In short, this grants copyright AND patent rights to use, modify, and distribute
+the Software for any *noncommercial* purpose only. Notably, use by a charitable organization,
+educational institution, public research organization, public safety/health
+or environmental organization, or government institution is a permitted
+noncommercial purpose regardless of the source of its funding.
+
+The full, authoritative text governs and must accompany every copy. Place it
+alongside this file as `LICENSES/PolyForm-Noncommercial-1.0.0.txt`
+(official plain text: https://polyformproject.org/licenses/noncommercial/1.0.0/).
+
+As required by that license, the following notice must be preserved in and
+distributed with every copy of any part of the Software:
+
+    Required Notice: Copyright (c) 2026 William Gillard
+    (decafeines.panneaux2f@icloud.com)
+
+--------------------------------------------------------------------------
+## Option 3 — Commercial license (proprietary or other commercial use)
+--------------------------------------------------------------------------
+
+For any use not permitted by the current licence — in particular any commercial use, or
+incorporation into proprietary/closed-source software — a separate commercial
+license is required. Contact William Gillard (decafeines.panneaux2f@icloud.com)
+to arrange terms.
