@@ -33,8 +33,22 @@
 #include <QTabWidget>
 #include <QMessageBox>
 #include <QSpinBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QGroupBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QDockWidget>
+#include <QGridLayout>
+#include <QScrollArea>
+#include <QStackedWidget>
+#include <QSignalBlocker>
+#include <QStringList>
+#include <QFileInfo>
+#include <QDoubleValidator>
+#include <QLocale>
 #include <DSTdisplay/QCustomContours.h>
+#include <DSTdisplay/QtFitsPloting.h>
 
 #endif
 
@@ -127,8 +141,8 @@ public:
 
         if(DSS::gGIT::version() < "v2.0.0")
             throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSS version, please update your DSS installation to v2.0.0 at minimum.");
-        if(DSD::gGIT::version() < "v1.1.0")
-            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSD version, please update your DSD installation to v1.1.0 at minimum.");
+        if(DSD::gGIT::version() < "v1.2.2")
+            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSD version, please update your DSD installation to v1.2.2 at minimum.");
     }
     
     virtual ~UOption(){};
@@ -1911,6 +1925,729 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     return win;
 }
 
+// ===========================================================================
+// Colour compositing (opt-in via the HDU-list window's "Color" menu)
+// ===========================================================================
+
+// One image HDU usable as a colour channel.
+struct ImageHduItem { int index; int naxis; int naxis3; std::string label; };
+
+// List the image HDUs (NAXIS>=2) of a FITS file, with a human-readable label.
+static std::vector<ImageHduItem> imageHdusOf(const std::string& path)
+{
+    std::vector<ImageHduItem> out;
+    try {
+        FITSmanager fm(path);
+        std::vector<HduInfo> hdus = enumerateHDUs(fm);
+        fm.Close();
+        for (const auto& h : hdus) {
+            if (h.type == HduInfo::Type::IMG && h.naxis >= 2) {
+                std::string lbl = "HDU " + std::to_string(h.index) + " — " + h.extname
+                                + " (" + std::to_string(h.naxis) + "D)";
+                out.push_back({h.index, h.naxis, h.naxis3, lbl});
+            }
+        }
+    } catch (...) { /* unreadable file → empty list */ }
+    return out;
+}
+
+// Load one channel as a 2-D FITScube. For a 3-D HDU, extract layer (>=0).
+static std::shared_ptr<const FITScube>
+resolveChannelCube(const std::string& file, int hduIndex, int layer)
+{
+    FITSmanager fm(file);
+    std::shared_ptr<FITScube> img = fm.GetImageAtIndex(hduIndex);
+    if (img->GetDimension() == 3 && layer >= 0)
+        img = img->Layer(static_cast<size_t>(layer));
+    return std::const_pointer_cast<const FITScube>(img);
+}
+
+// Gradient presets offered per channel (RGB mode only).
+enum class GradPreset { DefaultHue = 0, Viridis = 1, Grayscale = 2 };
+
+static QCPColorGradient gradientFor(GradPreset p, int ch)
+{
+    if (p == GradPreset::Viridis)
+        return QtFITS::makeViridisGradient();
+
+    QCPColorGradient g;
+    g.clearColorStops();
+    if (p == GradPreset::Grayscale) {
+        g.setColorStops({{0.0, QColor(0,0,0)}, {1.0, QColor(255,255,255)}});
+        return g;
+    }
+    // DefaultHue: match QCPColorMapRGB's per-channel default ramp.
+    switch (ch) {
+        case 0:  g.setColorStops({{0.0, QColor(0,0,0)}, {1.0, QColor(255,0,0)}}); break;
+        case 1:  g.setColorStops({{0.0, QColor(0,0,0)}, {1.0, QColor(0,255,0)}}); break;
+        case 2:  g.setColorStops({{0.0, QColor(0,0,0)}, {1.0, QColor(0,0,255)}}); break;
+        default: g.setColorStops({{0.0, QColor(0,0,0)}, {1.0, QColor(255,255,255)}}); break;
+    }
+    return g;
+}
+
+// Resolved output of the compose dialog.
+struct ComposeResult {
+    std::vector<std::shared_ptr<const FITScube>> channels;
+    std::vector<QCPColorGradient>                gradients;   // per channel (RGB)
+    std::vector<std::string>                     labels;      // per channel, for the dock
+    bool                 cmyk      = false;
+    QCPAxis::ScaleType   scaleType = QCPAxis::stLinear;        // initial, per channel
+};
+
+// ---------------------------------------------------------------------------
+// ColorComposeDialog — choose a colour model and assign FITS data to channels.
+// ---------------------------------------------------------------------------
+class ColorComposeDialog : public QDialog
+{
+public:
+    // files[0] is the "current" file (used by the single-cube panel and as the
+    // default for channel 0). Additional files seed the per-channel file combos
+    // so a multi-file launch can map one file per channel out of the box.
+    explicit ColorComposeDialog(const std::vector<std::string>& files,
+                                QWidget* parent)
+        : QDialog(parent),
+          m_currentFile(files.empty() ? std::string() : files.front())
+    {
+        setWindowTitle(tr("Compose color image"));
+        for (const std::string& f : files)
+            if (std::find(m_files.begin(), m_files.end(), f) == m_files.end())
+                m_files.push_back(f);
+        if (m_files.empty()) m_files.push_back(m_currentFile);
+
+        auto* root = new QVBoxLayout(this);
+
+        // --- top controls -------------------------------------------------
+        auto* form = new QFormLayout;
+        m_modelCombo = new QComboBox(this);
+        m_modelCombo->addItem("RGB (3 channels)");
+        m_modelCombo->addItem("CMYK (4 channels)");
+        form->addRow(tr("Color model:"), m_modelCombo);
+
+        m_sourceCombo = new QComboBox(this);
+        m_sourceCombo->addItem("From HDUs / files");
+        m_sourceCombo->addItem("From single 3-D cube");
+        form->addRow(tr("Source:"), m_sourceCombo);
+
+        m_stretchCombo = new QComboBox(this);
+        m_stretchCombo->addItem("Linear");
+        m_stretchCombo->addItem("Logarithmic");
+        form->addRow(tr("Stretch:"), m_stretchCombo);
+        root->addLayout(form);
+
+        // --- stacked source panels ---------------------------------------
+        m_stack = new QStackedWidget(this);
+        m_stack->addWidget(buildChannelPanel());   // page 0
+        m_stack->addWidget(buildCubePanel());       // page 1
+        root->addWidget(m_stack);
+
+        // --- buttons ------------------------------------------------------
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+        root->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, this, &ColorComposeDialog::onAccept);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+        connect(m_modelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int){ onModelChanged(); });
+        connect(m_sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int idx){ m_stack->setCurrentIndex(idx); });
+
+        onModelChanged();   // build the initial channel rows
+        resize(640, 360);
+    }
+
+    const ComposeResult& result() const { return m_result; }
+
+private:
+    struct ChannelRow {
+        QLabel*      label     = nullptr;
+        QComboBox*   fileCombo = nullptr;
+        QPushButton* browseBtn = nullptr;
+        QComboBox*   hduCombo  = nullptr;
+        QSpinBox*    layerSpin = nullptr;
+        QComboBox*   gradCombo = nullptr;
+    };
+
+    // ----- channel-table panel ----------------------------------------
+    QWidget* buildChannelPanel()
+    {
+        m_channelPanel = new QWidget(this);
+        m_channelGrid  = new QGridLayout(m_channelPanel);
+        m_channelGrid->addWidget(new QLabel(tr("Channel")), 0, 0);
+        m_channelGrid->addWidget(new QLabel(tr("File")),    0, 1);
+        // col 2 = Browse button (no header)
+        m_channelGrid->addWidget(new QLabel(tr("HDU")),     0, 3);
+        m_channelGrid->addWidget(new QLabel(tr("Layer")),   0, 4);
+        m_channelGrid->addWidget(new QLabel(tr("Gradient")),0, 5);
+        return m_channelPanel;
+    }
+
+    void buildChannelRows(int n, const QStringList& names)
+    {
+        for (ChannelRow& r : m_rows) {
+            delete r.label; delete r.fileCombo; delete r.browseBtn;
+            delete r.hduCombo; delete r.layerSpin; delete r.gradCombo;
+        }
+        m_rows.clear();
+
+        for (int i = 0; i < n; ++i) {
+            ChannelRow r;
+            r.label     = new QLabel(names.value(i), m_channelPanel);
+            r.fileCombo = new QComboBox(m_channelPanel);
+            r.browseBtn = new QPushButton(tr("Browse…"), m_channelPanel);
+            r.hduCombo  = new QComboBox(m_channelPanel);
+            r.layerSpin = new QSpinBox(m_channelPanel);
+            r.layerSpin->setMinimum(0);
+            r.layerSpin->setEnabled(false);
+            r.gradCombo = new QComboBox(m_channelPanel);
+            r.gradCombo->addItem("Default hue");
+            r.gradCombo->addItem("Viridis");
+            r.gradCombo->addItem("Grayscale");
+
+            const int row = i + 1;
+            m_channelGrid->addWidget(r.label,     row, 0);
+            m_channelGrid->addWidget(r.fileCombo, row, 1);
+            m_channelGrid->addWidget(r.browseBtn, row, 2);
+            m_channelGrid->addWidget(r.hduCombo,  row, 3);
+            m_channelGrid->addWidget(r.layerSpin, row, 4);
+            m_channelGrid->addWidget(r.gradCombo, row, 5);
+
+            const int idx = static_cast<int>(m_rows.size());
+            populateFileCombo(r.fileCombo);
+            // Default mapping when several files were supplied: file i → channel i
+            // (e.g. file1→Red, file2→Green, file3→Blue). Set before connecting
+            // signals so it does not fire onFileChanged prematurely.
+            if (i < static_cast<int>(m_files.size()))
+                r.fileCombo->setCurrentIndex(i);
+            // File browsing is driven by a dedicated button (a clean top-level click),
+            // NOT from inside the combo's currentIndexChanged — launching a modal file
+            // dialog while the combo popup is closing prevented it from appearing.
+            connect(r.browseBtn, &QPushButton::clicked,
+                    this, [this, idx]{ onBrowse(idx); });
+            connect(r.fileCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                    this, [this, idx](int){ onFileChanged(idx); });
+            connect(r.hduCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                    this, [this, idx](int){ onHduChanged(idx); });
+
+            m_rows.push_back(r);
+            populateHduCombo(idx);
+        }
+    }
+
+    void populateFileCombo(QComboBox* combo)
+    {
+        const QString keep = combo->currentData().toString();
+        QSignalBlocker block(combo);
+        combo->clear();
+        for (const std::string& f : m_files) {
+            QString full = QString::fromStdString(f);
+            QString base = full.section('/', -1);
+            combo->addItem(base, full);
+        }
+        int found = combo->findData(keep);
+        combo->setCurrentIndex(found >= 0 ? found : 0);
+    }
+
+    // Selecting a different already-known file just refreshes that row's HDU list.
+    void onFileChanged(int rowIdx)
+    {
+        populateHduCombo(rowIdx);
+    }
+
+    // Dedicated "Browse…" button handler — a clean top-level user event, so the
+    // modal file dialog reliably appears (unlike launching it from a combo signal).
+    void onBrowse(int rowIdx)
+    {
+        ChannelRow& r = m_rows[static_cast<size_t>(rowIdx)];
+
+        // Start in the current file's directory so the user is not dropped in cwd.
+        const QString startDir =
+            QFileInfo(QString::fromStdString(m_currentFile)).absolutePath();
+
+        // Use Qt's OWN file dialog on every platform (DontUseNativeDialog).
+        // This is not a degraded mode — it is Qt's complete file browser that
+        // navigates the whole filesystem identically on macOS and Linux. The
+        // platform "native" panels were unreliable here (macOS returned empty;
+        // a missing Linux portal/theme plugin can do the same).
+        QFileDialog fd(this, tr("Open FITS file"), startDir);
+        fd.setOption(QFileDialog::DontUseNativeDialog, true);
+        fd.setFileMode(QFileDialog::ExistingFile);
+        fd.setAcceptMode(QFileDialog::AcceptOpen);
+        fd.setNameFilters({
+            tr("FITS files (*.fits *.fit *.fts *.fz *.fits.gz *.fit.gz *.fts.gz)"),
+            tr("All files (*)")
+        });
+
+        if (fd.exec() != QDialog::Accepted) return;
+        const QStringList sel = fd.selectedFiles();
+        if (sel.isEmpty()) return;
+        const QString picked = sel.first();
+
+        const std::string p = picked.toStdString();
+        if (std::find(m_files.begin(), m_files.end(), p) == m_files.end())
+            m_files.push_back(p);
+        for (ChannelRow& rr : m_rows) populateFileCombo(rr.fileCombo);
+
+        const int found = r.fileCombo->findData(picked);
+        if (found >= 0) r.fileCombo->setCurrentIndex(found);  // triggers populateHduCombo
+        else            populateHduCombo(rowIdx);
+    }
+
+    void populateHduCombo(int rowIdx)
+    {
+        ChannelRow& r = m_rows[static_cast<size_t>(rowIdx)];
+        const std::string file = r.fileCombo->currentData().toString().toStdString();
+        QSignalBlocker block(r.hduCombo);
+        r.hduCombo->clear();
+        if (file.empty()) return;
+        for (const ImageHduItem& it : imageHdusOf(file)) {
+            r.hduCombo->addItem(QString::fromStdString(it.label), it.index);
+            r.hduCombo->setItemData(r.hduCombo->count() - 1, it.naxis3, Qt::UserRole + 1);
+        }
+        // default each RGB channel to a distinct HDU when possible
+        if (r.hduCombo->count() > rowIdx)
+            r.hduCombo->setCurrentIndex(rowIdx);
+        onHduChanged(rowIdx);
+    }
+
+    void onHduChanged(int rowIdx)
+    {
+        ChannelRow& r = m_rows[static_cast<size_t>(rowIdx)];
+        const int naxis3 = r.hduCombo->currentData(Qt::UserRole + 1).toInt();
+        const bool is3D = naxis3 > 0;
+        r.layerSpin->setEnabled(is3D);
+        r.layerSpin->setMaximum(is3D ? naxis3 - 1 : 0);
+    }
+
+    // ----- single-cube panel ------------------------------------------
+    QWidget* buildCubePanel()
+    {
+        auto* panel = new QWidget(this);
+        auto* form  = new QFormLayout(panel);
+        m_cubeCombo = new QComboBox(panel);
+        for (const ImageHduItem& it : imageHdusOf(m_currentFile))
+            if (it.naxis >= 3)
+                m_cubeCombo->addItem(QString::fromStdString(it.label), it.index);
+        form->addRow(tr("3-D cube HDU:"), m_cubeCombo);
+
+        m_cubeLayer[0] = new QSpinBox(panel); m_cubeLayer[0]->setValue(0);
+        m_cubeLayer[1] = new QSpinBox(panel); m_cubeLayer[1]->setValue(1);
+        m_cubeLayer[2] = new QSpinBox(panel); m_cubeLayer[2]->setValue(2);
+        form->addRow(tr("Red   ← layer:"), m_cubeLayer[0]);
+        form->addRow(tr("Green ← layer:"), m_cubeLayer[1]);
+        form->addRow(tr("Blue  ← layer:"), m_cubeLayer[2]);
+
+        auto updateMax = [this]() {
+            const int naxis3 = m_cubeCombo->count()
+                ? imageHdusOfNaxis3(m_cubeCombo->currentData().toInt()) : 0;
+            for (auto* s : m_cubeLayer) s->setMaximum(naxis3 > 0 ? naxis3 - 1 : 0);
+        };
+        connect(m_cubeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [updateMax](int){ updateMax(); });
+        updateMax();
+        return panel;
+    }
+
+    int imageHdusOfNaxis3(int hduIndex)
+    {
+        for (const ImageHduItem& it : imageHdusOf(m_currentFile))
+            if (it.index == hduIndex) return it.naxis3;
+        return 0;
+    }
+
+    void onModelChanged()
+    {
+        const bool cmyk = (m_modelCombo->currentIndex() == 1);
+        if (cmyk) {
+            buildChannelRows(4, {"Cyan", "Magenta", "Yellow", "Key (black)"});
+            // CMYK uses fixed conversion + the channel table only.
+            m_sourceCombo->setCurrentIndex(0);
+            m_sourceCombo->setEnabled(false);
+            m_stack->setCurrentIndex(0);
+            for (ChannelRow& r : m_rows) { r.gradCombo->setEnabled(false); }
+        } else {
+            buildChannelRows(3, {"Red", "Green", "Blue"});
+            m_sourceCombo->setEnabled(true);
+            for (ChannelRow& r : m_rows) { r.gradCombo->setEnabled(true); }
+        }
+    }
+
+    void onAccept()
+    {
+        const bool cmyk = (m_modelCombo->currentIndex() == 1);
+        const bool cubeMode = (!cmyk && m_sourceCombo->currentIndex() == 1);
+
+        ComposeResult res;
+        res.cmyk      = cmyk;
+        res.scaleType = (m_stretchCombo->currentIndex() == 1)
+                            ? QCPAxis::stLogarithmic : QCPAxis::stLinear;
+
+        try {
+            if (cubeMode) {
+                if (m_cubeCombo->count() == 0)
+                    throw std::runtime_error("No 3-D image HDU found in this file.");
+                const int hduIndex = m_cubeCombo->currentData().toInt();
+                FITSmanager fm(m_currentFile);
+                std::shared_ptr<FITScube> cube = fm.GetImageAtIndex(hduIndex);
+                if (cube->GetDimension() < 3)
+                    throw std::runtime_error("Selected HDU is not a 3-D cube.");
+                for (int ch = 0; ch < 3; ++ch) {
+                    auto layer = cube->Layer(static_cast<size_t>(m_cubeLayer[ch]->value()));
+                    res.channels.push_back(std::const_pointer_cast<const FITScube>(layer));
+                    res.gradients.push_back(gradientFor(GradPreset::DefaultHue, ch));
+                    res.labels.push_back("layer " + std::to_string(m_cubeLayer[ch]->value()));
+                }
+            } else {
+                for (size_t ch = 0; ch < m_rows.size(); ++ch) {
+                    ChannelRow& r = m_rows[ch];
+                    const std::string file = r.fileCombo->currentData().toString().toStdString();
+                    if (file.empty() || r.hduCombo->count() == 0)
+                        throw std::runtime_error("Channel " + std::to_string(ch + 1)
+                                                 + ": no file/HDU selected.");
+                    const int hduIndex = r.hduCombo->currentData().toInt();
+                    const int layer = r.layerSpin->isEnabled() ? r.layerSpin->value() : -1;
+                    res.channels.push_back(resolveChannelCube(file, hduIndex, layer));
+                    res.gradients.push_back(
+                        gradientFor(static_cast<GradPreset>(r.gradCombo->currentIndex()),
+                                    static_cast<int>(ch)));
+                    std::string lbl = r.fileCombo->currentText().toStdString()
+                                    + ":" + std::to_string(hduIndex);
+                    if (layer >= 0) lbl += "/L" + std::to_string(layer);
+                    res.labels.push_back(lbl);
+                }
+            }
+
+            // Validate identical pixel dimensions across all channels.
+            const size_t nx = res.channels[0]->Size(1);
+            const size_t ny = res.channels[0]->Size(2);
+            for (const auto& c : res.channels)
+                if (c->Size(1) != nx || c->Size(2) != ny)
+                    throw std::runtime_error("All channels must share the same pixel dimensions.");
+        }
+        catch (const std::exception& e) {
+            QMessageBox::warning(this, tr("Compose color image"), e.what());
+            return;
+        }
+
+        m_result = std::move(res);
+        accept();
+    }
+
+    std::string                 m_currentFile;
+    std::vector<std::string>    m_files;
+    QComboBox*                  m_modelCombo   = nullptr;
+    QComboBox*                  m_sourceCombo  = nullptr;
+    QComboBox*                  m_stretchCombo = nullptr;
+    QStackedWidget*             m_stack        = nullptr;
+    QWidget*                    m_channelPanel = nullptr;
+    QGridLayout*                m_channelGrid  = nullptr;
+    std::vector<ChannelRow>     m_rows;
+    QComboBox*                  m_cubeCombo    = nullptr;
+    QSpinBox*                   m_cubeLayer[3] = {nullptr, nullptr, nullptr};
+    ComposeResult               m_result;
+};
+
+// QDoubleSpinBox that accepts and displays scientific / engineering notation
+// (e.g. "1e-5", "2.3E8"), over an essentially unlimited magnitude range.
+// A stock QDoubleSpinBox only handles fixed-decimal text and would round small
+// magnitudes to zero; here validate()/valueFromText()/textFromValue() are
+// overridden and the decimals are kept very high so setValue() never rounds.
+class SciDoubleSpinBox : public QDoubleSpinBox
+{
+public:
+    explicit SciDoubleSpinBox(QWidget* parent = nullptr) : QDoubleSpinBox(parent)
+    {
+        setLocale(QLocale::c());            // '.' decimal point, no group separators
+        setRange(-1e300, 1e300);
+        setDecimals(1000);                  // visible text comes from textFromValue()
+        m_validator.setNotation(QDoubleValidator::ScientificNotation);
+        m_validator.setLocale(QLocale::c());
+        m_validator.setRange(-1e300, 1e300, 1000);
+    }
+
+protected:
+    QValidator::State validate(QString& text, int& pos) const override
+    {
+        return m_validator.validate(text, pos);
+    }
+
+    double valueFromText(const QString& text) const override
+    {
+        return text.toDouble();
+    }
+
+    QString textFromValue(double value) const override
+    {
+        // 'g' → shortest of decimal / scientific with 6 significant digits.
+        return QString::number(value, 'g', 6);
+    }
+
+private:
+    QDoubleValidator m_validator;
+};
+
+// Build the interactive colour-image viewer window from a resolved ComposeResult.
+static QWidget* makeColorViewer(const ComposeResult& res)
+{
+    auto* mw = new QtFITSviewer(400, 250, 1100, 800);
+    mw->setWindowTitle(QString("Color composite (%1 channels%2)")
+                        .arg(static_cast<int>(res.channels.size()))
+                        .arg(res.cmyk ? ", CMYK" : ""));
+    QCustomPlot* plot = mw->GetPlot();
+
+    // Render with raw data (OPTION=""); stretch is driven live by scale type below.
+    QCPColorMapRGB* rgb = QtFITSviewer::OverlayChannels(plot->axisRect(), res.channels, res.cmyk);
+    if (!rgb) { delete mw; return nullptr; }
+
+    for (size_t ch = 0; ch < res.channels.size(); ++ch) {
+        rgb->setChannelScaleType(static_cast<int>(ch), res.scaleType);
+        if (!res.cmyk && ch < res.gradients.size())
+            rgb->setChannelGradient(static_cast<int>(ch), res.gradients[ch]);
+    }
+    rgb->invalidate();
+
+    plot->xAxis->setLabel("pixel [px]");
+    plot->yAxis->setLabel("pixel [px]");
+    plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    QCPAxisRect* image = plot->axisRect(0);
+    image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
+    QObject::connect(plot, &QCustomPlot::beforeReplot, [image]() {
+        image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
+    });
+
+    // --- per-channel colour bars + control dock --------------------------
+    // Each channel gets its own QCPColorScale beside the image (a dynamic,
+    // draggable colour bar, like the monochrome viewer) AND a dock group with
+    // typed min/max, stretch and gradient.  The colour bar is the single source
+    // of truth for the range: typing in the spin boxes sets the bar's data
+    // range, and the bar's dataRangeChanged signal pushes the range into the
+    // QCPColorMapRGB (and back into the spin boxes).
+    QCPMarginGroup* barMargins = new QCPMarginGroup(plot);
+    image->setMarginGroup(QCP::msTop | QCP::msBottom, barMargins);
+
+    // Colour ramp shown on each bar: the channel gradient in RGB mode, or a
+    // single-hue C/M/Y/K reference ramp in CMYK mode.
+    auto barGradient = [&res](int ch) -> QCPColorGradient {
+        if (!res.cmyk && ch < static_cast<int>(res.gradients.size()))
+            return res.gradients[ch];
+        QCPColorGradient g; g.clearColorStops();
+        if (ch >= 3) {
+            // Key/black plate is subtractive: a higher value lays down MORE black
+            // ink. Reverse the ramp so the bar reads white (low) → black (high),
+            // matching the darkening effect (compositing itself is unchanged).
+            g.setColorStops({{0.0, QColor(255, 255, 255)}, {1.0, QColor(0, 0, 0)}});
+            return g;
+        }
+        QColor hue;
+        switch (ch) {
+            case 0:  hue = QColor(0, 255, 255); break;  // cyan
+            case 1:  hue = QColor(255, 0, 255); break;  // magenta
+            case 2:  hue = QColor(255, 255, 0); break;  // yellow
+            default: hue = QColor(255, 255, 255); break;
+        }
+        g.setColorStops({{0.0, QColor(0, 0, 0)}, {1.0, hue}});
+        return g;
+    };
+
+    auto* dock = new QDockWidget(QObject::tr("Channels"), mw);
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    auto* dockBody = new QWidget(dock);
+    auto* dockLay  = new QVBoxLayout(dockBody);
+
+    std::vector<QCPColorScale*> scales;
+    std::vector<double>         boundLo, boundHi;
+
+    for (size_t ch = 0; ch < res.channels.size(); ++ch) {
+        const int   chi  = static_cast<int>(ch);
+        const auto& cube = res.channels[ch];
+        double lo = cube->GetMinimum();
+        double hi = cube->GetMaximum();
+        if (hi <= lo) hi = lo + 1.0;
+        boundLo.push_back(lo);
+        boundHi.push_back(hi);
+
+        const QString chName = QString::fromStdString(
+            ch < res.labels.size() ? res.labels[ch] : ("channel " + std::to_string(ch)));
+
+        // ---- colour bar in the plot layout (column 1 + ch) -------------
+        auto* cs = new QCPColorScale(plot);
+        cs->setType(QCPAxis::atRight);
+        cs->setGradient(barGradient(chi));
+        cs->setDataRange(QCPRange(lo, hi));
+        // No axis label (the dock group already names the channel). Fixed width +
+        // compact number format so changing digit counts on the tick labels never
+        // reflows the image / plot layout.
+        cs->setMinimumSize(QSize(78, 0));
+        cs->setMaximumSize(QSize(78, QWIDGETSIZE_MAX));
+        cs->axis()->setNumberFormat("gb");
+        cs->axis()->setNumberPrecision(3);
+        plot->plotLayout()->addElement(0, 1 + chi, cs);
+        cs->setMarginGroup(QCP::msTop | QCP::msBottom, barMargins);
+        scales.push_back(cs);
+
+        rgb->setChannelRange(chi, QCPRange(lo, hi));   // keep image in sync with bar
+
+        // ---- dock group: typed min/max, stretch, gradient --------------
+        auto* box  = new QGroupBox(chName, dockBody);
+        auto* form = new QFormLayout(box);
+
+        // Scientific/engineering-notation fields (accept e.g. "1e-5").
+        QDoubleSpinBox* minSpin = new SciDoubleSpinBox(box);
+        QDoubleSpinBox* maxSpin = new SciDoubleSpinBox(box);
+        for (QDoubleSpinBox* s : {minSpin, maxSpin}) {
+            // Commit on Enter / focus-out, NOT on every keystroke. With keyboard
+            // tracking on, each digit fired valueChanged → set the bar range →
+            // wrote the value back into the field mid-typing, which reset the
+            // editor and rejected out-of-range entries before you finished typing.
+            s->setKeyboardTracking(false);
+            // Constant width so the dock does not reflow as the digit count changes.
+            s->setFixedWidth(120);
+        }
+        minSpin->setValue(lo);
+        maxSpin->setValue(hi);
+
+        auto* stretchBox = new QComboBox(box);
+        stretchBox->addItem("Linear");
+        stretchBox->addItem("Logarithmic");
+        stretchBox->setCurrentIndex(res.scaleType == QCPAxis::stLogarithmic ? 1 : 0);
+
+        form->addRow(QObject::tr("min:"), minSpin);
+        form->addRow(QObject::tr("max:"), maxSpin);
+        form->addRow(QObject::tr("stretch:"), stretchBox);
+
+        QComboBox* gradBox = nullptr;
+        if (!res.cmyk) {
+            gradBox = new QComboBox(box);
+            gradBox->addItem("Default hue");
+            gradBox->addItem("Viridis");
+            gradBox->addItem("Grayscale");
+            form->addRow(QObject::tr("gradient:"), gradBox);
+        }
+        dockLay->addWidget(box);
+
+        // ---- wiring ----------------------------------------------------
+        // typed min/max → colour-bar data range
+        auto pushSpins = [cs, minSpin, maxSpin]() {
+            double a = minSpin->value(), b = maxSpin->value();
+            if (b <= a) b = a + 1e-9;
+            cs->setDataRange(QCPRange(a, b));
+        };
+        QObject::connect(minSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                         plot, [pushSpins](double){ pushSpins(); });
+        QObject::connect(maxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                         plot, [pushSpins](double){ pushSpins(); });
+
+        // colour-bar range (drag / zoom / typed) → channel range + spin sync
+        QObject::connect(cs, &QCPColorScale::dataRangeChanged, plot,
+            [rgb, plot, chi, minSpin, maxSpin](const QCPRange& rng) {
+                rgb->setChannelRange(chi, rng);
+                rgb->invalidate();
+                { QSignalBlocker b1(minSpin); QSignalBlocker b2(maxSpin);
+                  minSpin->setValue(rng.lower); maxSpin->setValue(rng.upper); }
+                plot->replot();
+            });
+
+        // stretch → channel scale type (+ bar axis scale type when range > 0)
+        QObject::connect(stretchBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            plot, [rgb, plot, cs, chi](int idx) {
+                const bool log = (idx == 1);
+                rgb->setChannelScaleType(chi, log ? QCPAxis::stLogarithmic : QCPAxis::stLinear);
+                cs->axis()->setScaleType((log && cs->dataRange().lower > 0)
+                                         ? QCPAxis::stLogarithmic : QCPAxis::stLinear);
+                rgb->invalidate();
+                plot->replot();
+            });
+
+        // gradient → channel gradient + bar gradient
+        if (gradBox)
+            QObject::connect(gradBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                plot, [rgb, plot, cs, chi](int idx) {
+                    const QCPColorGradient g = gradientFor(static_cast<GradPreset>(idx), chi);
+                    rgb->setChannelGradient(chi, g);
+                    cs->setGradient(g);
+                    rgb->invalidate();
+                    plot->replot();
+                });
+
+        if (res.scaleType == QCPAxis::stLogarithmic && lo > 0)
+            cs->axis()->setScaleType(QCPAxis::stLogarithmic);
+    }
+    dockLay->addStretch(1);
+
+    // Image dominates the width; the colour bars stay narrow.
+    plot->plotLayout()->setColumnStretchFactor(0, 8);
+    for (size_t ch = 0; ch < scales.size(); ++ch)
+        plot->plotLayout()->setColumnStretchFactor(1 + static_cast<int>(ch), 0.2);
+
+    auto* scroll = new QScrollArea(dock);
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(dockBody);
+    dock->setWidget(scroll);
+    mw->addDockWidget(Qt::RightDockWidgetArea, dock);
+
+    // --- command bar: reset levels (restore each bar to its data min/max) -
+    auto* toolbar = new QToolBar("Options", mw);
+    toolbar->setMovable(false);
+    toolbar->setFloatable(false);
+    auto* resetBtn = new QPushButton("Reset levels", toolbar);
+    resetBtn->setFlat(true);
+    QObject::connect(resetBtn, &QPushButton::clicked, mw,
+        [scales, boundLo, boundHi, plot]() {
+            for (size_t ch = 0; ch < scales.size(); ++ch)
+                scales[ch]->setDataRange(QCPRange(boundLo[ch], boundHi[ch]));
+            plot->replot();
+        });
+    toolbar->addWidget(resetBtn);
+    mw->addToolBar(Qt::TopToolBarArea, toolbar);
+
+    // --- status-bar pixel readout ----------------------------------------
+    // Connect a no-arg lambda to mouseMove (the QMouseEvent* arg is discarded);
+    // read the cursor via QCursor::pos() exactly like the monochrome mouseHasMove.
+    std::vector<std::shared_ptr<const FITScube>> chans = res.channels;
+    QObject::connect(plot, &QCustomPlot::mouseMove, plot,
+        [plot, image, chans, mw]() {
+            const QPoint cursor = plot->mapFromGlobal(QCursor::pos());
+            if (plot->axisRectAt(cursor) != image) return;
+            const double kx = image->axis(QCPAxis::atBottom)->pixelToCoord(cursor.x());
+            const double ky = image->axis(QCPAxis::atLeft)->pixelToCoord(cursor.y());
+            const long ix = static_cast<long>(kx + 0.5);
+            const long iy = static_cast<long>(ky + 0.5);
+            if (ix < 0 || iy < 0
+                || ix >= static_cast<long>(chans[0]->Size(1))
+                || iy >= static_cast<long>(chans[0]->Size(2))) {
+                if (mw->statusBar()) mw->statusBar()->clearMessage();
+                return;
+            }
+            QString msg = QString("[%1 ; %2] ").arg(ix).arg(iy);
+            for (size_t ch = 0; ch < chans.size(); ++ch) {
+                double v = 0.0;
+                try { v = chans[ch]->DoubleValueAtPixel(
+                          {static_cast<size_t>(ix), static_cast<size_t>(iy)}); }
+                catch (...) {}
+                msg += QString("ch%1=%2  ").arg(static_cast<int>(ch)).arg(v);
+            }
+            if (mw->statusBar()) mw->statusBar()->showMessage(msg);
+        });
+
+    mw->SetPlot(plot);
+    mw->show();
+    return mw;
+}
+
+// Open the compose dialog seeded with one or more files; on Accept, build and
+// show the colour viewer. Returns the viewer window (or nullptr if cancelled /
+// nothing composed). Invoked both by HduListWindow::colorComposeRequested (one
+// file) and by the multi-file command-line launch path.
+static QWidget* openColorComposeDialog(const std::vector<std::string>& files,
+                                       QWidget* parent)
+{
+    if (files.empty()) return nullptr;
+    ColorComposeDialog dlg(files, parent);
+    if (dlg.exec() != QDialog::Accepted) return nullptr;
+    if (dlg.result().channels.empty()) return nullptr;
+    return makeColorViewer(dlg.result());   // top-level window; stays alive after return
+}
+
 static QWidget* makeViewer(const HduInfo& hdu,
                             const std::string& fitsPath,
                             const UOption& opt)
@@ -1986,12 +2723,13 @@ int main(int argc, char **argv)
         if (in_file.size() < 1)
             throw std::runtime_error("Not enough arguments. Please provide a filename to open.");
 
-        if (in_file.size() > 1)
-            throw std::runtime_error("Too many arguments! I can handle only 1 file.");
-
         // Headless path: --draw disables GUI
         if (UOption::ddraw == UOption::drawing_mode::OFF)
         {
+            if (in_file.size() > 1)
+                throw std::runtime_error("Headless mode (--draw) handles a single file. "
+                    "Provide one file, or drop --draw to compose a colour image from several.");
+
             FITSmanager ffile(in_file[0]);
             std::shared_ptr<FITScube> img = ffile.GetImageAtIndex(fOPT.Header());
 
@@ -2068,6 +2806,22 @@ int main(int argc, char **argv)
         // GUI path
         QApplication a(argc, argv);
 
+        // Several files on the command line → go straight to the colour compose
+        // dialog (seeded with every file, mapped one-per-channel by default)
+        // instead of treating it as an error.
+        if (in_file.size() > 1)
+        {
+            std::vector<std::string> files(in_file.begin(), in_file.end());
+            QWidget* viewer = openColorComposeDialog(files, nullptr);
+            if (!viewer) return EXIT_SUCCESS;   // user cancelled the dialog
+            const int ret = a.exec();
+            if (_draw_histo.joinable()) _draw_histo.join();
+            if (_draw_grid.joinable())  _draw_grid.join();
+            if (_print_info.joinable()) _print_info.join();
+            if (_print_.joinable())     _print_.join();
+            return ret;
+        }
+
         FITSmanager ffile(in_file[0]);
         std::vector<HduInfo> hdus = enumerateHDUs(ffile);
         ffile.Close();
@@ -2084,6 +2838,14 @@ int main(int argc, char **argv)
         };
 
         HduListWindow listWin(in_file[0], hdus, factory);
+
+        // Opt-in colour compositing: the "Color ▸ Compose color image…" menu emits
+        // colorComposeRequested(); open the channel-selection dialog in response.
+        QObject::connect(&listWin, &HduListWindow::colorComposeRequested,
+                         [fitsPath, &listWin]() {
+                             openColorComposeDialog({fitsPath}, &listWin);
+                         });
+
         listWin.show();
 
         if (fOPT.HduExplicit())
