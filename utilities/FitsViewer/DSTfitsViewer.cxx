@@ -33,6 +33,7 @@
 #include <QTabWidget>
 #include <QMessageBox>
 #include <QSpinBox>
+#include <QFileDialog>
 #include <DSTdisplay/QCustomContours.h>
 
 #endif
@@ -784,6 +785,7 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
                     auto* curve = new QCPCurve(plt->xAxis, plt->yAxis);
                     curve->setPen(QPen(Qt::green, 1.0));
                     curve->setScatterStyle(QCPScatterStyle::ssNone);
+                    curve->setLayer("wcs_grid");
                     for (size_t i = 0; i < gl.xs.size(); ++i)
                         curve->addData(gl.xs[i], gl.ys[i]);
                 }
@@ -803,6 +805,7 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
                     // over the image regardless of pixel intensity.
                     lbl->setBrush(QBrush(QColor(0, 0, 0, 140)));
                     lbl->setPadding(QMargins(2, 1, 2, 1));
+                    lbl->setLayer("wcs_grid");
                 }
             }
             plt->replot();
@@ -958,6 +961,8 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
         image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
     });
 
+    customPlot->addLayer("wcs_grid", customPlot->layer("main"), QCustomPlot::limAbove);
+
     mw->SetPlot(customPlot);
     mw->show();
 
@@ -1108,7 +1113,7 @@ static void showFitsHeaderWidget(const FITShdu& hdu, QWidget* parent)
 
 // Attaches a thin command bar (QToolBar) to any QMainWindow.
 // To add more buttons in the future: create a QPushButton, connect it, call toolbar->addWidget().
-static void addCommandBar(QMainWindow* win, const FITShdu& hdu)
+static void addCommandBar(QMainWindow* win, const FITShdu& hdu, QCustomPlot* customPlot = nullptr)
 {
     auto* toolbar = new QToolBar("Options", win);
     toolbar->setMovable(false);
@@ -1123,7 +1128,41 @@ static void addCommandBar(QMainWindow* win, const FITShdu& hdu)
     });
     toolbar->addWidget(headerBtn);
 
-    // --- Add future buttons here (one QPushButton + connect + addWidget per button) ---
+    // --- WCS Grid checkbox (only present when the wcs_grid layer was created) ---
+    if (customPlot && customPlot->layer("wcs_grid")) {
+        toolbar->addSeparator();
+        auto* wcsCheck = new QCheckBox("WCS Grid", toolbar);
+        wcsCheck->setChecked(true);
+        QObject::connect(wcsCheck, &QCheckBox::toggled, win, [customPlot](bool checked) {
+            auto* layer = customPlot->layer("wcs_grid");
+            if (layer) {
+                layer->setVisible(checked);
+                customPlot->replot();
+            }
+        });
+        toolbar->addWidget(wcsCheck);
+    }
+
+    // --- Save button (all image viewers) ---
+    if (customPlot) {
+        toolbar->addSeparator();
+        auto* saveBtn = new QPushButton("Save", toolbar);
+        saveBtn->setFlat(true);
+        QObject::connect(saveBtn, &QPushButton::clicked, win, [customPlot, win]() {
+            QString path = QFileDialog::getSaveFileName(
+                win, "Save image", QString(),
+                "PNG image (*.png);;PDF document (*.pdf);;JPEG image (*.jpg)");
+            if (path.isEmpty()) return;
+            if (path.endsWith(".pdf", Qt::CaseInsensitive))
+                customPlot->savePdf(path);
+            else if (path.endsWith(".jpg",  Qt::CaseInsensitive) ||
+                     path.endsWith(".jpeg", Qt::CaseInsensitive))
+                customPlot->saveJpg(path);
+            else
+                customPlot->savePng(path.endsWith(".png", Qt::CaseInsensitive) ? path : path + ".png");
+        });
+        toolbar->addWidget(saveBtn);
+    }
 
     win->addToolBar(Qt::TopToolBarArea, toolbar);
 }
@@ -1174,7 +1213,7 @@ static QWidget* make2DViewer(const HduInfo& hdu,
 
     QMainWindow* mainWin = qobject_cast<QMainWindow*>(plt->window());
     if (mainWin)
-        addCommandBar(mainWin, img->HDU());
+        addCommandBar(mainWin, img->HDU(), plt);
     return mainWin ? mainWin : dynamic_cast<QWidget*>(plt->window());
 }
 
@@ -1363,7 +1402,7 @@ static QWidget* make3DViewer(const HduInfo& hdu,
                          customPlot->replot(QCustomPlot::rpQueuedReplot);
                      });
 
-    addCommandBar(win, cube->HDU());
+    addCommandBar(win, cube->HDU(), customPlot);
     return win;
 }
 
