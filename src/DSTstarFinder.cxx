@@ -76,6 +76,15 @@ static bool isGPUEligible(const std::shared_ptr<DSL::FITScube>& img)
 namespace DST
 {
 #pragma region - DST::Stars class implementation
+
+#pragma region -- Static member function
+
+    ROOT::Minuit2::MnUserParameters Stars::generateLabelParameters(const Stars::evalType& method)
+    {
+        return DST::algorithms::starFitter::generateLabelParameters(method);
+    }
+
+#pragma endregion
 #pragma region -- ctor/dtor
     /** 
      * @brief Default constructor
@@ -409,6 +418,133 @@ namespace DST
 
 #pragma region - starFitter class implementation
 
+#pragma region -- static member function
+        
+        ROOT::Minuit2::MnUserParameters starFitter::generateLabelParameters(const DST::Stars::evalType& method)
+        {
+            ROOT::Minuit2::MnUserParameters upar;
+
+            // MOMENT needs no fit, and the user-defined models have no known layout:
+            // in both cases hand back an empty set (see user_parameters()).
+            if(method == DST::Stars::evalType::MOMENT       ||
+               method == DST::Stars::evalType::CUSTOM       ||
+               method == DST::Stars::evalType::CUSTOM_MODEL ||
+               method == DST::Stars::evalType::UNDEFINED)
+                return upar;
+
+            // Common leading block: amplitude and centroid (same convention as Eval()).
+            upar.Add("psfFlux", 1.0, 0.1);
+            upar.Add("psfX0"  , 0.0, 0.01);
+            upar.Add("psfY0"  , 0.0, 0.01);
+
+            switch (method)
+            {
+                case DST::Stars::evalType::GAUSS:
+                case DST::Stars::evalType::iGAUSS:
+                    upar.Add("psfSigma", 1.0, 0.01);
+                    break;
+
+                case DST::Stars::evalType::GAUSS2D:
+                case DST::Stars::evalType::iGAUSS2D:
+                    upar.Add("psfSigma_x", 1.0, 0.01);
+                    upar.Add("psfSigma_y", 1.0, 0.01);
+                    upar.Add("psfTheta"  , 0.0, 0.001);
+                    break;
+
+                case DST::Stars::evalType::MOFFAT:
+                    upar.Add("psfAlpha", 1.5, 0.01);
+                    upar.Add("psfBeta" , 1.5, 0.01);
+                    break;
+
+                case DST::Stars::evalType::MOFFAT2D:
+                    upar.Add("psfAlpha", 1.5, 0.001);
+                    upar.Add("psfBeta" , 1.5, 0.001);
+                    upar.Add("psfGamma", 0.8, 0.001);
+                    upar.Add("psfTheta", 0.0, 0.01);
+                    break;
+
+                case DST::Stars::evalType::LORENTZIAN:
+                    upar.Add("psfGamma", 1.0, 0.01, 0.01, 50.0);
+                    break;
+
+                case DST::Stars::evalType::LORENTZIAN2D:
+                    upar.Add("psfGamma", 1.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfQ",     1.0, 0.01, 0.01,  2.0);
+                    upar.Add("psfTheta", 0.0, 0.01);
+                    break;
+
+                case DST::Stars::evalType::VOIGT:
+                    upar.Add("psfFG", 1.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfFL", 1.0, 0.01, 0.01, 50.0);
+                    break;
+
+                case DST::Stars::evalType::VOIGT2D:
+                    upar.Add("psfFG",    1.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfFL",    1.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfQ",     1.0, 0.01, 0.01,  2.0);
+                    upar.Add("psfTheta", 0.0, 0.01);
+                    break;
+
+                case DST::Stars::evalType::SERSIC:
+                    upar.Add("psfRe", 1.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfN",  1.0, 0.01, 0.01, 10.0);
+                    break;
+
+                case DST::Stars::evalType::SERSIC2D:
+                    upar.Add("psfRe",    1.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfN",     1.0, 0.01, 0.01, 10.0);
+                    upar.Add("psfQ",     1.0, 0.01, 0.01,  2.0);
+                    upar.Add("psfTheta", 0.0, 0.01);
+                    break;
+
+                case DST::Stars::evalType::KING:
+                    upar.Add("psfRc", 1.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfRt", 3.0, 0.01, 0.01, 50.0);
+                    break;
+
+                case DST::Stars::evalType::KING2D:
+                    upar.Add("psfRc",    1.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfRt",    3.0, 0.01, 0.01, 50.0);
+                    upar.Add("psfQ",     1.0, 0.01, 0.01,  2.0);
+                    upar.Add("psfTheta", 0.0, 0.01);
+                    break;
+
+                case DST::Stars::evalType::AIRY:
+                    upar.Add("psfA" , 1.0, 0.01, 0.01, 50.0);
+                    break;
+
+                default:
+                    // Unknown model: no layout can be guessed, drop the common block.
+                    return ROOT::Minuit2::MnUserParameters();
+            }
+
+            upar.Add("psfBKG", 0.0, 0.01);
+
+            return upar;
+        }
+
+        ROOT::Minuit2::MnUserParameters starFitter::user_parameters() const
+        {
+            return ROOT::Minuit2::MnUserParameters();
+        }
+
+        ROOT::Minuit2::MnUserParameters starFitter::labelParameters() const
+        {
+            switch(fevalMethod)
+            {
+                case DST::Stars::evalType::MOMENT:
+                case DST::Stars::evalType::CUSTOM:
+                case DST::Stars::evalType::CUSTOM_MODEL:
+                case DST::Stars::evalType::UNDEFINED:
+                    return user_parameters();
+
+                default:
+                    return generateLabelParameters(fevalMethod);
+            }
+        }
+        
+#pragma endregion
+
 #pragma region -- private member function
 
         std::shared_ptr< const FITSimg<double> > starFitter::_makeWeight(const std::shared_ptr< FITSimg<double> >& err, bool isErrorMap)
@@ -580,7 +716,26 @@ namespace DST
             return 0.0;
         }
 
+        double starFitter::Eval(const std::vector<double>& params) const
+        {
+            if(params.size() < 3)
+                throw std::invalid_argument("\033[1;35;47m[DST::starFitter::Eval] :\033[0m A coordinates-first vector holds at least x, y and one model parameter, "
+                                            +std::to_string(params.size())+" given. ["+std::to_string(__LINE__)+"]");
+
+#if DST_HAS_SPAN
+            return Eval(params[0], params[1], std::span<const double>(params).subspan(2));
+#else
+            // No view to hand over before C++20, so the tail is copied. The one place the
+            // fallback costs anything; see DST_HAS_SPAN in DSTstarFinder.h.
+            return Eval(params[0], params[1], std::vector<double>(params.cbegin()+2, params.cend()));
+#endif
+        }
+
+#if DST_HAS_SPAN
+        double starFitter::Eval(double x, double y, std::span<const double> params) const
+#else
         double starFitter::Eval(double x, double y, const std::vector<double>& params) const
+#endif
         {
             switch(fevalMethod)
             {
@@ -660,7 +815,14 @@ namespace DST
                            + params[4];
 
                 default:
+                    // user_eval() keeps its std::vector signature so existing overrides are
+                    // untouched; the copy only happens on the custom-model path, and only
+                    // when there is a view to materialise in the first place.
+#if DST_HAS_SPAN
+                    return user_eval(x, y, std::vector<double>(params.begin(), params.end()));
+#else
                     return user_eval(x, y, params);
+#endif
             }
         }
 
@@ -2550,92 +2712,18 @@ namespace DST
             starFitter fitter(cpy, how);
 
 
-            ROOT::Minuit2::MnUserParameters upar;
-            upar.Add("flux", star.maxima(), 0.1);
-            upar.Add("x0", star.position().X()-xMin, 0.01);
-            upar.Add("y0", star.position().Y()-yMin, 0.01);
+            // Parameter layout (names/steps/limits) comes from the model table; only the
+            // seeds that depend on this star are overwritten here.
+            ROOT::Minuit2::MnUserParameters upar = fitter.labelParameters();
 
-            switch (how)
-            {
-                case Stars::evalType::GAUSS:
-                case Stars::evalType::iGAUSS:
-                    upar.Add("sigma", 1.0, 0.01);
-                    break;
+            if(upar.Parameters().empty())
+                throw std::invalid_argument("DST::starFinder::_evalStellarPropertiesModel: no parameter layout for model '"
+                                            + Stars::ModelString(how)
+                                            + "'. Override starFitter::user_parameters() to provide one. ["+std::to_string(__LINE__)+"]");
 
-                case Stars::evalType::GAUSS2D:
-                case Stars::evalType::iGAUSS2D:
-                    upar.Add("sigma_x", 1.0, 0.01);
-                    upar.Add("sigma_y", 1.0, 0.01);
-                    upar.Add("theta"  , 0.0, 0.001);
-                    break;
-                
-                case Stars::evalType::MOFFAT:
-                    upar.Add("alpha", 1.5, 0.01);
-                    upar.Add("beta",  1.5, 0.01);
-                    break;
-                
-                case Stars::evalType::MOFFAT2D:
-                    upar.Add("alpha", 1.5, 0.001);
-                    upar.Add("beta" , 1.5, 0.001);
-                    upar.Add("gamma", 0.8, 0.001);
-                    upar.Add("theta", 0.0, 0.01);
-                    break;
-
-                case Stars::evalType::LORENTZIAN:
-                    upar.Add("gamma", 1.0, 0.01, 0.01, 50.0);
-                    break;
-
-                case Stars::evalType::LORENTZIAN2D:
-                    upar.Add("gamma", 1.0, 0.01, 0.01, 50.0);
-                    upar.Add("q",     1.0, 0.01, 0.01,  2.0);
-                    upar.Add("theta", 0.0, 0.01);
-                    break;
-
-                case Stars::evalType::VOIGT:
-                    upar.Add("fG", 1.0, 0.01, 0.01, 50.0);
-                    upar.Add("fL", 1.0, 0.01, 0.01, 50.0);
-                    break;
-
-                case Stars::evalType::VOIGT2D:
-                    upar.Add("fG",    1.0, 0.01, 0.01, 50.0);
-                    upar.Add("fL",    1.0, 0.01, 0.01, 50.0);
-                    upar.Add("q",     1.0, 0.01, 0.01,  2.0);
-                    upar.Add("theta", 0.0, 0.01);
-                    break;
-
-                case Stars::evalType::SERSIC:
-                    upar.Add("re", 1.0, 0.01, 0.01, 50.0);
-                    upar.Add("n",  1.0, 0.01, 0.01, 10.0);
-                    break;
-
-                case Stars::evalType::SERSIC2D:
-                    upar.Add("re",    1.0, 0.01, 0.01, 50.0);
-                    upar.Add("n",     1.0, 0.01, 0.01, 10.0);
-                    upar.Add("q",     1.0, 0.01, 0.01,  2.0);
-                    upar.Add("theta", 0.0, 0.01);
-                    break;
-
-                case Stars::evalType::KING:
-                    upar.Add("rc", 1.0, 0.01, 0.01, 50.0);
-                    upar.Add("rt", 3.0, 0.01, 0.01, 50.0);
-                    break;
-
-                case Stars::evalType::KING2D:
-                    upar.Add("rc",    1.0, 0.01, 0.01, 50.0);
-                    upar.Add("rt",    3.0, 0.01, 0.01, 50.0);
-                    upar.Add("q",     1.0, 0.01, 0.01,  2.0);
-                    upar.Add("theta", 0.0, 0.01);
-                    break;
-
-                case Stars::evalType::AIRY:
-                    upar.Add("a", 1.0, 0.01, 0.01, 50.0);
-                    break;
-
-                default:
-                    break;
-            }
-
-            upar.Add("background", 0.0, 0.01);
+            upar.SetValue("psfFlux", star.maxima());
+            upar.SetValue("psfX0"  , star.position().X()-xMin);
+            upar.SetValue("psfY0"  , star.position().Y()-yMin);
 
             ROOT::Minuit2::MnMigrad migrad(fitter, upar);
             //migrad.SetPrintLevel(-1); // Suppress output
@@ -2645,68 +2733,68 @@ namespace DST
                 std::cerr << "DST::starFinder::_evalStellarPropertiesModel: Fit did not converge for star ID "<<star.ID()<<"."<<std::endl;
 
             std::vector<double> best_fit_params;
-            best_fit_params.push_back(min.UserState().Value("flux"));
-            best_fit_params.push_back(min.UserState().Value("x0") + xMin);
-            best_fit_params.push_back(min.UserState().Value("y0") + yMin);
+            best_fit_params.push_back(min.UserState().Value("psfFlux"));
+            best_fit_params.push_back(min.UserState().Value("psfX0") + xMin);
+            best_fit_params.push_back(min.UserState().Value("psfY0") + yMin);
 
             switch (how)
             {
                 case Stars::evalType::GAUSS:
                 case Stars::evalType::iGAUSS:
-                    best_fit_params.push_back(min.UserState().Value("sigma"));
-                    star.setFWHM(point({2.354820045 * min.UserState().Value("sigma"),
-                                        2.354820045 * min.UserState().Value("sigma")})); // FWHM = 2.355 * sigma for Gaussian
+                    best_fit_params.push_back(min.UserState().Value("psfSigma"));
+                    star.setFWHM(point({2.354820045 * min.UserState().Value("psfSigma"),
+                                        2.354820045 * min.UserState().Value("psfSigma")})); // FWHM = 2.355 * sigma for Gaussian
                     star.setAngle(0.0);
                     break;
 
                 case Stars::evalType::GAUSS2D:
                 case Stars::evalType::iGAUSS2D:
-                    best_fit_params.push_back(min.UserState().Value("sigma_x"));
-                    best_fit_params.push_back(min.UserState().Value("sigma_y"));
-                    best_fit_params.push_back(min.UserState().Value("theta"  ));
-                    star.setFWHM(point({2.354820045 * min.UserState().Value("sigma_x"),
-                                        2.354820045 * min.UserState().Value("sigma_y")}));
-                    star.setAngle(min.UserState().Value("theta"));
+                    best_fit_params.push_back(min.UserState().Value("psfSigma_x"));
+                    best_fit_params.push_back(min.UserState().Value("psfSigma_y"));
+                    best_fit_params.push_back(min.UserState().Value("psfTheta"  ));
+                    star.setFWHM(point({2.354820045 * min.UserState().Value("psfSigma_x"),
+                                        2.354820045 * min.UserState().Value("psfSigma_y")}));
+                    star.setAngle(min.UserState().Value("psfTheta"));
                     break;
                 
                 case Stars::evalType::MOFFAT:
-                    best_fit_params.push_back(min.UserState().Value("alpha"));
-                    best_fit_params.push_back(min.UserState().Value("beta" ));
-                    star.setFWHM(point({2.0 * min.UserState().Value("alpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("beta")) - 1.0),
-                                        2.0 * min.UserState().Value("alpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("beta")) - 1.0)})); // FWHM = 2*alpha*sqrt(2^(1/beta)-1) for Moffat
+                    best_fit_params.push_back(min.UserState().Value("psfAlpha"));
+                    best_fit_params.push_back(min.UserState().Value("psfBeta" ));
+                    star.setFWHM(point({2.0 * min.UserState().Value("psfAlpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("psfBeta")) - 1.0),
+                                        2.0 * min.UserState().Value("psfAlpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("psfBeta")) - 1.0)})); // FWHM = 2*alpha*sqrt(2^(1/beta)-1) for Moffat
                     star.setAngle(0.0);
                     break;
                 
                 case Stars::evalType::MOFFAT2D:
-                    best_fit_params.push_back(min.UserState().Value("alpha"));
-                    best_fit_params.push_back(min.UserState().Value("beta" ));
-                    best_fit_params.push_back(min.UserState().Value("gamma"));
-                    best_fit_params.push_back(min.UserState().Value("theta"));
-                    star.setFWHM(point({2.0 * min.UserState().Value("alpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("beta")) - 1.0),
-                                        2.0 * min.UserState().Value("alpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("beta")) - 1.0)})); // FWHM = 2*alpha*sqrt(2^(1/beta)-1) for Moffat
-                    star.setAngle(min.UserState().Value("theta"));
+                    best_fit_params.push_back(min.UserState().Value("psfAlpha"));
+                    best_fit_params.push_back(min.UserState().Value("psfBeta" ));
+                    best_fit_params.push_back(min.UserState().Value("psfGamma"));
+                    best_fit_params.push_back(min.UserState().Value("psfTheta"));
+                    star.setFWHM(point({2.0 * min.UserState().Value("psfAlpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("psfBeta")) - 1.0),
+                                        2.0 * min.UserState().Value("psfAlpha") * std::sqrt(std::pow(2.0, 1.0/min.UserState().Value("psfBeta")) - 1.0)})); // FWHM = 2*alpha*sqrt(2^(1/beta)-1) for Moffat
+                    star.setAngle(min.UserState().Value("psfTheta"));
                     break;
 
                 case Stars::evalType::LORENTZIAN:
-                    best_fit_params.push_back(min.UserState().Value("gamma"));
-                    star.setFWHM(point({2.0*min.UserState().Value("gamma"),
-                                        2.0*min.UserState().Value("gamma")}));
+                    best_fit_params.push_back(min.UserState().Value("psfGamma"));
+                    star.setFWHM(point({2.0*min.UserState().Value("psfGamma"),
+                                        2.0*min.UserState().Value("psfGamma")}));
                     star.setAngle(0.0);
                     break;
 
                 case Stars::evalType::LORENTZIAN2D:
-                    best_fit_params.push_back(min.UserState().Value("gamma"));
-                    best_fit_params.push_back(min.UserState().Value("q"));
-                    best_fit_params.push_back(min.UserState().Value("theta"));
-                    star.setFWHM(point({2.0*min.UserState().Value("gamma"),
-                                        2.0*min.UserState().Value("gamma")*min.UserState().Value("q")}));
-                    star.setAngle(min.UserState().Value("theta"));
+                    best_fit_params.push_back(min.UserState().Value("psfGamma"));
+                    best_fit_params.push_back(min.UserState().Value("psfQ"));
+                    best_fit_params.push_back(min.UserState().Value("psfTheta"));
+                    star.setFWHM(point({2.0*min.UserState().Value("psfGamma"),
+                                        2.0*min.UserState().Value("psfGamma")*min.UserState().Value("psfQ")}));
+                    star.setAngle(min.UserState().Value("psfTheta"));
                     break;
 
                 case Stars::evalType::VOIGT:
                 {
-                    double fG = min.UserState().Value("fG");
-                    double fL = min.UserState().Value("fL");
+                    double fG = min.UserState().Value("psfFG");
+                    double fL = min.UserState().Value("psfFL");
                     double fwhm = 0.5346*fL + std::sqrt(0.2166*fL*fL + fG*fG);
                     best_fit_params.push_back(fG);
                     best_fit_params.push_back(fL);
@@ -2717,66 +2805,66 @@ namespace DST
 
                 case Stars::evalType::VOIGT2D:
                 {
-                    double fG = min.UserState().Value("fG");
-                    double fL = min.UserState().Value("fL");
-                    double q  = min.UserState().Value("q");
+                    double fG = min.UserState().Value("psfFG");
+                    double fL = min.UserState().Value("psfFL");
+                    double q  = min.UserState().Value("psfQ");
                     double fwhm = 0.5346*fL + std::sqrt(0.2166*fL*fL + fG*fG);
                     best_fit_params.push_back(fG);
                     best_fit_params.push_back(fL);
                     best_fit_params.push_back(q);
-                    best_fit_params.push_back(min.UserState().Value("theta"));
+                    best_fit_params.push_back(min.UserState().Value("psfTheta"));
                     star.setFWHM(point({fwhm, fwhm*q}));
-                    star.setAngle(min.UserState().Value("theta"));
+                    star.setAngle(min.UserState().Value("psfTheta"));
                     break;
                 }
 
                 case Stars::evalType::SERSIC:
-                    best_fit_params.push_back(min.UserState().Value("re"));
-                    best_fit_params.push_back(min.UserState().Value("n"));
-                    star.setFWHM(point({2.0*min.UserState().Value("re"),
-                                        2.0*min.UserState().Value("re")}));
+                    best_fit_params.push_back(min.UserState().Value("psfRe"));
+                    best_fit_params.push_back(min.UserState().Value("psfN"));
+                    star.setFWHM(point({2.0*min.UserState().Value("psfRe"),
+                                        2.0*min.UserState().Value("psfRe")}));
                     star.setAngle(0.0);
                     break;
 
                 case Stars::evalType::SERSIC2D:
-                    best_fit_params.push_back(min.UserState().Value("re"));
-                    best_fit_params.push_back(min.UserState().Value("n"));
-                    best_fit_params.push_back(min.UserState().Value("q"));
-                    best_fit_params.push_back(min.UserState().Value("theta"));
-                    star.setFWHM(point({2.0*min.UserState().Value("re"),
-                                        2.0*min.UserState().Value("re")*min.UserState().Value("q")}));
-                    star.setAngle(min.UserState().Value("theta"));
+                    best_fit_params.push_back(min.UserState().Value("psfRe"));
+                    best_fit_params.push_back(min.UserState().Value("psfN"));
+                    best_fit_params.push_back(min.UserState().Value("psfQ"));
+                    best_fit_params.push_back(min.UserState().Value("psfTheta"));
+                    star.setFWHM(point({2.0*min.UserState().Value("psfRe"),
+                                        2.0*min.UserState().Value("psfRe")*min.UserState().Value("psfQ")}));
+                    star.setAngle(min.UserState().Value("psfTheta"));
                     break;
 
                 case Stars::evalType::KING:
-                    best_fit_params.push_back(min.UserState().Value("rc"));
-                    best_fit_params.push_back(min.UserState().Value("rt"));
-                    star.setFWHM(point({2.0*min.UserState().Value("rc"),
-                                        2.0*min.UserState().Value("rc")}));
+                    best_fit_params.push_back(min.UserState().Value("psfRc"));
+                    best_fit_params.push_back(min.UserState().Value("psfRt"));
+                    star.setFWHM(point({2.0*min.UserState().Value("psfRc"),
+                                        2.0*min.UserState().Value("psfRc")}));
                     star.setAngle(0.0);
                     break;
 
                 case Stars::evalType::KING2D:
-                    best_fit_params.push_back(min.UserState().Value("rc"));
-                    best_fit_params.push_back(min.UserState().Value("rt"));
-                    best_fit_params.push_back(min.UserState().Value("q"));
-                    best_fit_params.push_back(min.UserState().Value("theta"));
-                    star.setFWHM(point({2.0*min.UserState().Value("rc"),
-                                        2.0*min.UserState().Value("rc")*min.UserState().Value("q")}));
-                    star.setAngle(min.UserState().Value("theta"));
+                    best_fit_params.push_back(min.UserState().Value("psfRc"));
+                    best_fit_params.push_back(min.UserState().Value("psfRt"));
+                    best_fit_params.push_back(min.UserState().Value("psfQ"));
+                    best_fit_params.push_back(min.UserState().Value("psfTheta"));
+                    star.setFWHM(point({2.0*min.UserState().Value("psfRc"),
+                                        2.0*min.UserState().Value("psfRc")*min.UserState().Value("psfQ")}));
+                    star.setAngle(min.UserState().Value("psfTheta"));
                     break;
 
                 case Stars::evalType::AIRY:
-                    best_fit_params.push_back(min.UserState().Value("a"));
-                    star.setFWHM(point({2.0*min.UserState().Value("a"),
-                                        2.0*min.UserState().Value("a")}));
+                    best_fit_params.push_back(min.UserState().Value("psfA"));
+                    star.setFWHM(point({2.0*min.UserState().Value("psfA"),
+                                        2.0*min.UserState().Value("psfA")}));
                     star.setAngle(0.0);
                     break;
 
                 default:
                     break;
             }
-            best_fit_params.push_back(min.UserState().Value("background"));
+            best_fit_params.push_back(min.UserState().Value("psfBKG"));
             star.setPSFparameters(best_fit_params);
 
 

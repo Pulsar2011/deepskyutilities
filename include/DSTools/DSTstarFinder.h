@@ -57,6 +57,28 @@
 #include <type_traits>
 #include <filesystem>
 
+/**
+ * @def DST_HAS_SPAN
+ * @brief 1 when std::span is available, 0 otherwise.
+ *
+ * @details starFitter::Eval() takes its parameters as a view where the standard library
+ * provides one, so that a caller holding a longer vector can pass a sub-range without
+ * copying. That is a C++20 facility, and this header is public: including <span>
+ * unconditionally would make C++20 a hard floor for every consumer of the library, while
+ * the build still degrades to C++17 and below.
+ *
+ * The C++17 fallback takes a const std::vector<double>& instead. Callers that pass a whole
+ * vector are unaffected either way -- a vector binds implicitly to std::span<const double>
+ * -- so only the sub-range case differs, and there it costs a copy rather than failing to
+ * compile.
+ */
+#if __cplusplus >= 202002L
+#  include <span>
+#  define DST_HAS_SPAN 1
+#else
+#  define DST_HAS_SPAN 0
+#endif
+
 #include <DSTfits/FITSdata.h>
 #include <DSTfits/FITSimg.h>
 #include <DSTfits/FITStable.h>
@@ -140,6 +162,8 @@ namespace DST
                     CUSTOM_MODEL, ///< User-defined method with custom PSF model implemented in `starFinder::_evalStellarPropertiesCustomModel()`.
                     UNDEFINED     ///< Sentinel — no evaluation performed yet.
                 };
+
+                static ROOT::Minuit2::MnUserParameters generateLabelParameters(const evalType& method);
 
             private:
                 const size_t fID;                       ///< Unique star identifier, assigned at construction.
@@ -328,7 +352,56 @@ namespace DST
                  */
                 virtual double user_eval(double x, double y, const std::vector<double>& params) const;
 
+                /**
+                 * @brief Override point for the parameter layout of user-defined PSF models.
+                 *
+                 * @details
+                 * Called by `labelParameters()` when `fevalMethod` designates a model whose
+                 * layout is not known to the library (`MOMENT`, `CUSTOM`, `CUSTOM_MODEL`,
+                 * `UNDEFINED`).  The base implementation returns an **empty**
+                 * `MnUserParameters`; override it in a derived class to declare the
+                 * parameters expected by `user_eval()` (names, start values, steps and
+                 * optional limits), in the very same order.
+                 *
+                 * @return Parameter set matching the custom model; empty by default.
+                 */
+                virtual ROOT::Minuit2::MnUserParameters user_parameters() const;
+
             public:
+
+                /**
+                 * @brief Build the Minuit2 parameter set (names, seeds, steps, limits) of a PSF model.
+                 *
+                 * @details
+                 * The returned layout matches exactly the parameter vector convention of
+                 * `Eval()`: `psfFlux, psfX0, psfY0, <profile parameters...>, psfBKG`.  Values are
+                 * generic seeds (`psfFlux = 1`, centroid at the origin); the caller is expected
+                 * to re-seed them with the actual star measurements, e.g.
+                 * @code
+                 * auto upar = starFitter::generateLabelParameters(method);
+                 * upar.SetValue("psfFlux", star.maxima());
+                 * upar.SetValue("psfX0",   star.position().X() - xMin);
+                 * upar.SetValue("psfY0",   star.position().Y() - yMin);
+                 * @endcode
+                 *
+                 * @param method PSF profile model.
+                 * @return Parameter set for @p method; an **empty** set for `MOMENT`,
+                 *         `CUSTOM`, `CUSTOM_MODEL`, `UNDEFINED` and any unknown value —
+                 *         those layouts are supplied by `user_parameters()`.
+                 */
+                static ROOT::Minuit2::MnUserParameters generateLabelParameters(const DST::Stars::evalType& method);
+
+                /**
+                 * @brief Parameter set for the model this fitter was constructed with.
+                 *
+                 * @details
+                 * Dispatches to `generateLabelParameters(fevalMethod)` for the built-in
+                 * profiles, and to the virtual `user_parameters()` for custom/unknown ones,
+                 * so a derived class only has to override `user_eval()` and
+                 * `user_parameters()` to be fully usable.
+                 */
+                ROOT::Minuit2::MnUserParameters labelParameters() const;
+
 #pragma region -- ctor/dtor
                 /**
                  * @brief Construct from a `FITScube` stamp with uniform pixel weights.
@@ -394,7 +467,35 @@ namespace DST
                 /// @param params  Parameter vector (same convention as operator()).
                 /// @return Model value (signal + background) at (x, y).
                 /// @note For UNDEFINED evalType calls user_eval(); override that in a derived class.
+                /// @note Under C++20 this takes a view, so a `std::vector<double>` binds to it
+                ///       directly and a caller holding a longer vector can pass a sub-range
+                ///       without copying. Under C++17 it takes the vector itself and the
+                ///       sub-range case costs a copy. See DST_HAS_SPAN.
+#if DST_HAS_SPAN
+                double Eval(double x, double y, std::span<const double> params) const;
+#else
                 double Eval(double x, double y, const std::vector<double>& params) const;
+#endif
+
+                /**
+                 * @brief Evaluate the PSF model from a single coordinates-first vector.
+                 *
+                 * @details
+                 * Convenience overload for callers that carry the evaluation point inside the
+                 * parameter vector rather than beside it:
+                 * @code
+                 * // { x, y, psfFlux, psfX0, psfY0, <profile...>, psfBKG }
+                 * double v = fitter.Eval(params);
+                 * @endcode
+                 * Equivalent to `Eval(params[0], params[1], <the rest>)`. Under C++20 the tail
+                 * is passed as a view and nothing is copied; under C++17 the tail is copied
+                 * into a temporary vector, which is the one place the fallback costs anything.
+                 *
+                 * @param params Evaluation point followed by the model parameters.
+                 * @return Model value (signal + background) at (params[0], params[1]).
+                 * @throws std::invalid_argument if @p params holds fewer than three entries.
+                 */
+                double Eval(const std::vector<double>& params) const;
 
 #pragma region -- ploting
 #ifdef __WITH_QT__
