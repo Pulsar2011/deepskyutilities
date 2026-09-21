@@ -415,11 +415,27 @@ namespace DST
 #pragma region - Algorithms 
     namespace algorithms
     {
+        namespace
+        {
+            // FITScube::cast<double>() rejects a source that is already stored as double,
+            // so hand such an image back as is and only convert the others. The returned
+            // pointer may therefore alias the caller's image: for read-only use only.
+            std::shared_ptr< FITSimg<double> > asDouble(const std::shared_ptr<FITScube>& src)
+            {
+                if(!src)
+                    return nullptr;
+
+                if(std::shared_ptr< FITSimg<double> > dbl = std::dynamic_pointer_cast< FITSimg<double> >(src))
+                    return dbl;
+
+                return std::static_pointer_cast< FITSimg<double> >(src->cast<double>());
+            }
+        }
 
 #pragma region - starFitter class implementation
 
 #pragma region -- static member function
-        
+
         ROOT::Minuit2::MnUserParameters starFitter::generateLabelParameters(const DST::Stars::evalType& method)
         {
             ROOT::Minuit2::MnUserParameters upar;
@@ -441,13 +457,13 @@ namespace DST
             {
                 case DST::Stars::evalType::GAUSS:
                 case DST::Stars::evalType::iGAUSS:
-                    upar.Add("psfSigma", 1.0, 0.01);
+                    upar.Add("psfSigma", 1.0, 0.001);
                     break;
 
                 case DST::Stars::evalType::GAUSS2D:
                 case DST::Stars::evalType::iGAUSS2D:
-                    upar.Add("psfSigma_x", 1.0, 0.01);
-                    upar.Add("psfSigma_y", 1.0, 0.01);
+                    upar.Add("psfSigma_x", 0.7, 0.001);
+                    upar.Add("psfSigma_y", 0.7, 0.001);
                     upar.Add("psfTheta"  , 0.0, 0.001);
                     break;
 
@@ -553,25 +569,23 @@ namespace DST
                 return std::static_pointer_cast< const FITSimg<double> >( err );  // pass-through: user gave a weight map directly
 
             // build weight = 1/err^2 without touching the user's array
-            std::shared_ptr< FITSimg<double> > dblErr   = std::static_pointer_cast<FITSimg<double> >(err->cast<double>());
-            std::shared_ptr< FITSimg<double> > weightMap= std::make_shared<FITSimg<double> >(FITSimg<double>({dblErr->Size(1), dblErr->Size(2)}));
-            
+            std::shared_ptr< FITSimg<double> > weightMap= std::make_shared<FITSimg<double> >(FITSimg<double>({err->Size(1), err->Size(2)}));
+
             *(weightMap->GetData<double>()) += 1;
 
-            (*weightMap) /= (*dblErr);
-            (*weightMap) /= (*dblErr);
+            (*weightMap) /= (*err);
+            (*weightMap) /= (*err);
 
-            dblErr.reset();  // free the intermediate double-cast error map
             return weightMap;
         }
 
         std::shared_ptr< const FITSimg<double> > starFitter::_makeWeight(const std::shared_ptr<FITScube>& err, bool isErrorMap)
-        {       
+        {
             if (!isErrorMap)
-                return std::static_pointer_cast< const FITSimg<double> >( err->cast<double>() );  // pass-through: user gave a weight map directly
+                return std::static_pointer_cast< const FITSimg<double> >( asDouble(err) );  // pass-through: user gave a weight map directly
 
             // build weight = 1/err^2 without touching the user's array
-            std::shared_ptr< FITSimg<double> > dblErr   = std::static_pointer_cast<FITSimg<double> >(err->cast<double>());
+            std::shared_ptr< FITSimg<double> > dblErr   = asDouble(err);
             std::shared_ptr< FITSimg<double> > weightMap= std::make_shared<FITSimg<double> >(FITSimg<double>({dblErr->Size(1), dblErr->Size(2)}));
             
             *(weightMap->GetData<double>()) += 1;
@@ -588,7 +602,7 @@ namespace DST
 #pragma region -- ctor/dtor
         starFitter::starFitter(const std::shared_ptr<FITScube>& sky, const DST::Stars::evalType& method):
                     ROOT::Minuit2::FCNBase(),
-                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky ? sky->cast<double>() : nullptr)),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(asDouble(sky))),
                     fweight(nullptr),
                     fevalMethod(method)
         {
@@ -614,7 +628,7 @@ namespace DST
 
         starFitter::starFitter(const std::shared_ptr<FITScube>& sky, const std::shared_ptr<FITScube>& err, const DST::Stars::evalType& method, bool isErrorMap):
                     ROOT::Minuit2::FCNBase(),
-                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky ? sky->cast<double>() : nullptr)),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(asDouble(sky))),
                     fweight(_makeWeight(err,isErrorMap)),
                     fevalMethod(method)
         {
@@ -662,7 +676,7 @@ namespace DST
 
         starFitter::starFitter(const std::shared_ptr< FITScube >& sky, const std::shared_ptr< FITSimg<double> >& err, const DST::Stars::evalType& method, bool isErrorMap):
                     ROOT::Minuit2::FCNBase(),
-                    fsky(std::static_pointer_cast<const FITSimg<double> >(sky ? sky->cast<double>() : nullptr)),
+                    fsky(std::static_pointer_cast<const FITSimg<double> >(asDouble(sky))),
                     fweight(_makeWeight(err,isErrorMap)),
                     fevalMethod(method)
         {
