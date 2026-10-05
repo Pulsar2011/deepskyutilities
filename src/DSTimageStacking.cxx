@@ -610,7 +610,7 @@ namespace DST
             // This is only strictly necessary on the 2D→3D transition, but
             // writing them every time is harmless and keeps the header consistent.
             fStack->HDU().ValueForKey("CTYPE3", std::string("FRAME"),   DSL::fChar, "Layer index axis");
-            fStack->HDU().ValueForKey("CRPIX3", 0.0,               "Reference pixel layer axis");
+            fStack->HDU().ValueForKey("CRPIX3", 1.0,               "Reference pixel layer axis");   // FITS: layer 0 is pixel 1, world = layer index
             fStack->HDU().ValueForKey("CRVAL3", 0.0,               "Reference value layer axis");
             fStack->HDU().ValueForKey("CDELT3", 1.0,               "Pixel scale layer axis");
 

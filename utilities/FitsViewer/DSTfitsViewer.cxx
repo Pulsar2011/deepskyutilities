@@ -346,6 +346,7 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
         QString wcs_msg = QString("");
         if(in->getNumberOfWCS() > 0 && in->GetDimension() == 2)
         {
+            // ix, iy are 0-based (colour-map cells), the convention FITScube works in.
             worldCoords wc = in->WorldCoordinates(std::vector<size_t>({ix, iy}));
             std::vector< std::string > ctype = in->getWCS().CTYPE(0);
             std::vector< std::string > cunit = in->getWCS().CUNIT(0);
@@ -358,7 +359,16 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
             std::string xUnit = (cunit[0].size() > 0)?" "+cunit[0]:""; if(xUnit == " deg" || xUnit == " DEG" ) xUnit = "\u00b0";
             std::string yUnit = (cunit[1].size() > 0)?" "+cunit[1]:""; if(yUnit == " deg" || yUnit == " DEG" ) yUnit = "\u00b0";
 
-            wcs_msg = QString("%1=%2%4  %5=%6%7 ").arg(QString::fromStdString(xstr)).arg(wc[0],0,'f',3).arg(QString::fromStdString(xUnit)).arg(QString::fromStdString(ystr)).arg(wc[1],0,'f',3).arg(QString::fromStdString(yUnit));
+            // Degrees with 7 decimals: 0.36 mas, ~1/1000 of a NISP pixel (0.3"). 3 decimals
+            // (3.6") was coarser than 10 pixels. Other units: 10 significant digits.
+            auto fmtWorld = [](double v, const std::string& unit)->QString
+            {
+                return (unit == "°") ? QString::number(v, 'f', 7) : QString::number(v, 'g', 10);
+            };
+
+            wcs_msg = QString("%1=%2%3  %4=%5%6 ")
+                          .arg(QString::fromStdString(xstr)).arg(fmtWorld(wc[0], xUnit)).arg(QString::fromStdString(xUnit))
+                          .arg(QString::fromStdString(ystr)).arg(fmtWorld(wc[1], yUnit)).arg(QString::fromStdString(yUnit));
         }
 
         // find top-level window (the QtFITSviewer is a QMainWindow) and write to its status bar
