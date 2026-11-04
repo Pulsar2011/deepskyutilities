@@ -24,6 +24,13 @@
 #include <QPolygon>
 #include <QSplitter>
 #include <QComboBox>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QAbstractTableModel>
+#include <QTableView>
+#include <QFutureWatcher>
+#include <QIcon>
+#include <QPixmap>
 #include <QPushButton>
 #include <QCheckBox>
 #include <QTableWidget>
@@ -47,6 +54,7 @@
 #include <QFileInfo>
 #include <QDoubleValidator>
 #include <QLocale>
+#include <QFontDatabase>
 #include <DSTdisplay/QCustomContours.h>
 #include <DSTdisplay/QtFitsPloting.h>
 
@@ -61,6 +69,7 @@
 #include <DSTfits/FITSmanager.h>
 #include <DSTfits/FITSimg.h>
 #include <DSTfits/FITShdu.h>
+#include <DSTfits/FITSnumeric.h>
 #include <DSTmath/DSTmath.h>
 
 
@@ -823,7 +832,9 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
                     lbl->position->setCoords(gl.lx, gl.ly);
                     lbl->setText(QString::fromStdString(gl.label));
                     lbl->setColor(Qt::green);
-                    lbl->setFont(QFont("Monospace", 7));
+                    QFont lblFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+                    lblFont.setPointSize(7);
+                    lbl->setFont(lblFont);
                     lbl->setPen(Qt::NoPen);
                     // Semi-transparent dark background so the text is readable
                     // over the image regardless of pixel intensity.
@@ -1456,11 +1467,521 @@ static bool isPlottableAsX(const std::unique_ptr<FITSform>& col)
         && col->getType() != DSL::dtype::tdbcplx;
 }
 
+// Rows of a table sharing one category of the column chosen to split a plot.
+struct TableCategory { QString label; RowSet rows; };
+
+// Above this, colors stop being distinguishable.
+static const size_t kMaxTableCategories = 32;
+
+// Returns true if the column can split a plot: any scalar column except complex, or a multi-bit column.
+static bool isCategoryColumn(const FITSform& col)
+{
+    const std::type_index payload = col.payloadType();
+    return payload == typeid(int8_t)   || payload == typeid(uint8_t)
+        || payload == typeid(int16_t)  || payload == typeid(uint16_t)
+        || payload == typeid(int32_t)  || payload == typeid(uint32_t)
+        || payload == typeid(int64_t)  || payload == typeid(uint64_t)
+        || payload == typeid(float)    || payload == typeid(double)
+        || payload == typeid(bool)     || payload == typeid(std::string)
+        || (payload == typeid(FITSform::boolVector) && col.getType() == DSL::dtype::tbit);
+}
+
+static bool isRealColumn(const FITSform& col)
+{
+    return col.getType() == DSL::dtype::tfloat || col.getType() == DSL::dtype::tdouble;
+}
+
+// Splits rows by the key keyOf() gives them; categories come out in ascending key order.
+template<typename Key, typename KeyFn, typename LabelFn>
+static std::vector<TableCategory> groupRows(const RowSet& rows, KeyFn keyOf, LabelFn labelOf)
+{
+    std::map<Key, std::vector<size_t>> groups;
+    for (size_t row : rows.indices()) {
+        groups[keyOf(row)].push_back(row);
+        if (groups.size() > kMaxTableCategories)
+            throw std::runtime_error("More than " + std::to_string(kMaxTableCategories)
+                + " categories in this column. For a float or double column, try a larger epsilon.");
+    }
+
+    std::vector<TableCategory> categories;
+    categories.reserve(groups.size());
+    for (auto& group : groups)
+        categories.push_back({labelOf(group.first), RowSet(std::move(group.second))});
+    return categories;
+}
+
+// One category per distinct value (integer, byte, logical, single bit, string).
+template<typename T>
+static std::vector<TableCategory> categoriesOfValues(const FITSform& col, const RowSet& rows)
+{
+    const auto& values = col.values<T>();
+    return groupRows<T>(rows,
+        [&values](size_t row) -> T { return values[row]; },
+        [](const T& value) -> QString {
+            if constexpr (std::is_same_v<T, std::string>) return QString::fromStdString(value);
+            else if constexpr (std::is_same_v<T, bool>)   return value ? "T" : "F";
+            else                                          return QString::number(value);
+        });
+}
+
+// One category per contiguous interval of width 2*epsilon, starting with [v0-epsilon, v0+epsilon]
+// around the column's smallest finite value v0: every value falls in exactly one, val+epsilon
+// still belongs to the category of val, and anything above it to the next one.
+// v0 comes from the whole column so that an interval doesn't move with the rows selected.
+// With epsilon = 0, one category per distinct value. NaN and infinities get one category each.
+template<typename T>
+static std::vector<TableCategory> categoriesOfReals(const FITSform& col, const RowSet& rows, double epsilon)
+{
+    const auto& values = col.values<T>();
+
+    double v0 = std::numeric_limits<double>::infinity();
+    for (const T value : values)
+        if (std::isfinite(value))
+            v0 = std::min(v0, static_cast<double>(value));
+
+    // {rank, position}: rank orders -Inf, finite values, +Inf, NaN.
+    using Key = std::pair<int, double>;
+    enum { kMinusInf, kFinite, kPlusInf, kNaN };
+
+    const int digits = std::numeric_limits<T>::digits10;
+    const QString plusMinus = QString(QChar(0x00B1));
+
+    return groupRows<Key>(rows,
+        [&values, v0, epsilon](size_t row) -> Key {
+            const double value = static_cast<double>(values[row]);
+            if (std::isnan(value)) return {kNaN, 0.0};
+            if (std::isinf(value)) return {value < 0.0 ? kMinusInf : kPlusInf, 0.0};
+            if (epsilon == 0.0)    return {kFinite, value};
+            return {kFinite, std::max(0.0, std::ceil((value - v0 - epsilon) / (2.0 * epsilon)))};
+        },
+        [v0, epsilon, digits, plusMinus](const Key& key) -> QString {
+            switch (key.first) {
+                case kNaN:      return "NaN";
+                case kMinusInf: return "-Inf";
+                case kPlusInf:  return "+Inf";
+                default:        break;
+            }
+            if (epsilon == 0.0)
+                return QString::number(key.second, 'g', digits);
+            return QString("%1 %2 %3")
+                .arg(QString::number(v0 + 2.0 * epsilon * key.second, 'g', digits))
+                .arg(plusMinus)
+                .arg(QString::number(epsilon, 'g', digits));
+        });
+}
+
+// One category per bit pattern, e.g. 01001010.
+static std::vector<TableCategory> categoriesOfBits(const FITSform& col, const RowSet& rows)
+{
+    const auto& values = col.values<FITSform::boolVector>();
+    return groupRows<std::string>(rows,
+        [&values](size_t row) -> std::string {
+            std::string pattern;
+            pattern.reserve(values[row].size());
+            for (const bool bit : values[row])
+                pattern += bit ? '1' : '0';
+            return pattern;
+        },
+        [](const std::string& pattern) -> QString { return QString::fromStdString(pattern); });
+}
+
+// Splits rows by the column's values, in ascending order. Throws above kMaxTableCategories.
+static std::vector<TableCategory> buildCategories(const FITSform& col, const RowSet& rows, double epsilon)
+{
+    const std::type_index payload = col.payloadType();
+
+    if (payload == typeid(double))               return categoriesOfReals<double>(col, rows, epsilon);
+    if (payload == typeid(float))                return categoriesOfReals<float>(col, rows, epsilon);
+    if (payload == typeid(int8_t))               return categoriesOfValues<int8_t>(col, rows);
+    if (payload == typeid(uint8_t))              return categoriesOfValues<uint8_t>(col, rows);
+    if (payload == typeid(int16_t))              return categoriesOfValues<int16_t>(col, rows);
+    if (payload == typeid(uint16_t))             return categoriesOfValues<uint16_t>(col, rows);
+    if (payload == typeid(int32_t))              return categoriesOfValues<int32_t>(col, rows);
+    if (payload == typeid(uint32_t))             return categoriesOfValues<uint32_t>(col, rows);
+    if (payload == typeid(int64_t))              return categoriesOfValues<int64_t>(col, rows);
+    if (payload == typeid(uint64_t))             return categoriesOfValues<uint64_t>(col, rows);
+    if (payload == typeid(bool))                 return categoriesOfValues<bool>(col, rows);
+    if (payload == typeid(std::string))          return categoriesOfValues<std::string>(col, rows);
+    if (payload == typeid(FITSform::boolVector)) return categoriesOfBits(col, rows);
+
+    throw std::invalid_argument("Column '" + col.getName() + "' can't be used as a category.");
+}
+
+// Evenly spaced hues: the fixed palettes are too short for a whole set of categories.
+static QColor categoryColor(size_t index, size_t count)
+{
+    return QColor::fromHsv(static_cast<int>(360 * index / count), 230, 200);
+}
+
+// ---------------------------------------------------------------------------
+// Column window: values of one table column, with its properties and statistics
+// ---------------------------------------------------------------------------
+
+template<typename T>
+static QString cellText(const T& value)
+{
+    if constexpr (std::is_same_v<T, std::string>)       return QString::fromStdString(value);
+    else if constexpr (std::is_same_v<T, bool>)         return value ? "T" : "F";
+    else if constexpr (std::is_floating_point_v<T>)     return QString::number(value, 'g', std::numeric_limits<T>::digits10);
+    else                                                return QString::number(value);
+}
+
+template<typename T>
+static QString cellText(const std::pair<T, T>& value)
+{
+    return QString("%1 %2 %3i")
+        .arg(cellText(value.first))
+        .arg(QLatin1Char(value.second < T(0) ? '-' : '+'))
+        .arg(cellText(static_cast<T>(std::abs(value.second))));
+}
+
+// Formats one cell on request, reading straight from the column's own storage.
+struct ColumnCellReader
+{
+    std::function<QString(size_t row, size_t element)> read;
+    int  elements     = 1;
+    bool rightAligned = true;
+};
+
+template<typename T>
+static ColumnCellReader scalarCellReader(const FITSform& col)
+{
+    const auto* values = &col.values<T>();
+    ColumnCellReader reader;
+    reader.read = [values](size_t row, size_t) -> QString {
+        const T value = (*values)[row];
+        return cellText(value);
+    };
+    reader.rightAligned = !std::is_same_v<T, std::string>;
+    return reader;
+}
+
+template<typename T>
+static ColumnCellReader vectorCellReader(const FITSform& col)
+{
+    const auto* values = &col.values<std::vector<T>>();
+    ColumnCellReader reader;
+    reader.read = [values](size_t row, size_t element) -> QString {
+        const auto& cell = (*values)[row];
+        if (element >= cell.size())
+            return QString();
+        const T value = cell[element];
+        return cellText(value);
+    };
+    reader.elements = static_cast<int>(std::clamp<int64_t>(col.getNelem(), 1, std::numeric_limits<int>::max()));
+    reader.rightAligned = !std::is_same_v<T, std::string>;
+    return reader;
+}
+
+// A multi-bit column reads best as one pattern, e.g. 01001010.
+static ColumnCellReader bitPatternCellReader(const FITSform& col)
+{
+    const auto* values = &col.values<FITSform::boolVector>();
+    ColumnCellReader reader;
+    reader.read = [values](size_t row, size_t) -> QString {
+        QString pattern;
+        pattern.reserve(static_cast<int>((*values)[row].size()));
+        for (const bool bit : (*values)[row])
+            pattern += QLatin1Char(bit ? '1' : '0');
+        return pattern;
+    };
+    return reader;
+}
+
+template<typename... Ts>
+static ColumnCellReader cellReaderOfPayload(const FITSform& col)
+{
+    const std::type_index payload = col.payloadType();
+    ColumnCellReader reader;
+    ((payload == typeid(Ts)              ? void(reader = scalarCellReader<Ts>(col))
+    : payload == typeid(std::vector<Ts>) ? void(reader = vectorCellReader<Ts>(col))
+    : void()), ...);
+    return reader;
+}
+
+static ColumnCellReader makeColumnCellReader(const FITSform& col)
+{
+    if (col.getType() == DSL::dtype::tbit && col.payloadType() == typeid(FITSform::boolVector))
+        return bitPatternCellReader(col);
+
+    return cellReaderOfPayload<int8_t, uint8_t, int16_t, uint16_t, int32_t, uint32_t, int64_t, uint64_t,
+                               float, double, bool, std::string,
+                               FITSform::complex, FITSform::dblcomplex>(col);
+}
+
+// QTableView only asks for the cells on screen, and only while they are on screen. This model
+// answers from the column's storage and keeps nothing: no copy of the values and no item per
+// cell, so scrolling costs the same whatever the size of the column.
+class FITSColumnModel : public QAbstractTableModel
+{
+public:
+    FITSColumnModel(std::shared_ptr<const FITStable> table, const FITSform& col, QObject* parent)
+        : QAbstractTableModel(parent)
+        , m_table(std::move(table))
+        , m_reader(makeColumnCellReader(col))
+        , m_rows(static_cast<int>(std::min<size_t>(col.size(), std::numeric_limits<int>::max())))
+        , m_name(QString::fromStdString(col.getName()))
+    {
+    }
+
+    int rowCount(const QModelIndex& parent = QModelIndex()) const override
+    {
+        return parent.isValid() ? 0 : m_rows;
+    }
+
+    int columnCount(const QModelIndex& parent = QModelIndex()) const override
+    {
+        return parent.isValid() ? 0 : m_reader.elements;
+    }
+
+    QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override
+    {
+        if (!index.isValid() || !m_reader.read)
+            return QVariant();
+        if (role == Qt::DisplayRole)
+            return m_reader.read(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
+        if (role == Qt::TextAlignmentRole)
+            return static_cast<int>((m_reader.rightAligned ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter);
+        return QVariant();
+    }
+
+    QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override
+    {
+        if (role != Qt::DisplayRole)
+            return QVariant();
+        if (orientation == Qt::Vertical)
+            return section + 1; // FITS rows count from 1, as the plots' "Row index" axis does
+        return m_reader.elements > 1 ? QString("[%1]").arg(section) : m_name;
+    }
+
+private:
+    std::shared_ptr<const FITStable> m_table; // keeps the storage m_reader points into alive
+    ColumnCellReader m_reader;
+    int              m_rows;
+    QString          m_name;
+};
+
+struct ColumnStats
+{
+    size_t  valid     = 0;
+    size_t  nonFinite = 0;
+    double  sum       = 0.0;
+    double  min       = 0.0;
+    double  max       = 0.0;
+    double  mean      = 0.0;
+    double  stddev    = 0.0; // sample standard deviation
+    double  median    = 0.0;
+    QString error;
+};
+
+// Logical and bit values count as 0 and 1, so their sum is the number of true values.
+template<typename T>
+static void appendColumnValues(const FITSform& col, std::vector<double>& out)
+{
+    const std::type_index payload = col.payloadType();
+    if (payload == typeid(T)) {
+        for (const T value : col.values<T>())
+            out.push_back(static_cast<double>(value));
+    } else if (payload == typeid(std::vector<T>)) {
+        for (const auto& cell : col.values<std::vector<T>>())
+            for (const T value : cell)
+                out.push_back(static_cast<double>(value));
+    }
+}
+
+template<typename T>
+static void appendColumnModuli(const FITSform& col, std::vector<double>& out)
+{
+    const std::type_index payload = col.payloadType();
+    if (payload == typeid(std::pair<T, T>)) {
+        for (const auto& value : col.values<std::pair<T, T>>())
+            out.push_back(std::hypot(static_cast<double>(value.first), static_cast<double>(value.second)));
+    } else if (payload == typeid(std::vector<std::pair<T, T>>)) {
+        for (const auto& cell : col.values<std::vector<std::pair<T, T>>>())
+            for (const auto& value : cell)
+                out.push_back(std::hypot(static_cast<double>(value.first), static_cast<double>(value.second)));
+    }
+}
+
+// The median needs a copy of the values: it lives only for the duration of this call.
+static ColumnStats computeColumnStats(const FITSform& col)
+{
+    ColumnStats stats;
+    try {
+        std::vector<double> values;
+        values.reserve(col.size() * static_cast<size_t>(std::max<int64_t>(col.getNelem(), 1)));
+
+        appendColumnValues<int8_t>(col, values);
+        appendColumnValues<uint8_t>(col, values);
+        appendColumnValues<int16_t>(col, values);
+        appendColumnValues<uint16_t>(col, values);
+        appendColumnValues<int32_t>(col, values);
+        appendColumnValues<uint32_t>(col, values);
+        appendColumnValues<int64_t>(col, values);
+        appendColumnValues<uint64_t>(col, values);
+        appendColumnValues<float>(col, values);
+        appendColumnValues<double>(col, values);
+        appendColumnValues<bool>(col, values);
+        appendColumnModuli<float>(col, values);
+        appendColumnModuli<double>(col, values);
+
+        const size_t total = values.size();
+        values.erase(std::remove_if(values.begin(), values.end(),
+                                    [](double value) { return !std::isfinite(value); }),
+                     values.end());
+        stats.valid     = values.size();
+        stats.nonFinite = total - values.size();
+        if (values.empty())
+            return stats;
+
+        const auto range = std::minmax_element(values.begin(), values.end());
+        stats.min = *range.first;
+        stats.max = *range.second;
+
+        long double sum = 0.0L;
+        for (const double value : values)
+            sum += value;
+        stats.sum  = static_cast<double>(sum);
+        stats.mean = static_cast<double>(sum / static_cast<long double>(values.size()));
+
+        if (values.size() > 1) {
+            long double squares = 0.0L;
+            for (const double value : values)
+                squares += (static_cast<long double>(value) - stats.mean) * (static_cast<long double>(value) - stats.mean);
+            stats.stddev = static_cast<double>(std::sqrt(squares / static_cast<long double>(values.size() - 1)));
+        }
+
+        const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+        std::nth_element(values.begin(), middle, values.end());
+        stats.median = *middle;
+        if (values.size() % 2 == 0)
+            stats.median = 0.5 * (stats.median + *std::max_element(values.begin(), middle));
+    } catch (const std::exception& e) {
+        stats.error = QString::fromStdString(e.what());
+    }
+    return stats;
+}
+
+// Adds "name: value" fields to a grid, three per line; returns the label holding the value.
+static QLabel* addColumnField(QGridLayout* grid, const QString& name, const QString& value)
+{
+    const int position = grid->count() / 2;
+    auto* valueLabel = new QLabel(value);
+    valueLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    grid->addWidget(new QLabel(name + ":"), position / 3, 2 * (position % 3));
+    grid->addWidget(valueLabel, position / 3, 2 * (position % 3) + 1);
+    return valueLabel;
+}
+
+// Opens the window of a table column, or brings it forward if it is already open.
+// The window shows at once: the statistics are computed in the background and fill in when done.
+static void showColumnWindow(QWidget* parent, const std::shared_ptr<const FITStable>& tab,
+                             const std::string& name, const std::string& tform)
+{
+    const QString objectName = "column:" + QString::fromStdString(name);
+    if (auto* open = parent->findChild<QWidget*>(objectName, Qt::FindDirectChildrenOnly)) {
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+
+    const FITSform& col = *tab->getColumn(name);
+
+    auto* window = new QWidget(parent, Qt::Window);
+    window->setObjectName(objectName);
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->setWindowTitle(QString("Column %1 - %2")
+        .arg(QString::fromStdString(name), QString::fromStdString(tab->GetName())));
+    window->resize(620, 680);
+    auto* layout = new QVBoxLayout(window);
+
+    // --- Properties ---
+    auto* propertiesBox  = new QGroupBox("Column");
+    auto* propertiesGrid = new QGridLayout(propertiesBox);
+    addColumnField(propertiesGrid, "Name", QString::fromStdString(name));
+    addColumnField(propertiesGrid, "Type", QString::fromStdString(FITSform::getDataType(col.getType())));
+    addColumnField(propertiesGrid, "TFORM", QString::fromStdString(tform));
+    addColumnField(propertiesGrid, "Unit", col.getUnit().empty() ? QString("-") : QString::fromStdString(col.getUnit()));
+    addColumnField(propertiesGrid, "Rows", QString::number(col.size()));
+    addColumnField(propertiesGrid, "Elements per row", QString::number(std::max<int64_t>(col.getNelem(), 1)));
+    layout->addWidget(propertiesBox);
+
+    // --- Statistics ---
+    const std::type_index payload = col.payloadType();
+    const bool isText    = payload == typeid(std::string) || payload == typeid(FITSform::stringVector);
+    const bool isLogical = col.getType() == DSL::dtype::tlogical || col.getType() == DSL::dtype::tbit;
+    const bool isComplex = col.getType() == DSL::dtype::tcplx || col.getType() == DSL::dtype::tdbcplx;
+    const bool isVector  = col.getNelem() > 1;
+
+    auto* statsBox  = new QGroupBox(isComplex ? "Statistics (modulus)"
+                                  : isVector  ? "Statistics (all elements)"
+                                              : "Statistics");
+    auto* statsGrid = new QGridLayout(statsBox);
+    layout->addWidget(statsBox);
+
+    if (isText) {
+        statsGrid->addWidget(new QLabel("No statistics for a string column."), 0, 0);
+    } else {
+        const QString pending = "computing...";
+        std::vector<QLabel*> fields;
+        if (isLogical) {
+            fields.push_back(addColumnField(statsGrid, "True", pending));
+            fields.push_back(addColumnField(statsGrid, "False", pending));
+        } else {
+            for (const char* field : {"Values", "Non-finite", "Min", "Max", "Mean", "Std dev", "Median"})
+                fields.push_back(addColumnField(statsGrid, field, pending));
+        }
+
+        // The window can close before the result comes: tab keeps the column alive, and the
+        // watcher, owned by the window, goes with it so that nothing updates a deleted label.
+        auto* watcher = new QFutureWatcher<ColumnStats>(window);
+        QObject::connect(watcher, &QFutureWatcher<ColumnStats>::finished, window, [=]() {
+            const ColumnStats stats = watcher->result();
+
+            const auto number = [&stats](double value) {
+                return stats.valid == 0 ? QString("-") : QString::number(value, 'g', 10);
+            };
+            const std::vector<QString> texts = isLogical
+                ? std::vector<QString>{QString::number(static_cast<qulonglong>(stats.sum)),
+                                       QString::number(static_cast<qulonglong>(stats.valid - static_cast<size_t>(stats.sum)))}
+                : std::vector<QString>{QString::number(stats.valid), QString::number(stats.nonFinite),
+                                       number(stats.min), number(stats.max), number(stats.mean),
+                                       number(stats.stddev), number(stats.median)};
+
+            for (size_t i = 0; i < fields.size(); ++i)
+                fields[i]->setText(stats.error.isEmpty() ? texts[i] : QString("failed: ") + stats.error);
+        });
+        watcher->setFuture(QtConcurrent::run([tab, &col]() { return computeColumnStats(col); }));
+    }
+
+    // --- Values ---
+    // Fixed row heights and no fit to contents: the view then never measures or visits
+    // rows that are off screen, whatever the size of the column.
+    auto* view = new QTableView;
+    view->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    view->verticalHeader()->setDefaultSectionSize(view->fontMetrics().height() + 6);
+    view->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    view->horizontalHeader()->setDefaultSectionSize(110);
+    view->setWordWrap(false);
+    view->setAlternatingRowColors(true);
+    view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+    auto* model = new FITSColumnModel(tab, col, window);
+    view->horizontalHeader()->setStretchLastSection(model->columnCount() == 1);
+    view->setModel(model);
+    layout->addWidget(view, 1);
+
+    window->show();
+}
+
 static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsPath)
 {
     // --- Load the table ---
     FITSmanager fm(fitsPath);
-    auto tab = std::const_pointer_cast<const FITStable>(fm.GetTableAtIndex(hdu.index));
+    // A copy in memory: the file is opened read-only and nothing here writes to it. Only
+    // computeColumn() goes through the non-const pointer, and it stays in this copy too.
+    auto table = fm.GetTableAtIndex(hdu.index);
+    auto tab = std::const_pointer_cast<const FITStable>(table);
 
     // --- Column metadata ---
     const FITStable::clist cols = tab->listColumns(); // each entry: {name, TFORM, unit}
@@ -1472,16 +1993,19 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     // plottableY: all numeric columns including complex — used for Scatter Y, Density X/Y.
     // Complex columns are allowed in Density X/Y selectors; when one axis is left at "-- (none) --"
     // and the other is complex, QtDensityPlot's single-column overload splits real/imag parts.
+    // Shared with the plot lambdas, which must see the columns computed later on.
     struct PlotCol { std::string name; std::string unit; };
-    std::vector<PlotCol> plottableX;
-    std::vector<PlotCol> plottableY;
+    auto plottableX = std::make_shared<std::vector<PlotCol>>();
+    auto plottableY = std::make_shared<std::vector<PlotCol>>();
+    auto categoryCols = std::make_shared<std::vector<PlotCol>>();
 
     for (const auto& entry : cols) {
         const std::string& name = entry[0];
         const std::string& unit = entry[2];
         const auto& col = tab->getColumn(name);
-        if (isPlottableAsX(col)) plottableX.push_back({name, unit});
-        if (isPlottableAsY(col)) plottableY.push_back({name, unit});
+        if (isPlottableAsX(col)) plottableX->push_back({name, unit});
+        if (isPlottableAsY(col)) plottableY->push_back({name, unit});
+        if (isCategoryColumn(*col)) categoryCols->push_back({name, unit});
     }
 
     // Label helper: "name [unit]" or just "name" when no unit
@@ -1501,7 +2025,8 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     // --- Left panel: table summary (unchanged) ---
     auto* leftPanel  = new QWidget;
     auto* leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->addWidget(new QLabel(QString("Columns: %1").arg(nCols)));
+    auto* columnCountLabel = new QLabel(QString("Columns: %1").arg(nCols));
+    leftLayout->addWidget(columnCountLabel);
     leftLayout->addWidget(new QLabel(QString("Rows: %1").arg(nRows)));
 
     auto* colTable = new QTableWidget(static_cast<int>(nCols), 2);
@@ -1527,6 +2052,42 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     customPlot->legend->setVisible(false);  // axis labels identify columns; legend causes layout crash on first show
     customPlot->setMinimumWidth(200);
 
+    // Row filter above the plot, with the count of rows displayed beside it
+    auto* filterEdit = new QLineEdit;
+    filterEdit->setPlaceholderText("Row filter, e.g. (OBJNAME=~WD* || SCSID>0) && RA >= 10.5");
+    filterEdit->setClearButtonEnabled(true);
+    auto* rowCountLabel = new QLabel(QString("0 / %1 rows").arg(nRows));
+    rowCountLabel->setToolTip("Rows displayed by the latest plot / rows in the table");
+
+    auto* filterLayout = new QHBoxLayout;
+    filterLayout->addWidget(new QLabel("Filter:"));
+    filterLayout->addWidget(filterEdit, 1);
+    filterLayout->addWidget(rowCountLabel);
+
+    // New column computed from the others: kept in memory until the table is reopened
+    auto* newColumnEdit = new QLineEdit;
+    newColumnEdit->setPlaceholderText("In memory only, e.g. COLOR = MagG - MagPb");
+    newColumnEdit->setClearButtonEnabled(true);
+    newColumnEdit->setToolTip("NAME = expression, computed on every row and kept until the table is reopened; "
+                              "the file is never changed.\n"
+                              "Operators: + - * / ^ ( )\n"
+                              "Functions: sqrt exp log log10 sin cos tan asin acos atan abs pow(x, y)\n"
+                              "Complex columns: real img abs arg\n"
+                              "Vector columns work element by element.");
+    auto* newColumnBtn = new QPushButton("Add");
+
+    auto* newColumnLayout = new QHBoxLayout;
+    newColumnLayout->addWidget(new QLabel("New column:"));
+    newColumnLayout->addWidget(newColumnEdit, 1);
+    newColumnLayout->addWidget(newColumnBtn);
+
+    auto* centerPanel  = new QWidget;
+    auto* centerLayout = new QVBoxLayout(centerPanel);
+    centerLayout->setContentsMargins(0, 0, 0, 0);
+    centerLayout->addLayout(filterLayout);
+    centerLayout->addLayout(newColumnLayout);
+    centerLayout->addWidget(customPlot, 1);
+
     // --- Right panel: QTabWidget with three tabs ---
     auto* tabWidget = new QTabWidget;
     tabWidget->setMinimumWidth(160);
@@ -1540,11 +2101,11 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
 
     // X: "(Row index)" sentinel first, then real/integer columns (no complex)
     xScatterCombo->addItem("(Row index)");
-    for (const auto& c : plottableX)
+    for (const auto& c : *plottableX)
         xScatterCombo->addItem(colLabel(c));
 
     // Y: all numeric columns including complex; no sentinel — column required
-    for (const auto& c : plottableY)
+    for (const auto& c : *plottableY)
         yScatterCombo->addItem(colLabel(c));
 
     scatterForm->addRow("X axis:", xScatterCombo);
@@ -1564,14 +2125,14 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     // X/Y: "-- (none) --" sentinel first (index 0), then all numeric columns incl. complex
     xDensCombo->addItem("-- (none) --");
     yDensCombo->addItem("-- (none) --");
-    for (const auto& c : plottableY) {
+    for (const auto& c : *plottableY) {
         xDensCombo->addItem(colLabel(c));
         yDensCombo->addItem(colLabel(c));
     }
 
     // Z/weight: "-- (none) --" sentinel first, then real/integer columns only
     zDensCombo->addItem("-- (none) --");
-    for (const auto& c : plottableX)
+    for (const auto& c : *plottableX)
         zDensCombo->addItem(colLabel(c));
 
     auto* densNBinsX = new QSpinBox;
@@ -1604,7 +2165,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     auto* histCombo  = new QComboBox;
 
     // Column: real/integer only; no sentinel — column required
-    for (const auto& c : plottableX)
+    for (const auto& c : *plottableX)
         histCombo->addItem(colLabel(c));
 
     auto* histNBins = new QSpinBox;
@@ -1625,6 +2186,34 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     histLayout->addStretch();
     tabWidget->addTab(histTab, "Histogram");
 
+    // ---- Category: splits Scatter and Histogram into one colored series per category ----
+    auto* categoryCombo = new QComboBox;
+    categoryCombo->addItem("-- (none) --");
+    for (const auto& c : *categoryCols)
+        categoryCombo->addItem(colLabel(c));
+
+    auto* epsilonEdit = new QLineEdit("0");
+    auto* epsilonValidator = new QDoubleValidator(0.0, std::numeric_limits<double>::max(), 1000, epsilonEdit);
+    epsilonValidator->setNotation(QDoubleValidator::ScientificNotation);
+    epsilonValidator->setLocale(QLocale::c());
+    epsilonEdit->setValidator(epsilonValidator);
+    epsilonEdit->setEnabled(false);
+    epsilonEdit->setToolTip("Float and double columns: each category spans value ± epsilon, "
+                            "with the next one starting right above. 0 gives one category per distinct value.");
+
+    // Plain list rather than customPlot->legend, which crashes on first show (see above).
+    auto* categoryKey = new QListWidget;
+    categoryKey->setSelectionMode(QAbstractItemView::NoSelection);
+    categoryKey->setVisible(false);
+
+    auto* categoryBox    = new QGroupBox("Category");
+    auto* categoryLayout = new QVBoxLayout(categoryBox);
+    auto* categoryForm   = new QFormLayout;
+    categoryForm->addRow("Column:", categoryCombo);
+    categoryForm->addRow("Epsilon:", epsilonEdit);
+    categoryLayout->addLayout(categoryForm);
+    categoryLayout->addWidget(categoryKey, 1);
+
     // --- Overlay / layering state ---
     // hasContent tracks whether the canvas currently has any plotted data.
     // contourColorIdx and scatterColorIdx cycle through distinct colors on each
@@ -1643,6 +2232,28 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     static const int nScatterColors = 6;
     static const int nContourColors = 6;
 
+    auto showRowCount = [=](size_t displayed) {
+        rowCountLabel->setText(QString("%1 / %2 rows").arg(displayed).arg(nRows));
+    };
+
+    // Called once a plot has made it to the canvas; rows is null when no filter applies.
+    auto markPlotted = [=](const RowSet* rows) {
+        *hasContent = true;
+        showRowCount(rows ? rows->size() : nRows);
+    };
+
+    // Lists the categories of the latest plot with their color; hidden when it has none.
+    auto showCategoryKey = [=](const std::vector<TableCategory>& categories) {
+        categoryKey->clear();
+        for (size_t i = 0; i < categories.size(); ++i) {
+            QPixmap swatch(12, 12);
+            swatch.fill(categoryColor(i, categories.size()));
+            categoryKey->addItem(new QListWidgetItem(QIcon(swatch),
+                QString("%1 (%2 rows)").arg(categories[i].label, QString::number(categories[i].rows.size()))));
+        }
+        categoryKey->setVisible(!categories.empty());
+    };
+
     // --- clearCanvas lambda ---
     // Removes the QCPColorScale (column 1 of plotLayout), all plottables, and all
     // annotation items (contour labels).  Resets the color cycling counters.
@@ -1656,24 +2267,42 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         *hasContent      = false;
         *contourColorIdx = 0;
         *scatterColorIdx = 0;
+        showRowCount(0);
+        showCategoryKey({});
         customPlot->replot();
     };
 
     // --- doScatter lambda ---
-    auto doScatter = [=]() {
+    auto doScatter = [=](const RowSet* rows, const std::vector<TableCategory>& categories) {
         const int xIdx = xScatterCombo->currentIndex();
         const bool useRowIdx = (xIdx == 0);
         const std::string xKey = useRowIdx
             ? std::string()
-            : plottableX[static_cast<size_t>(xIdx - 1)].name;
+            : (*plottableX)[static_cast<size_t>(xIdx - 1)].name;
         const std::string yKey =
-            plottableY[static_cast<size_t>(yScatterCombo->currentIndex())].name;
+            (*plottableY)[static_cast<size_t>(yScatterCombo->currentIndex())].name;
 
         std::vector<std::shared_ptr<QCPGraph>> graphs;
         try {
-            graphs = useRowIdx
-                ? QtFITSviewer::QtScatter(customPlot, tab, yKey)
-                : QtFITSviewer::QtScatter(customPlot, tab, xKey, yKey);
+            if (!categories.empty()) {
+                for (size_t i = 0; i < categories.size(); ++i) {
+                    const RowSet& catRows = categories[i].rows;
+                    auto catGraphs = useRowIdx
+                        ? QtFITSviewer::QtScatter(customPlot, tab, yKey, catRows)
+                        : QtFITSviewer::QtScatter(customPlot, tab, xKey, yKey, catRows);
+                    for (auto& g : catGraphs) {
+                        g->setPen(QPen(categoryColor(i, categories.size())));
+                        graphs.push_back(g);
+                    }
+                }
+            } else if (rows)
+                graphs = useRowIdx
+                    ? QtFITSviewer::QtScatter(customPlot, tab, yKey, *rows)
+                    : QtFITSviewer::QtScatter(customPlot, tab, xKey, yKey, *rows);
+            else
+                graphs = useRowIdx
+                    ? QtFITSviewer::QtScatter(customPlot, tab, yKey)
+                    : QtFITSviewer::QtScatter(customPlot, tab, xKey, yKey);
         } catch (const std::exception& e) {
             QMessageBox::critical(nullptr, "Scatter error", QString::fromStdString(e.what()));
             return;
@@ -1682,29 +2311,31 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         const QColor col = scatterPalette[(*scatterColorIdx)++ % nScatterColors];
         for (auto& g : graphs) {
             g->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 4));
-            g->setPen(QPen(col));
+            if (categories.empty())
+                g->setPen(QPen(col));
         }
 
         const QString xLabel = useRowIdx
             ? QString("Row index")
-            : colLabel(plottableX[static_cast<size_t>(xIdx - 1)]);
-        const QString yLabel = colLabel(plottableY[static_cast<size_t>(yScatterCombo->currentIndex())]);
+            : colLabel((*plottableX)[static_cast<size_t>(xIdx - 1)]);
+        const QString yLabel = colLabel((*plottableY)[static_cast<size_t>(yScatterCombo->currentIndex())]);
         customPlot->xAxis->setLabel(xLabel);
         customPlot->yAxis->setLabel(yLabel);
 
         customPlot->rescaleAxes();
         customPlot->replot(QCustomPlot::rpQueuedReplot);
-        *hasContent = true;
+        markPlotted(rows);
+        showCategoryKey(categories);
     };
 
     // --- doHistogram lambda ---
-    auto doHistogram = [=]() {
-        if (plottableX.empty()) {
+    auto doHistogram = [=](const RowSet* rows, const std::vector<TableCategory>& categories) {
+        if (plottableX->empty()) {
             QMessageBox::warning(nullptr, "Histogram", "No suitable columns available.");
             return;
         }
         const std::string colName =
-            plottableX[static_cast<size_t>(histCombo->currentIndex())].name;
+            (*plottableX)[static_cast<size_t>(histCombo->currentIndex())].name;
 
         const size_t nBins   = static_cast<size_t>(histNBins->value()); // 0 = auto
         const bool   logBins = histLogX->isChecked();
@@ -1712,7 +2343,17 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
 
         std::vector<std::shared_ptr<QCPGraph>> graphs;
         try {
-            graphs = QtFITSviewer::QtHistogram(customPlot, tab, colName, nBins);
+            if (!categories.empty()) {
+                std::vector<RowSet> groups;
+                groups.reserve(categories.size());
+                for (const auto& category : categories)
+                    groups.push_back(category.rows);
+                graphs = QtFITSviewer::QtHistogram(customPlot, tab, colName, groups, nBins);
+            } else {
+                graphs = rows
+                    ? QtFITSviewer::QtHistogram(customPlot, tab, colName, *rows, nBins)
+                    : QtFITSviewer::QtHistogram(customPlot, tab, colName, nBins);
+            }
         } catch (const std::exception& e) {
             QMessageBox::critical(nullptr, "Histogram error", QString::fromStdString(e.what()));
             return;
@@ -1724,15 +2365,16 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         customPlot->yAxis->setScaleType(logY    ? QCPAxis::stLogarithmic : QCPAxis::stLinear);
 
         const QColor col = scatterPalette[(*scatterColorIdx)++ % nScatterColors];
-        for (auto& g : graphs)
-            g->setPen(QPen(col));
+        for (size_t i = 0; i < graphs.size(); ++i)
+            graphs[i]->setPen(QPen(categories.empty() ? col : categoryColor(i, categories.size())));
 
-        customPlot->xAxis->setLabel(colLabel(plottableX[static_cast<size_t>(histCombo->currentIndex())]));
+        customPlot->xAxis->setLabel(colLabel((*plottableX)[static_cast<size_t>(histCombo->currentIndex())]));
         customPlot->yAxis->setLabel("count");
 
         customPlot->rescaleAxes();
         customPlot->replot(QCustomPlot::rpQueuedReplot);
-        *hasContent = true;
+        markPlotted(rows);
+        showCategoryKey(categories);
     };
 
     // --- doDensity lambda ---
@@ -1740,7 +2382,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     // When Retain is checked: computes the density grid, then discards the color map
     // and overlays QCustomContours contour lines instead, using a new uniform color
     // on each call so successive overlaid contour layers are visually distinct.
-    auto doDensity = [=](bool retain) {
+    auto doDensity = [=](bool retain, const RowSet* rows) {
         const int xDensIdx = xDensCombo->currentIndex(); // 0 = "-- (none) --"
         const int yDensIdx = yDensCombo->currentIndex();
         const bool xIsNone = (xDensIdx == 0);
@@ -1756,8 +2398,8 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         // single-column overload of QtDensityPlot can split real/imag parts.
         if (xIsNone || yIsNone) {
             const std::string checkCol = xIsNone
-                ? plottableY[static_cast<size_t>(yDensIdx - 1)].name
-                : plottableY[static_cast<size_t>(xDensIdx - 1)].name;
+                ? (*plottableY)[static_cast<size_t>(yDensIdx - 1)].name
+                : (*plottableY)[static_cast<size_t>(xDensIdx - 1)].name;
             const DSL::dtype t = tab->getColumn(checkCol)->getType();
             if (t != DSL::dtype::tcplx && t != DSL::dtype::tdbcplx) {
                 QMessageBox::warning(nullptr, "Density Plot",
@@ -1782,19 +2424,25 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
             if (xIsNone || yIsNone) {
                 // Single complex column: real→X, imag→Y
                 const std::string singleCol = xIsNone
-                    ? plottableY[static_cast<size_t>(yDensIdx - 1)].name
-                    : plottableY[static_cast<size_t>(xDensIdx - 1)].name;
-                colorMap = QtFITSviewer::QtDensityPlot(customPlot, tab, singleCol,
-                                                        nBinsX, nBinsY, logFlag);
+                    ? (*plottableY)[static_cast<size_t>(yDensIdx - 1)].name
+                    : (*plottableY)[static_cast<size_t>(xDensIdx - 1)].name;
+                colorMap = rows
+                    ? QtFITSviewer::QtDensityPlot(customPlot, tab, singleCol, *rows,
+                                                  nBinsX, nBinsY, logFlag)
+                    : QtFITSviewer::QtDensityPlot(customPlot, tab, singleCol,
+                                                  nBinsX, nBinsY, logFlag);
             } else {
-                const std::string xCol = plottableY[static_cast<size_t>(xDensIdx - 1)].name;
-                const std::string yCol = plottableY[static_cast<size_t>(yDensIdx - 1)].name;
+                const std::string xCol = (*plottableY)[static_cast<size_t>(xDensIdx - 1)].name;
+                const std::string yCol = (*plottableY)[static_cast<size_t>(yDensIdx - 1)].name;
                 const int zIdx = zDensCombo->currentIndex();
                 const std::string zCol = (zIdx == 0)
                     ? std::string()
-                    : plottableX[static_cast<size_t>(zIdx - 1)].name;
-                colorMap = QtFITSviewer::QtDensityPlot(customPlot, tab, xCol, yCol, zCol,
-                                                        nBinsX, nBinsY, logFlag);
+                    : (*plottableX)[static_cast<size_t>(zIdx - 1)].name;
+                colorMap = rows
+                    ? QtFITSviewer::QtDensityPlot(customPlot, tab, xCol, yCol, *rows, zCol,
+                                                  nBinsX, nBinsY, logFlag)
+                    : QtFITSviewer::QtDensityPlot(customPlot, tab, xCol, yCol, zCol,
+                                                  nBinsX, nBinsY, logFlag);
             }
         } catch (const std::exception& e) {
             QMessageBox::critical(nullptr, "Density error", QString::fromStdString(e.what()));
@@ -1808,7 +2456,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         if (!retain) {
             // No-retain path: keep the filled color map as-is.
             // Axis labels and replot were already handled inside QtDensityPlot.
-            *hasContent = true;
+            markPlotted(rows);
             return;
         }
 
@@ -1881,7 +2529,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
 
         customPlot->rescaleAxes();
         customPlot->replot(QCustomPlot::rpQueuedReplot);
-        *hasContent = true;
+        markPlotted(rows);
     };
 
     // --- Right panel: tab widget + Plot/Clear/Retain below it ---
@@ -1889,6 +2537,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     auto* rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(4, 4, 4, 4);
     rightLayout->addWidget(tabWidget);
+    rightLayout->addWidget(categoryBox);
 
     auto* plotBtn  = new QPushButton("Plot");
     auto* clearBtn = new QPushButton("Clear");
@@ -1901,10 +2550,69 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     rightLayout->addWidget(retainBox);
     rightPanel->setMinimumWidth(160);
 
+    // --- doPlot lambda ---
+    // Evaluates the row filter, then dispatches to the active tab's draw function.
+    auto doPlot = [=]() {
+        const std::string expression = filterEdit->text().trimmed().toStdString();
+
+        // Before touching the canvas: a mistyped filter must leave the current plot in place.
+        RowSet filtered;
+        const RowSet* rows = nullptr;
+        if (!expression.empty()) {
+            try {
+                filtered = tab->where(expression);
+            } catch (const std::exception& e) {
+                QMessageBox::warning(nullptr, "Row filter", QString::fromStdString(e.what()));
+                return;
+            }
+            rows = &filtered;
+        }
+
+        // Same here: a bad epsilon or too many categories must leave the current plot in place.
+        const int tabIdx = tabWidget->currentIndex();
+        const int catIdx = categoryCombo->currentIndex();
+        std::vector<TableCategory> categories;
+        if (catIdx > 0 && tabIdx != 1) { // Density has no categories
+            try {
+                const auto& catCol = tab->getColumn((*categoryCols)[static_cast<size_t>(catIdx - 1)].name);
+
+                double epsilon = 0.0;
+                if (isRealColumn(*catCol)) {
+                    const std::string text = epsilonEdit->text().trimmed().toStdString();
+                    size_t consumed = 0;
+                    epsilon = parseDouble(text, &consumed);
+                    if (consumed != text.size() || !std::isfinite(epsilon) || epsilon < 0.0)
+                        throw std::invalid_argument("Epsilon must be a positive number or 0, not '" + text + "'.");
+                }
+
+                categories = buildCategories(*catCol, rows ? *rows : tab->where(""), epsilon);
+            } catch (const std::exception& e) {
+                QMessageBox::warning(nullptr, "Category", QString::fromStdString(e.what()));
+                return;
+            }
+        }
+
+        const bool retain = retainBox->isChecked();
+        if (!retain) clearCanvas();
+
+        // Nothing to draw, and the plotting kernels refuse empty data.
+        if (rows && rows->empty()) {
+            showRowCount(0);
+            return;
+        }
+
+        switch (tabIdx) {
+            case 0: doScatter(rows, categories);   break;
+            case 1: doDensity(retain, rows);       break;
+            case 2: doHistogram(rows, categories); break;
+            default: break;
+        }
+    };
+
     // --- Central container: splitter only ---
     auto* splitter = new QSplitter(Qt::Horizontal);
     splitter->addWidget(leftPanel);
-    splitter->addWidget(customPlot);
+    splitter->addWidget(centerPanel);
     splitter->addWidget(rightPanel);
     splitter->setSizes({100, 600, 170});
 
@@ -1912,17 +2620,83 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     win->resize(1100, 680);
 
     // --- Wire connections ---
-    // Plot button: dispatch to the active tab's draw function
-    QObject::connect(plotBtn, &QPushButton::clicked, win, [=]() {
-        const bool retain = retainBox->isChecked();
-        if (!retain) clearCanvas();
-        switch (tabWidget->currentIndex()) {
-            case 0: doScatter();      break;
-            case 1: doDensity(retain); break;
-            case 2: doHistogram();    break;
-            default: break;
-        }
+    // Plot button, or Return in the filter field
+    QObject::connect(plotBtn, &QPushButton::clicked, win, [=]() { doPlot(); });
+    QObject::connect(filterEdit, &QLineEdit::returnPressed, win, [=]() { doPlot(); });
+    QObject::connect(epsilonEdit, &QLineEdit::returnPressed, win, [=]() { doPlot(); });
+
+    // Categories only apply to Scatter and Histogram
+    QObject::connect(tabWidget, &QTabWidget::currentChanged, win, [=](int index) {
+        categoryBox->setEnabled(index != 1);
     });
+
+    // Epsilon only applies to float and double columns
+    QObject::connect(categoryCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), win, [=](int index) {
+        epsilonEdit->setEnabled(index > 0
+            && isRealColumn(*tab->getColumn((*categoryCols)[static_cast<size_t>(index - 1)].name)));
+    });
+
+    // Double click on a column of the left panel: window with its values and statistics
+    QObject::connect(colTable, &QTableWidget::cellDoubleClicked, win, [=](int row, int) {
+        const FITStable::clist columns = tab->listColumns();
+        const auto& c = columns[static_cast<size_t>(row)];
+        showColumnWindow(win, tab, c[0], c[1]);
+    });
+
+    // New column: computed in the table, then offered everywhere a column of its type can be chosen.
+    // The filter and the double click read the table itself. Appending to the combos leaves
+    // their current selections, and the index each one maps to in its list, where they are.
+    auto addComputedColumn = [=]() {
+        const QString definition = newColumnEdit->text().trimmed();
+        if (definition.isEmpty())
+            return;
+
+        const FITSform* computed = nullptr;
+        try {
+            computed = &table->computeColumn(definition.toStdString());
+        } catch (const std::exception& e) {
+            QMessageBox::warning(nullptr, "New column", QString::fromStdString(e.what()));
+            return;
+        }
+
+        const auto& column = tab->getColumn(computed->getName());
+        const PlotCol entry{computed->getName(), computed->getUnit()};
+        const QString label = colLabel(entry);
+
+        if (isPlottableAsX(column)) {
+            plottableX->push_back(entry);
+            xScatterCombo->addItem(label);
+            zDensCombo->addItem(label);
+            histCombo->addItem(label);
+        }
+        if (isPlottableAsY(column)) {
+            plottableY->push_back(entry);
+            yScatterCombo->addItem(label);
+            xDensCombo->addItem(label);
+            yDensCombo->addItem(label);
+        }
+        if (isCategoryColumn(*column)) {
+            categoryCols->push_back(entry);
+            categoryCombo->addItem(label);
+        }
+
+        // Same row order as listColumns(), which the double click relies on.
+        const int row = colTable->rowCount();
+        colTable->insertRow(row);
+        auto* nameItem = new QTableWidgetItem(QString::fromStdString(entry.name));
+        QFont nameFont = nameItem->font();
+        nameFont.setItalic(true);
+        nameItem->setFont(nameFont);
+        nameItem->setToolTip("Computed, in memory only: " + definition);
+        colTable->setItem(row, 0, nameItem);
+        colTable->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(computed->getTTYPE())));
+        colTable->scrollToItem(nameItem);
+        columnCountLabel->setText(QString("Columns: %1").arg(colTable->rowCount()));
+
+        newColumnEdit->clear();
+    };
+    QObject::connect(newColumnBtn, &QPushButton::clicked, win, [=]() { addComputedColumn(); });
+    QObject::connect(newColumnEdit, &QLineEdit::returnPressed, win, [=]() { addComputedColumn(); });
 
     // Clear button: unconditional canvas wipe
     QObject::connect(clearBtn, &QPushButton::clicked, win, [=]() {
@@ -2815,6 +3589,10 @@ int main(int argc, char **argv)
 
         // GUI path
         QApplication a(argc, argv);
+
+        // macOS native message boxes show the application's icon, a generic one for this
+        // bare executable; Qt's own show the standard warning and error signs.
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
 
         // Several files on the command line → go straight to the colour compose
         // dialog (seeded with every file, mapped one-per-channel by default)
