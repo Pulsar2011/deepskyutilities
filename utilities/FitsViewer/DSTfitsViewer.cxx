@@ -26,6 +26,10 @@
 #include <QComboBox>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QClipboard>
+#include <QMenu>
+#include <QKeyEvent>
+#include <QRadioButton>
 #include <QAbstractTableModel>
 #include <QTableView>
 #include <QFutureWatcher>
@@ -1218,6 +1222,9 @@ static QWidget* makeHeaderOnlyViewer(const HduInfo& hdu, const std::string& fits
     return win;
 }
 
+static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
+                              const std::shared_ptr<const FITScube>& img, const std::string& fitsPath);
+
 static QWidget* make2DViewer(const HduInfo& hdu,
                               const std::string& fitsPath,
                               const UOption& opt)
@@ -1247,8 +1254,10 @@ static QWidget* make2DViewer(const HduInfo& hdu,
     if (!plt) return nullptr;
 
     QMainWindow* mainWin = qobject_cast<QMainWindow*>(plt->window());
-    if (mainWin)
+    if (mainWin) {
         addCommandBar(mainWin, img->HDU(), plt);
+        addCatalogueTools(mainWin, plt, c_img, fitsPath);
+    }
     return mainWin ? mainWin : dynamic_cast<QWidget*>(plt->window());
 }
 
@@ -1614,6 +1623,95 @@ static QColor categoryColor(size_t index, size_t count)
 }
 
 // ---------------------------------------------------------------------------
+// Copying from the table views
+// ---------------------------------------------------------------------------
+
+// Copies the selected cells as text: tab between columns, new line between rows. A model
+// can give the full text through Qt::UserRole when what it displays is shortened.
+static void copySelectedCells(QAbstractItemView* view)
+{
+    // Every cell becomes text at once here, unlike on screen: "select all" on a huge column stops here.
+    static const qint64 kMaxCopiedCells = 1000000;
+
+    qint64 cells = 0;
+    for (const QItemSelectionRange& range : view->selectionModel()->selection())
+        cells += static_cast<qint64>(range.width()) * range.height();
+
+    if (cells > kMaxCopiedCells) {
+        QMessageBox::warning(view, "Copy", QString("%1 cells are selected: too many to copy, the limit is %2.")
+            .arg(cells).arg(kMaxCopiedCells));
+        return;
+    }
+
+    QModelIndexList indexes = view->selectionModel()->selectedIndexes();
+    if (indexes.isEmpty())
+        return;
+    std::sort(indexes.begin(), indexes.end()); // by row, then by column
+
+    QString text;
+    for (int i = 0; i < indexes.size(); ++i) {
+        if (i > 0)
+            text += QLatin1Char(indexes[i].row() == indexes[i - 1].row() ? '\t' : '\n');
+        const QVariant full = indexes[i].data(Qt::UserRole);
+        text += (full.isValid() ? full : indexes[i].data(Qt::DisplayRole)).toString();
+    }
+    QApplication::clipboard()->setText(text);
+}
+
+// The usual copy key on a table view: on its own, Qt's only copies the current cell.
+class CellCopyKeyFilter : public QObject
+{
+public:
+    explicit CellCopyKeyFilter(QAbstractItemView* view) : QObject(view), m_view(view) {}
+
+    bool eventFilter(QObject*, QEvent* e) override
+    {
+        if (e->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(e)->matches(QKeySequence::Copy)) {
+            copySelectedCells(m_view);
+            return true;
+        }
+        return false;
+    }
+
+private:
+    QAbstractItemView* m_view;
+};
+
+// Copy key and right-click menu on the cells of a view.
+static void enableCellCopy(QAbstractItemView* view)
+{
+    view->installEventFilter(new CellCopyKeyFilter(view));
+
+    view->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(view, &QWidget::customContextMenuRequested, view, [view](const QPoint& position) {
+        QMenu menu(view);
+        QObject::connect(menu.addAction("Copy"), &QAction::triggered, view, [view]() { copySelectedCells(view); });
+        menu.exec(view->viewport()->mapToGlobal(position));
+    });
+}
+
+// Right-click menu on the column headers of a view, copying the column's name.
+static void enableColumnNameCopy(QTableView* view)
+{
+    QHeaderView* header = view->horizontalHeader();
+    header->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(header, &QWidget::customContextMenuRequested, view, [view, header](const QPoint& position) {
+        const int section = header->logicalIndexAt(position);
+        if (section < 0)
+            return;
+
+        // Qt::UserRole gives the bare name, when the header also shows a unit or an element.
+        const QVariant name = view->model()->headerData(section, Qt::Horizontal, Qt::UserRole);
+        const QString text = (name.isValid() ? name : view->model()->headerData(section, Qt::Horizontal)).toString();
+
+        QMenu menu(view);
+        QObject::connect(menu.addAction("Copy column name"), &QAction::triggered, view,
+                         [text]() { QApplication::clipboard()->setText(text); });
+        menu.exec(header->mapToGlobal(position));
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Column window: values of one table column, with its properties and statistics
 // ---------------------------------------------------------------------------
 
@@ -1747,6 +1845,8 @@ public:
 
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override
     {
+        if (role == Qt::UserRole && orientation == Qt::Horizontal)
+            return m_name;
         if (role != Qt::DisplayRole)
             return QVariant();
         if (orientation == Qt::Vertical)
@@ -1969,9 +2069,708 @@ static void showColumnWindow(QWidget* parent, const std::shared_ptr<const FITSta
     auto* model = new FITSColumnModel(tab, col, window);
     view->horizontalHeader()->setStretchLastSection(model->columnCount() == 1);
     view->setModel(model);
+    enableCellCopy(view);
+    enableColumnNameCopy(view);
     layout->addWidget(view, 1);
 
     window->show();
+}
+
+// ---------------------------------------------------------------------------
+// Selected rows window: chosen rows of a table, with all its columns
+// ---------------------------------------------------------------------------
+
+// Same principle as FITSColumnModel: cells are formatted on request and nothing is kept.
+class SelectedRowsModel : public QAbstractTableModel
+{
+public:
+    SelectedRowsModel(std::shared_ptr<const FITStable> table, const RowSet& rows, QObject* parent)
+        : QAbstractTableModel(parent)
+        , m_table(std::move(table))
+        , m_rows(rows.indices())
+    {
+        for (const auto& entry : m_table->listColumns()) {
+            m_readers.push_back(makeColumnCellReader(*m_table->getColumn(entry[0])));
+            m_names.push_back(QString::fromStdString(entry[0]));
+            m_labels.push_back(m_names.back()
+                + (entry[2].empty() ? QString() : " [" + QString::fromStdString(entry[2]) + "]"));
+        }
+    }
+
+    int rowCount(const QModelIndex& parent = QModelIndex()) const override
+    {
+        return parent.isValid() ? 0 : static_cast<int>(std::min<size_t>(m_rows.size(), std::numeric_limits<int>::max()));
+    }
+
+    int columnCount(const QModelIndex& parent = QModelIndex()) const override
+    {
+        return parent.isValid() ? 0 : static_cast<int>(m_readers.size());
+    }
+
+    QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override
+    {
+        if (!index.isValid())
+            return QVariant();
+
+        const ColumnCellReader& reader = m_readers[static_cast<size_t>(index.column())];
+        if (!reader.read)
+            return QVariant();
+
+        if (role == Qt::TextAlignmentRole)
+            return static_cast<int>((reader.rightAligned && reader.elements == 1 ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter);
+        if (role != Qt::DisplayRole && role != Qt::UserRole)
+            return QVariant();
+
+        const size_t row = m_rows[static_cast<size_t>(index.row())];
+        if (reader.elements == 1)
+            return reader.read(row, 0);
+
+        // Only the first elements on screen, as a long vector would make the row
+        // unreadable; Qt::UserRole, which copying uses, gives them all.
+        static const int kShownElements = 6;
+        const int nShown = (role == Qt::UserRole) ? reader.elements : std::min(reader.elements, kShownElements);
+        QStringList shown;
+        for (int e = 0; e < nShown; ++e)
+            shown << reader.read(row, static_cast<size_t>(e));
+        if (nShown < reader.elements)
+            shown << "...";
+        return shown.join(", ");
+    }
+
+    QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override
+    {
+        if (role == Qt::UserRole && orientation == Qt::Horizontal)
+            return m_names[static_cast<size_t>(section)];
+        if (role != Qt::DisplayRole)
+            return QVariant();
+        if (orientation == Qt::Vertical)
+            return QVariant::fromValue(static_cast<qulonglong>(m_rows[static_cast<size_t>(section)] + 1));
+        return m_labels[static_cast<size_t>(section)];
+    }
+
+private:
+    std::shared_ptr<const FITStable> m_table; // keeps the storage the readers point into alive
+    std::vector<size_t>              m_rows;
+    std::vector<ColumnCellReader>    m_readers;
+    std::vector<QString>             m_names;  // bare column names
+    std::vector<QString>             m_labels; // with the unit, for the headers
+};
+
+// Shows rows in the parent's Selected rows window, opened if needed and replaced otherwise.
+static void showSelectedRows(QWidget* parent, const std::shared_ptr<const FITStable>& table,
+                             const RowSet& rows, const QString& description)
+{
+    static const char* const kObjectName = "selectedRows";
+
+    QWidget*    window = parent->findChild<QWidget*>(kObjectName, Qt::FindDirectChildrenOnly);
+    QTableView* view   = nullptr;
+
+    if (window) {
+        view = window->findChild<QTableView*>();
+    } else {
+        window = new QWidget(parent, Qt::Window);
+        window->setObjectName(kObjectName);
+        window->setAttribute(Qt::WA_DeleteOnClose);
+        window->resize(900, 400);
+
+        view = new QTableView;
+        view->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+        view->verticalHeader()->setDefaultSectionSize(view->fontMetrics().height() + 6);
+        view->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+        view->horizontalHeader()->setDefaultSectionSize(110);
+        view->setWordWrap(false);
+        view->setAlternatingRowColors(true);
+        view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        enableCellCopy(view);
+        enableColumnNameCopy(view);
+
+        auto* layout = new QVBoxLayout(window);
+        layout->addWidget(view);
+    }
+
+    window->setWindowTitle(QString("Selected rows: %1 (%2)").arg(rows.size()).arg(description));
+
+    QAbstractItemModel* previous = view->model();
+    view->setModel(new SelectedRowsModel(table, rows, view));
+    if (previous)
+        previous->deleteLater();
+
+    window->show();
+    window->raise();
+}
+
+// ---------------------------------------------------------------------------
+// Rows behind a plot: scans the plotted columns again, as QCPGraph sorts its
+// points by x and so loses the row each one came from
+// ---------------------------------------------------------------------------
+
+// All the values of a numeric column as doubles, flattened row after row.
+struct ColumnValues
+{
+    std::vector<double> re;
+    std::vector<double> im; // only filled for a complex column
+    size_t              elements = 1;
+    bool                isComplex = false;
+};
+
+template<typename T>
+static void appendColumnParts(const FITSform& col, ColumnValues& out)
+{
+    const std::type_index payload = col.payloadType();
+    if (payload == typeid(std::pair<T, T>)) {
+        for (const auto& value : col.values<std::pair<T, T>>()) {
+            out.re.push_back(static_cast<double>(value.first));
+            out.im.push_back(static_cast<double>(value.second));
+        }
+        out.isComplex = true;
+    } else if (payload == typeid(std::vector<std::pair<T, T>>)) {
+        for (const auto& cell : col.values<std::vector<std::pair<T, T>>>())
+            for (const auto& value : cell) {
+                out.re.push_back(static_cast<double>(value.first));
+                out.im.push_back(static_cast<double>(value.second));
+            }
+        out.isComplex = true;
+    }
+}
+
+static ColumnValues readColumnValues(const FITSform& col)
+{
+    ColumnValues values;
+    values.elements = static_cast<size_t>(std::max<int64_t>(col.getNelem(), 1));
+
+    appendColumnValues<int8_t>(col, values.re);
+    appendColumnValues<uint8_t>(col, values.re);
+    appendColumnValues<int16_t>(col, values.re);
+    appendColumnValues<uint16_t>(col, values.re);
+    appendColumnValues<int32_t>(col, values.re);
+    appendColumnValues<uint32_t>(col, values.re);
+    appendColumnValues<int64_t>(col, values.re);
+    appendColumnValues<uint64_t>(col, values.re);
+    appendColumnValues<float>(col, values.re);
+    appendColumnValues<double>(col, values.re);
+    appendColumnParts<float>(col, values);
+    appendColumnParts<double>(col, values);
+
+    if (values.re.size() != col.size() * values.elements)
+        throw std::invalid_argument("Column '" + col.getName() + "' isn't numeric, or its rows differ in length.");
+    return values;
+}
+
+template<typename... Ts>
+static bool payloadIsAnyOf(const std::type_index& payload)
+{
+    return ((payload == typeid(Ts) || payload == typeid(std::vector<Ts>)) || ...);
+}
+
+// Integer, float, double or complex, scalar or vector.
+static bool isNumericColumn(const FITSform& col)
+{
+    return payloadIsAnyOf<int8_t, uint8_t, int16_t, uint16_t, int32_t, uint32_t, int64_t, uint64_t,
+                          float, double, FITSform::complex, FITSform::dblcomplex>(col.payloadType());
+}
+
+// What the latest plot of a table viewer used, to find the rows behind a click or a box.
+struct PlotSource
+{
+    enum class Kind { None, Scatter, Density } kind = Kind::None;
+    std::string xCol;             // Scatter: empty for the row index. Density: alone for one complex or 2-vector column.
+    std::string yCol;
+    bool        filtered = false;
+    RowSet      rows;             // only if filtered
+    size_t      nBinsX = 0;       // Density only, as the log flags
+    size_t      nBinsY = 0;
+    bool        logX = false;
+    bool        logY = false;
+};
+
+// Calls fn(row, x, y) with every point of the plot, in the coordinates of its axes.
+template<typename Fn>
+static void forEachPlotPoint(const FITStable& tab, const PlotSource& source, Fn fn)
+{
+    ColumnValues x, y;
+    if (!source.xCol.empty()) x = readColumnValues(*tab.getColumn(source.xCol));
+    if (!source.yCol.empty()) y = readColumnValues(*tab.getColumn(source.yCol));
+
+    // Same treatment as _QtDensityCore on log axes.
+    const auto emitPoint = [&](size_t row, double px, double py) {
+        if (source.logX) { if (px <= 0.0) return; px = std::log10(px); }
+        if (source.logY) { if (py <= 0.0) return; py = std::log10(py); }
+        fn(row, px, py);
+    };
+
+    const auto visitRow = [&](size_t row) {
+        if (source.kind == PlotSource::Kind::Density) {
+            if (source.yCol.empty()) {
+                if (x.isComplex) emitPoint(row, x.re[row], x.im[row]);
+                else             emitPoint(row, x.re[2 * row], x.re[2 * row + 1]);
+            } else {
+                emitPoint(row, x.re[row], y.re[row]);
+            }
+        } else if (source.xCol.empty()) {
+            const size_t n = y.elements;
+            for (size_t e = 0; e < n; ++e) {
+                if (y.isComplex)  emitPoint(row, y.re[row * n + e], y.im[row * n + e]);
+                else if (n == 1)  emitPoint(row, static_cast<double>(row + 1), y.re[row]);
+                else              emitPoint(row, static_cast<double>(e), y.re[row * n + e]);
+            }
+        } else {
+            const size_t n = y.elements;
+            for (size_t e = 0; e < n; ++e)
+                emitPoint(row, x.re[row * n + e], y.re[row * n + e]);
+        }
+    };
+
+    if (source.filtered) {
+        for (size_t row : source.rows.indices())
+            visitRow(row);
+    } else {
+        const size_t nRows = tab.nrows();
+        for (size_t row = 0; row < nRows; ++row)
+            visitRow(row);
+    }
+}
+
+using PlotPoints = std::vector<std::pair<double, double>>;
+
+static RowSet rowsInBox(const FITStable& tab, const PlotSource& source, const QCPRange& xRange, const QCPRange& yRange, PlotPoints& marks)
+{
+    std::vector<size_t> rows;
+    forEachPlotPoint(tab, source, [&](size_t row, double x, double y) {
+        if (xRange.contains(x) && yRange.contains(y)) {
+            rows.push_back(row);
+            marks.emplace_back(x, y);
+        }
+    });
+    return RowSet(std::move(rows));
+}
+
+// The point nearest to a position on screen, within a radius in pixels.
+static RowSet rowNearest(const FITStable& tab, const PlotSource& source, QCPAxis* xAxis, QCPAxis* yAxis,
+                         const QPoint& position, double radius, PlotPoints& marks)
+{
+    double best = radius * radius;
+    bool   found = false;
+    size_t bestRow = 0;
+    std::pair<double, double> bestPoint;
+
+    forEachPlotPoint(tab, source, [&](size_t row, double x, double y) {
+        if (!std::isfinite(x) || !std::isfinite(y))
+            return;
+        const double dx = xAxis->coordToPixel(x) - position.x();
+        const double dy = yAxis->coordToPixel(y) - position.y();
+        const double distance = dx * dx + dy * dy;
+        if (distance <= best) {
+            best = distance;
+            found = true;
+            bestRow = row;
+            bestPoint = {x, y};
+        }
+    });
+
+    if (!found)
+        return RowSet();
+    marks.push_back(bestPoint);
+    return RowSet(std::vector<size_t>{bestRow});
+}
+
+// The rows counted in the heatmap cell holding (cellX, cellY), binned as _QtDensityCore bins them.
+static RowSet rowsInDensityCell(const FITStable& tab, const PlotSource& source, double cellX, double cellY)
+{
+    double xMin = std::numeric_limits<double>::infinity(), xMax = -xMin;
+    double yMin = xMin, yMax = xMax;
+    forEachPlotPoint(tab, source, [&](size_t, double x, double y) {
+        if (std::isnan(x) || std::isnan(y))
+            return;
+        xMin = std::min(xMin, x);  xMax = std::max(xMax, x);
+        yMin = std::min(yMin, y);  yMax = std::max(yMax, y);
+    });
+    if (xMin > xMax)
+        return RowSet();
+
+    const double xRange = (xMax > xMin) ? (xMax - xMin) : 1.0;
+    const double yRange = (yMax > yMin) ? (yMax - yMin) : 1.0;
+
+    // The very expression of _QtDensityCore, so that rounding puts a value in the same bin.
+    const auto binOfX = [&](double x) { return std::floor(((x - xMin) / xRange) * static_cast<double>(source.nBinsX - 1) + 0.5); };
+    const auto binOfY = [&](double y) { return std::floor(((y - yMin) / yRange) * static_cast<double>(source.nBinsY - 1) + 0.5); };
+
+    const double wantedX = binOfX(cellX);
+    const double wantedY = binOfY(cellY);
+    if (wantedX < 0.0 || wantedX > static_cast<double>(source.nBinsX - 1) ||
+        wantedY < 0.0 || wantedY > static_cast<double>(source.nBinsY - 1))
+        return RowSet();
+
+    std::vector<size_t> rows;
+    forEachPlotPoint(tab, source, [&](size_t row, double x, double y) {
+        if (binOfX(x) == wantedX && binOfY(y) == wantedY)
+            rows.push_back(row);
+    });
+    return RowSet(std::move(rows));
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue overlay on a 2-D image
+// ---------------------------------------------------------------------------
+
+enum class CatalogueFrame { World, PixelFITS, PixelArray };
+
+struct CatalogueChoice
+{
+    std::shared_ptr<const FITStable> table;
+    std::string    xCol;
+    std::string    yCol;   // empty: both coordinates come from xCol
+    CatalogueFrame frame = CatalogueFrame::PixelFITS;
+    std::string    filter;
+};
+
+struct CataloguePoint { size_t row; double x; double y; };
+
+// Asks which table and columns to overlay. The table is only read, into memory.
+static bool askCatalogue(QWidget* parent, const std::string& fitsPath, bool imageHasWCS, CatalogueChoice& choice)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle("Catalogue overlay");
+    auto* form = new QFormLayout(&dialog);
+
+    auto* fileEdit = new QLineEdit(QString::fromStdString(fitsPath));
+    fileEdit->setReadOnly(true);
+    auto* browseBtn = new QPushButton("Browse...");
+    auto* fileRow = new QHBoxLayout;
+    fileRow->addWidget(fileEdit, 1);
+    fileRow->addWidget(browseBtn);
+    form->addRow("File:", fileRow);
+
+    auto* hduCombo = new QComboBox;
+    form->addRow("Table HDU:", hduCombo);
+
+    auto* worldRadio = new QRadioButton("World coordinates, converted with the image's WCS");
+    auto* fitsRadio  = new QRadioButton("Pixels, FITS (first pixel = 1)");
+    auto* arrayRadio = new QRadioButton("Pixels, array (first pixel = 0)");
+    worldRadio->setEnabled(imageHasWCS);
+    if (!imageHasWCS)
+        worldRadio->setToolTip("This image has no WCS calibration.");
+    (imageHasWCS ? worldRadio : fitsRadio)->setChecked(true);
+    auto* frameLayout = new QVBoxLayout;
+    frameLayout->addWidget(worldRadio);
+    frameLayout->addWidget(fitsRadio);
+    frameLayout->addWidget(arrayRadio);
+    form->addRow("Coordinates are:", frameLayout);
+
+    auto* xCombo = new QComboBox;
+    auto* yCombo = new QComboBox;
+    yCombo->setToolTip("(from X column): a complex column gives real = X and imaginary = Y, "
+                       "a 2-element vector column gives [0] = X and [1] = Y.");
+    form->addRow("X column:", xCombo);
+    form->addRow("Y column:", yCombo);
+
+    auto* filterEdit = new QLineEdit;
+    filterEdit->setPlaceholderText("Optional row filter, e.g. phot_g_mean_mag < 18");
+    form->addRow("Filter:", filterEdit);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    form->addRow(buttons);
+
+    std::shared_ptr<const FITStable> table;
+    std::vector<std::string> columnNames;
+
+    const auto loadColumns = [&]() {
+        table.reset();
+        columnNames.clear();
+        const QSignalBlocker blockX(xCombo), blockY(yCombo);
+        xCombo->clear();
+        yCombo->clear();
+        yCombo->addItem("(from X column)");
+
+        if (hduCombo->currentIndex() < 0)
+            return;
+        try {
+            FITSmanager fm(fileEdit->text().toStdString());
+            table = std::const_pointer_cast<const FITStable>(fm.GetTableAtIndex(hduCombo->currentData().toInt()));
+        } catch (const std::exception& e) {
+            QMessageBox::warning(&dialog, "Catalogue", QString::fromStdString(e.what()));
+            return;
+        }
+        for (const auto& entry : table->listColumns()) {
+            if (!isNumericColumn(*table->getColumn(entry[0])))
+                continue;
+            columnNames.push_back(entry[0]);
+            const QString label = QString::fromStdString(entry[0])
+                + (entry[2].empty() ? QString() : " [" + QString::fromStdString(entry[2]) + "]");
+            xCombo->addItem(label);
+            yCombo->addItem(label);
+        }
+        if (yCombo->count() > 2)
+            yCombo->setCurrentIndex(2);
+    };
+
+    const auto loadHdus = [&]() {
+        const QSignalBlocker block(hduCombo);
+        hduCombo->clear();
+        try {
+            FITSmanager fm(fileEdit->text().toStdString());
+            const std::vector<HduInfo> hdus = enumerateHDUs(fm);
+            fm.Close();
+            for (const auto& hdu : hdus)
+                if (hdu.type == HduInfo::Type::BTBL || hdu.type == HduInfo::Type::TBL)
+                    hduCombo->addItem(QString("HDU %1 - %2").arg(hdu.index).arg(QString::fromStdString(hdu.extname)), hdu.index);
+        } catch (const std::exception& e) {
+            QMessageBox::warning(&dialog, "Catalogue", QString::fromStdString(e.what()));
+        }
+        loadColumns();
+    };
+
+    QObject::connect(hduCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, [&](int) { loadColumns(); });
+    QObject::connect(browseBtn, &QPushButton::clicked, &dialog, [&]() {
+        const QString path = QFileDialog::getOpenFileName(&dialog, "Catalogue file", fileEdit->text());
+        if (!path.isEmpty()) {
+            fileEdit->setText(path);
+            loadHdus();
+        }
+    });
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        if (!table || columnNames.empty())
+            QMessageBox::warning(&dialog, "Catalogue", "This file has no table with a numeric column.");
+        else
+            dialog.accept();
+    });
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    loadHdus();
+
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+
+    choice.table  = table;
+    choice.xCol   = columnNames[static_cast<size_t>(xCombo->currentIndex())];
+    choice.yCol   = yCombo->currentIndex() > 0 ? columnNames[static_cast<size_t>(yCombo->currentIndex() - 1)] : std::string();
+    choice.frame  = worldRadio->isChecked() ? CatalogueFrame::World
+                  : fitsRadio->isChecked()  ? CatalogueFrame::PixelFITS
+                                            : CatalogueFrame::PixelArray;
+    choice.filter = filterEdit->text().trimmed().toStdString();
+    return true;
+}
+
+// The positions the catalogue's selected rows give, as read from its columns, NaN included.
+static std::vector<CataloguePoint> readCataloguePositions(const CatalogueChoice& choice)
+{
+    const RowSet rows = choice.table->where(choice.filter);
+
+    const FITSform& xCol = *choice.table->getColumn(choice.xCol);
+    const ColumnValues x = readColumnValues(xCol);
+
+    std::vector<CataloguePoint> points;
+
+    if (choice.yCol.empty()) {
+        if (!x.isComplex && x.elements != 2)
+            throw std::invalid_argument("Column '" + choice.xCol + "' can't give both coordinates: "
+                                        "only a complex or a 2-element vector column can. Choose a Y column.");
+        for (size_t row : rows.indices()) {
+            if (x.isComplex)
+                for (size_t e = 0; e < x.elements; ++e)
+                    points.push_back({row, x.re[row * x.elements + e], x.im[row * x.elements + e]});
+            else
+                points.push_back({row, x.re[2 * row], x.re[2 * row + 1]});
+        }
+        return points;
+    }
+
+    const ColumnValues y = readColumnValues(*choice.table->getColumn(choice.yCol));
+    if (x.isComplex || y.isComplex)
+        throw std::invalid_argument("A complex column holds both coordinates: choose it as X and leave Y on (from X column).");
+    if (x.elements != y.elements)
+        throw std::invalid_argument("Columns '" + choice.xCol + "' and '" + choice.yCol + "' don't have the same number of elements.");
+
+    for (size_t row : rows.indices())
+        for (size_t e = 0; e < x.elements; ++e)
+            points.push_back({row, x.re[row * x.elements + e], y.re[row * x.elements + e]});
+    return points;
+}
+
+// Turns positions into the 0-based pixels the image is drawn with; a position with no pixel is dropped.
+static std::vector<CataloguePoint> cataloguePixels(const std::vector<CataloguePoint>& positions, CatalogueFrame frame, const FITScube& img)
+{
+    std::vector<CataloguePoint> pixels;
+    pixels.reserve(positions.size());
+
+    if (frame != CatalogueFrame::World) {
+        const double shift = (frame == CatalogueFrame::PixelFITS) ? 1.0 : 0.0;
+        for (const auto& p : positions)
+            if (std::isfinite(p.x) && std::isfinite(p.y))
+                pixels.push_back({p.row, p.x - shift, p.y - shift});
+        return pixels;
+    }
+
+    std::vector<CataloguePoint> finite;
+    worldVectors world;
+    finite.reserve(positions.size());
+    world.reserve(positions.size());
+    for (const auto& p : positions) {
+        if (std::isfinite(p.x) && std::isfinite(p.y)) {
+            finite.push_back(p);
+            world.push_back({p.x, p.y});
+        }
+    }
+    if (world.empty())
+        return pixels;
+
+    try {
+        const pixelVectors converted = img.World2PixelVector(world);
+        for (size_t i = 0; i < finite.size(); ++i)
+            pixels.push_back({finite[i].row, converted[i][0], converted[i][1]});
+    } catch (const std::exception&) {
+        // wcslib refuses the whole list for a single invalid position, such as one on the far
+        // side of the sky for this projection: convert one by one and drop those.
+        for (size_t i = 0; i < finite.size(); ++i) {
+            try {
+                const pixelVectors converted = img.World2PixelVector(worldVectors{world[i]});
+                pixels.push_back({finite[i].row, converted[0][0], converted[0][1]});
+            } catch (const std::exception&) {
+            }
+        }
+    }
+    return pixels;
+}
+
+// World coordinates go to the WCS as they are, so say so if a column's unit isn't the axis's.
+static bool confirmCatalogueUnits(QWidget* parent, const CatalogueChoice& choice, const FITScube& img)
+{
+    const auto units = img.getWCS().CUNIT(0);
+    const std::string yCol = choice.yCol.empty() ? choice.xCol : choice.yCol;
+    const std::string xUnit = choice.table->getColumn(choice.xCol)->getUnit();
+    const std::string yUnit = choice.table->getColumn(yCol)->getUnit();
+
+    const auto differs = [&](const std::string& unit, size_t axis) {
+        if (unit.empty() || axis >= units.size())
+            return false;
+        return QString::fromStdString(unit).trimmed() != QString::fromStdString(units[axis]).trimmed();
+    };
+
+    if (!differs(xUnit, 0) && !differs(yUnit, 1))
+        return true;
+
+    return QMessageBox::warning(parent, "Catalogue",
+        QString("The columns' units (%1, %2) differ from the image's WCS axes (%3, %4). "
+                "Values are not converted. Continue?")
+            .arg(QString::fromStdString(xUnit), QString::fromStdString(yUnit),
+                 QString::fromStdString(units.size() > 0 ? units[0] : std::string()),
+                 QString::fromStdString(units.size() > 1 ? units[1] : std::string())),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
+}
+
+// Adds to the image's toolbar what overlays a catalogue, and clicking a circle to see its row.
+static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
+                              const std::shared_ptr<const FITScube>& img, const std::string& fitsPath)
+{
+    auto* toolbar = win->findChild<QToolBar*>();
+    if (!toolbar)
+        return;
+
+    auto* catalogueBtn = new QPushButton("Catalogue...", toolbar);
+    catalogueBtn->setFlat(true);
+    auto* clearBtn = new QPushButton("Clear catalogue", toolbar);
+    clearBtn->setFlat(true);
+    clearBtn->setEnabled(false);
+    auto* countLabel = new QLabel(toolbar);
+
+    toolbar->addSeparator();
+    toolbar->addWidget(catalogueBtn);
+    toolbar->addWidget(clearBtn);
+    toolbar->addWidget(countLabel);
+
+    struct Overlay
+    {
+        QCPGraph* graph = nullptr;
+        std::shared_ptr<const FITStable> table;
+        std::vector<CataloguePoint> points;
+    };
+    auto overlay = std::make_shared<Overlay>();
+    QCPAxisRect* image = plot->axisRect(0);
+
+    const auto clearOverlay = [=]() {
+        if (overlay->graph)
+            plot->removeGraph(overlay->graph);
+        overlay->graph = nullptr;
+        overlay->table.reset();
+        overlay->points.clear();
+        countLabel->clear();
+        clearBtn->setEnabled(false);
+        plot->replot();
+    };
+    QObject::connect(clearBtn, &QPushButton::clicked, win, [=]() { clearOverlay(); });
+
+    QObject::connect(catalogueBtn, &QPushButton::clicked, win, [=]() {
+        CatalogueChoice choice;
+        if (!askCatalogue(win, fitsPath, img->getNumberOfWCS() > 0, choice))
+            return;
+
+        std::vector<CataloguePoint> positions, pixels;
+        try {
+            if (choice.frame == CatalogueFrame::World && !confirmCatalogueUnits(win, choice, *img))
+                return;
+            positions = readCataloguePositions(choice);
+            pixels    = cataloguePixels(positions, choice.frame, *img);
+        } catch (const std::exception& e) {
+            QMessageBox::warning(win, "Catalogue", QString::fromStdString(e.what()));
+            return;
+        }
+
+        const double nx = static_cast<double>(img->Size(1));
+        const double ny = static_cast<double>(img->Size(2));
+        pixels.erase(std::remove_if(pixels.begin(), pixels.end(), [=](const CataloguePoint& p) {
+            return !(p.x >= -0.5 && p.x < nx - 0.5 && p.y >= -0.5 && p.y < ny - 0.5);
+        }), pixels.end());
+
+        clearOverlay();
+
+        QVector<double> xs, ys;
+        xs.reserve(static_cast<int>(pixels.size()));
+        ys.reserve(static_cast<int>(pixels.size()));
+        for (const auto& p : pixels) {
+            xs.push_back(p.x);
+            ys.push_back(p.y);
+        }
+
+        overlay->graph = plot->addGraph(image->axis(QCPAxis::atBottom), image->axis(QCPAxis::atLeft));
+        overlay->graph->setLineStyle(QCPGraph::lsNone);
+        overlay->graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(QColor(0, 255, 0), 1.2), Qt::NoBrush, 9));
+        overlay->graph->setData(xs, ys);
+        overlay->table  = choice.table;
+        overlay->points = std::move(pixels);
+
+        countLabel->setText(QString(" %1 of %2 sources in image").arg(overlay->points.size()).arg(positions.size()));
+        clearBtn->setEnabled(true);
+        plot->replot();
+    });
+
+    // A click is a press and release at the same place; a drag pans the image.
+    auto pressedAt = std::make_shared<QPoint>();
+    QObject::connect(plot, &QCustomPlot::mousePress, win, [=](QMouseEvent*) {
+        *pressedAt = plot->mapFromGlobal(QCursor::pos());
+    });
+    QObject::connect(plot, &QCustomPlot::mouseRelease, win, [=](QMouseEvent* event) {
+        const QPoint position = plot->mapFromGlobal(QCursor::pos());
+        if (event->button() != Qt::LeftButton || !overlay->graph ||
+            (position - *pressedAt).manhattanLength() > 3 || plot->axisRectAt(position) != image)
+            return;
+
+        QCPAxis* xAxis = image->axis(QCPAxis::atBottom);
+        QCPAxis* yAxis = image->axis(QCPAxis::atLeft);
+
+        double best = 10.0 * 10.0;
+        const CataloguePoint* nearest = nullptr;
+        for (const auto& p : overlay->points) {
+            const double dx = xAxis->coordToPixel(p.x) - position.x();
+            const double dy = yAxis->coordToPixel(p.y) - position.y();
+            const double distance = dx * dx + dy * dy;
+            if (distance <= best) {
+                best = distance;
+                nearest = &p;
+            }
+        }
+        if (nearest)
+            showSelectedRows(win, overlay->table, RowSet(std::vector<size_t>{nearest->row}),
+                             QString("catalogue, row %1").arg(nearest->row + 1));
+    });
 }
 
 static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsPath)
@@ -1998,6 +2797,8 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     auto plottableX = std::make_shared<std::vector<PlotCol>>();
     auto plottableY = std::make_shared<std::vector<PlotCol>>();
     auto categoryCols = std::make_shared<std::vector<PlotCol>>();
+    auto vectorYCols = std::make_shared<std::vector<PlotCol>>();
+    auto vectorXCols = std::make_shared<std::vector<PlotCol>>();
 
     for (const auto& entry : cols) {
         const std::string& name = entry[0];
@@ -2006,6 +2807,8 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         if (isPlottableAsX(col)) plottableX->push_back({name, unit});
         if (isPlottableAsY(col)) plottableY->push_back({name, unit});
         if (isCategoryColumn(*col)) categoryCols->push_back({name, unit});
+        if (col->getNelem() > 1 && isPlottableAsY(col)) vectorYCols->push_back({name, unit});
+        if (col->getNelem() > 1 && isPlottableAsX(col)) vectorXCols->push_back({name, unit});
     }
 
     // Label helper: "name [unit]" or just "name" when no unit
@@ -2042,6 +2845,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
             typeStr += " [" + QString::fromStdString(c[2]) + "]";
         colTable->setItem(i, 1, new QTableWidgetItem(typeStr));
     }
+    enableCellCopy(colTable);
     leftLayout->addWidget(colTable, 1);
     leftPanel->setMinimumWidth(120);
 
@@ -2063,6 +2867,8 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     filterLayout->addWidget(new QLabel("Filter:"));
     filterLayout->addWidget(filterEdit, 1);
     filterLayout->addWidget(rowCountLabel);
+    auto* selectionLabel = new QLabel;
+    filterLayout->addWidget(selectionLabel);
 
     // New column computed from the others: kept in memory until the table is reopened
     auto* newColumnEdit = new QLineEdit;
@@ -2169,7 +2975,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         histCombo->addItem(colLabel(c));
 
     auto* histNBins = new QSpinBox;
-    histNBins->setRange(1, 10000);
+    histNBins->setRange(0, 10000);
     histNBins->setValue(0);           // 0 → auto (Sturges rule)
     histNBins->setSpecialValueText("auto");
 
@@ -2185,6 +2991,41 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     histLayout->addLayout(histLogRow);
     histLayout->addStretch();
     tabWidget->addTab(histTab, "Histogram");
+
+    // ---- Tab 3: Vector row ----
+    auto* vectorTab    = new QWidget;
+    auto* vectorLayout = new QVBoxLayout(vectorTab);
+    auto* vectorForm   = new QFormLayout;
+    auto* vecYCombo    = new QComboBox;
+    auto* vecXCombo    = new QComboBox;
+
+    for (const auto& c : *vectorYCols)
+        vecYCombo->addItem(colLabel(c));
+
+    vecXCombo->addItem("(Element index)");
+    for (const auto& c : *vectorXCols)
+        vecXCombo->addItem(colLabel(c));
+
+    auto* vecRowSpin = new QSpinBox;
+    vecRowSpin->setRange(1, static_cast<int>(std::clamp<size_t>(nRows, 1, std::numeric_limits<int>::max())));
+    vecRowSpin->setKeyboardTracking(false); // a row typed digit by digit is only drawn once
+    auto* vecPrevBtn = new QPushButton("Previous");
+    auto* vecNextBtn = new QPushButton("Next");
+    auto* vecStepRow = new QHBoxLayout;
+    vecStepRow->addWidget(vecPrevBtn);
+    vecStepRow->addWidget(vecNextBtn);
+
+    auto* vecLineBox = new QCheckBox("Overlay line");
+
+    vectorForm->addRow("X:", vecXCombo);
+    vectorForm->addRow("Y:", vecYCombo);
+    vectorForm->addRow("Row:", vecRowSpin);
+    vectorLayout->addLayout(vectorForm);
+    vectorLayout->addLayout(vecStepRow);
+    vectorLayout->addWidget(vecLineBox);
+    vectorLayout->addStretch();
+    tabWidget->addTab(vectorTab, "Vector row");
+    tabWidget->setTabEnabled(3, !vectorYCols->empty());
 
     // ---- Category: splits Scatter and Histogram into one colored series per category ----
     auto* categoryCombo = new QComboBox;
@@ -2254,6 +3095,31 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         categoryKey->setVisible(!categories.empty());
     };
 
+    // What the latest plot used, to find the rows behind a click or a box, and the
+    // ring marking the points selected on it. No plotted value is kept here.
+    auto plotted        = std::make_shared<PlotSource>();
+    auto selectionMarks = std::make_shared<QCPGraph*>(nullptr);
+
+    auto clearSelection = [=]() {
+        if (*selectionMarks)
+            customPlot->removeGraph(*selectionMarks);
+        *selectionMarks = nullptr;
+        selectionLabel->clear();
+    };
+
+    // Remembers a plot just drawn from these columns, for the selection.
+    auto rememberPlot = [=](PlotSource::Kind kind, const std::string& xCol, const std::string& yCol, const RowSet* rows) {
+        PlotSource source;
+        source.kind = kind;
+        source.xCol = xCol;
+        source.yCol = yCol;
+        if (rows) {
+            source.filtered = true;
+            source.rows = *rows;
+        }
+        *plotted = std::move(source);
+    };
+
     // --- clearCanvas lambda ---
     // Removes the QCPColorScale (column 1 of plotLayout), all plottables, and all
     // annotation items (contour labels).  Resets the color cycling counters.
@@ -2262,6 +3128,9 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
             customPlot->plotLayout()->remove(customPlot->plotLayout()->element(0, 1));
             customPlot->plotLayout()->simplify();
         }
+        *selectionMarks = nullptr; // about to be deleted with the other plottables
+        selectionLabel->clear();
+        *plotted = PlotSource();
         customPlot->clearPlottables();
         customPlot->clearItems();
         *hasContent      = false;
@@ -2326,6 +3195,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         customPlot->replot(QCustomPlot::rpQueuedReplot);
         markPlotted(rows);
         showCategoryKey(categories);
+        rememberPlot(PlotSource::Kind::Scatter, xKey, yKey, rows);
     };
 
     // --- doHistogram lambda ---
@@ -2453,9 +3323,47 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
             return;
         }
 
+        // A single complex or 2-vector column gives both axes, whichever selector holds it.
+        rememberPlot(PlotSource::Kind::Density,
+                     (*plottableY)[static_cast<size_t>((xIsNone ? yDensIdx : xDensIdx) - 1)].name,
+                     (xIsNone || yIsNone) ? std::string() : (*plottableY)[static_cast<size_t>(yDensIdx - 1)].name,
+                     rows);
+        plotted->nBinsX = nBinsX;
+        plotted->nBinsY = nBinsY;
+        plotted->logX   = densLogX->isChecked();
+        plotted->logY   = densLogY->isChecked();
+
+        // QtDensityPlot only knows generic "x" and "y" labels, and has already drawn them.
+        QString xLabel, yLabel;
+        if (xIsNone || yIsNone) {
+            const PlotCol& single = (*plottableY)[static_cast<size_t>((xIsNone ? yDensIdx : xDensIdx) - 1)];
+            const DSL::dtype type = tab->getColumn(single.name)->getType();
+            const bool isComplex = (type == DSL::dtype::tcplx || type == DSL::dtype::tdbcplx);
+            const QString name = QString::fromStdString(single.name);
+            const QString unit = single.unit.empty() ? QString() : " [" + QString::fromStdString(single.unit) + "]";
+            xLabel = (isComplex ? "Re(" + name + ")" : name + "[0]") + unit;
+            yLabel = (isComplex ? "Im(" + name + ")" : name + "[1]") + unit;
+        } else {
+            xLabel = colLabel((*plottableY)[static_cast<size_t>(xDensIdx - 1)]);
+            yLabel = colLabel((*plottableY)[static_cast<size_t>(yDensIdx - 1)]);
+        }
+        // With the Log options the axes themselves hold log10 of the values.
+        customPlot->xAxis->setLabel(densLogX->isChecked() ? "log10(" + xLabel + ")" : xLabel);
+        customPlot->yAxis->setLabel(densLogY->isChecked() ? "log10(" + yLabel + ")" : yLabel);
+
+        // With a weight, the cells hold that column's values rather than a count of rows.
+        // A single complex or 2-vector column takes no weight, so its scale stays a count.
+        const int weightIdx = zDensCombo->currentIndex();
+        if (weightIdx > 0 && !xIsNone && !yIsNone && customPlot->plotLayout()->hasElement(0, 1)) {
+            if (auto* colorScale = dynamic_cast<QCPColorScale*>(customPlot->plotLayout()->element(0, 1))) {
+                const QString zLabel = colLabel((*plottableX)[static_cast<size_t>(weightIdx - 1)]);
+                colorScale->axis()->setLabel(densLogZ->isChecked() ? "log10(" + zLabel + ")" : zLabel);
+            }
+        }
+
         if (!retain) {
-            // No-retain path: keep the filled color map as-is.
-            // Axis labels and replot were already handled inside QtDensityPlot.
+            // No-retain path: keep the filled color map as-is, redrawn for the labels.
+            customPlot->replot(QCustomPlot::rpQueuedReplot);
             markPlotted(rows);
             return;
         }
@@ -2532,6 +3440,49 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         markPlotted(rows);
     };
 
+    // --- doVectorRow lambda ---
+    // Draws one row of a vector column. With a filter, a row it excludes moves to the first it keeps.
+    auto doVectorRow = [=](const RowSet* rows) {
+        if (vectorYCols->empty())
+            return;
+
+        size_t row = static_cast<size_t>(vecRowSpin->value() - 1);
+        if (rows && !std::binary_search(rows->indices().begin(), rows->indices().end(), row)) {
+            row = rows->indices().front();
+            const QSignalBlocker block(vecRowSpin);
+            vecRowSpin->setValue(static_cast<int>(row + 1));
+        }
+
+        const RowSet oneRow(std::vector<size_t>{row});
+        const PlotCol& yColumn = (*vectorYCols)[static_cast<size_t>(vecYCombo->currentIndex())];
+        const int xIdx = vecXCombo->currentIndex();
+
+        std::vector<std::shared_ptr<QCPGraph>> graphs;
+        try {
+            graphs = (xIdx == 0)
+                ? QtFITSviewer::QtScatter(customPlot, tab, yColumn.name, oneRow)
+                : QtFITSviewer::QtScatter(customPlot, tab, (*vectorXCols)[static_cast<size_t>(xIdx - 1)].name, yColumn.name, oneRow);
+        } catch (const std::exception& e) {
+            QMessageBox::warning(nullptr, "Vector row", QString::fromStdString(e.what()));
+            return;
+        }
+
+        const QColor col = scatterPalette[(*scatterColorIdx)++ % nScatterColors];
+        for (auto& g : graphs) {
+            g->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 4));
+            g->setLineStyle(vecLineBox->isChecked() ? QCPGraph::lsLine : QCPGraph::lsNone);
+            g->setPen(QPen(col));
+        }
+
+        customPlot->xAxis->setLabel((xIdx == 0) ? QString("Element") : colLabel((*vectorXCols)[static_cast<size_t>(xIdx - 1)]));
+        customPlot->yAxis->setLabel(colLabel(yColumn));
+        customPlot->rescaleAxes();
+        customPlot->replot(QCustomPlot::rpQueuedReplot);
+        *hasContent = true;
+        showRowCount(1);
+        showCategoryKey({});
+    };
+
     // --- Right panel: tab widget + Plot/Clear/Retain below it ---
     auto* rightPanel  = new QWidget;
     auto* rightLayout = new QVBoxLayout(rightPanel);
@@ -2542,11 +3493,16 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     auto* plotBtn  = new QPushButton("Plot");
     auto* clearBtn = new QPushButton("Clear");
     auto* retainBox = new QCheckBox("Retain plot");
+    auto* selectBtn = new QPushButton("Select region");
+    selectBtn->setCheckable(true);
+    selectBtn->setToolTip("While on, dragging on a scatter plot or a heatmap draws a box and lists "
+                          "the rows inside it. Off, dragging moves the plot.");
 
     auto* btnLayout = new QHBoxLayout;
     btnLayout->addWidget(plotBtn);
     btnLayout->addWidget(clearBtn);
     rightLayout->addLayout(btnLayout);
+    rightLayout->addWidget(selectBtn);
     rightLayout->addWidget(retainBox);
     rightPanel->setMinimumWidth(160);
 
@@ -2572,7 +3528,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         const int tabIdx = tabWidget->currentIndex();
         const int catIdx = categoryCombo->currentIndex();
         std::vector<TableCategory> categories;
-        if (catIdx > 0 && tabIdx != 1) { // Density has no categories
+        if (catIdx > 0 && (tabIdx == 0 || tabIdx == 2)) { // Scatter and Histogram only
             try {
                 const auto& catCol = tab->getColumn((*categoryCols)[static_cast<size_t>(catIdx - 1)].name);
 
@@ -2595,6 +3551,10 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         const bool retain = retainBox->isChecked();
         if (!retain) clearCanvas();
 
+        // A selection belongs to the plot it was made on.
+        clearSelection();
+        *plotted = PlotSource();
+
         // Nothing to draw, and the plotting kernels refuse empty data.
         if (rows && rows->empty()) {
             showRowCount(0);
@@ -2605,7 +3565,107 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
             case 0: doScatter(rows, categories);   break;
             case 1: doDensity(retain, rows);       break;
             case 2: doHistogram(rows, categories); break;
+            case 3: doVectorRow(rows);             break;
             default: break;
+        }
+    };
+
+    // --- presentSelection lambda ---
+    // Lists the rows found on the plot, and rings the points they gave on a scatter plot.
+    auto presentSelection = [=](const RowSet& rows, const PlotPoints& marks, const QString& description) {
+        clearSelection();
+        selectionLabel->setText(QString("%1 rows selected").arg(rows.size()));
+
+        if (!marks.empty()) {
+            QVector<double> xs, ys;
+            xs.reserve(static_cast<int>(marks.size()));
+            ys.reserve(static_cast<int>(marks.size()));
+            for (const auto& mark : marks) {
+                xs.push_back(mark.first);
+                ys.push_back(mark.second);
+            }
+            *selectionMarks = customPlot->addGraph(customPlot->xAxis, customPlot->yAxis);
+            (*selectionMarks)->removeFromLegend();
+            (*selectionMarks)->setLineStyle(QCPGraph::lsNone);
+            (*selectionMarks)->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(QColor(255, 140, 0), 1.5), Qt::NoBrush, 10));
+            (*selectionMarks)->setData(xs, ys);
+        }
+        customPlot->replot();
+
+        if (!rows.empty())
+            showSelectedRows(win, tab, rows, description);
+    };
+
+    // A box drawn on the plot: the rows with a point inside it.
+    auto selectBox = [=](const QRect& box) {
+        if (plotted->kind == PlotSource::Kind::None)
+            return;
+
+        const QRect r = box.normalized();
+        const QCPRange xRange(std::min(customPlot->xAxis->pixelToCoord(r.left()), customPlot->xAxis->pixelToCoord(r.right())),
+                              std::max(customPlot->xAxis->pixelToCoord(r.left()), customPlot->xAxis->pixelToCoord(r.right())));
+        const QCPRange yRange(std::min(customPlot->yAxis->pixelToCoord(r.top()), customPlot->yAxis->pixelToCoord(r.bottom())),
+                              std::max(customPlot->yAxis->pixelToCoord(r.top()), customPlot->yAxis->pixelToCoord(r.bottom())));
+        try {
+            PlotPoints marks;
+            const RowSet rows = rowsInBox(*tab, *plotted, xRange, yRange, marks);
+            // A heatmap keeps its cells visible: only a scatter plot gets rings.
+            if (plotted->kind == PlotSource::Kind::Density)
+                marks.clear();
+            presentSelection(rows, marks, QString("box x %1 to %2, y %3 to %4")
+                .arg(xRange.lower, 0, 'g', 6).arg(xRange.upper, 0, 'g', 6)
+                .arg(yRange.lower, 0, 'g', 6).arg(yRange.upper, 0, 'g', 6));
+        } catch (const std::exception& e) {
+            QMessageBox::warning(nullptr, "Selection", QString::fromStdString(e.what()));
+        }
+    };
+
+    // A click on the plot: the nearest scatter point, or the rows of a heatmap cell.
+    auto selectAt = [=](const QPoint& position) {
+        try {
+            if (plotted->kind == PlotSource::Kind::Scatter) {
+                PlotPoints marks;
+                const RowSet rows = rowNearest(*tab, *plotted, customPlot->xAxis, customPlot->yAxis, position, 10.0, marks);
+                if (!rows.empty()) // Clicking empty space does nothing.
+                    presentSelection(rows, marks, QString("row %1").arg(rows.indices().front() + 1));
+            } else if (plotted->kind == PlotSource::Kind::Density) {
+                const double x = customPlot->xAxis->pixelToCoord(position.x());
+                const double y = customPlot->yAxis->pixelToCoord(position.y());
+                presentSelection(rowsInDensityCell(*tab, *plotted, x, y), PlotPoints(),
+                                 QString("heatmap cell at x %1, y %2").arg(x, 0, 'g', 6).arg(y, 0, 'g', 6));
+            }
+        } catch (const std::exception& e) {
+            QMessageBox::warning(nullptr, "Selection", QString::fromStdString(e.what()));
+        }
+    };
+
+    // Previous / Next on the Vector row tab: through the filtered rows when a filter is set.
+    auto stepVectorRow = [=](bool forward) {
+        const std::string expression = filterEdit->text().trimmed().toStdString();
+        const size_t current = static_cast<size_t>(vecRowSpin->value() - 1);
+
+        if (expression.empty()) {
+            vecRowSpin->setValue(vecRowSpin->value() + (forward ? 1 : -1));
+            return;
+        }
+
+        RowSet rows;
+        try {
+            rows = tab->where(expression);
+        } catch (const std::exception& e) {
+            QMessageBox::warning(nullptr, "Row filter", QString::fromStdString(e.what()));
+            return;
+        }
+
+        const auto& indices = rows.indices();
+        if (forward) {
+            const auto next = std::upper_bound(indices.begin(), indices.end(), current);
+            if (next != indices.end())
+                vecRowSpin->setValue(static_cast<int>(*next + 1));
+        } else {
+            const auto next = std::lower_bound(indices.begin(), indices.end(), current);
+            if (next != indices.begin())
+                vecRowSpin->setValue(static_cast<int>(*std::prev(next) + 1));
         }
     };
 
@@ -2625,10 +3685,42 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     QObject::connect(filterEdit, &QLineEdit::returnPressed, win, [=]() { doPlot(); });
     QObject::connect(epsilonEdit, &QLineEdit::returnPressed, win, [=]() { doPlot(); });
 
-    // Categories only apply to Scatter and Histogram
+    // Categories only apply to Scatter and Histogram, a selection box to Scatter and Density
     QObject::connect(tabWidget, &QTabWidget::currentChanged, win, [=](int index) {
-        categoryBox->setEnabled(index != 1);
+        categoryBox->setEnabled(index == 0 || index == 2);
+        selectBtn->setEnabled(index == 0 || index == 1);
+        if (!selectBtn->isEnabled())
+            selectBtn->setChecked(false);
     });
+
+    // Select region: dragging draws a box instead of moving the plot
+    QObject::connect(selectBtn, &QPushButton::toggled, win, [=](bool on) {
+        customPlot->setSelectionRectMode(on ? QCP::srmCustom : QCP::srmNone);
+    });
+    QObject::connect(customPlot->selectionRect(), &QCPSelectionRect::accepted, win, [=](const QRect& box, QMouseEvent*) {
+        selectBox(box);
+    });
+
+    // A click is a press and release at the same place; a drag moves the plot or draws a box.
+    auto pressedAt = std::make_shared<QPoint>();
+    QObject::connect(customPlot, &QCustomPlot::mousePress, win, [=](QMouseEvent*) {
+        *pressedAt = customPlot->mapFromGlobal(QCursor::pos());
+    });
+    QObject::connect(customPlot, &QCustomPlot::mouseRelease, win, [=](QMouseEvent* event) {
+        const QPoint position = customPlot->mapFromGlobal(QCursor::pos());
+        if (event->button() == Qt::LeftButton &&
+            (position - *pressedAt).manhattanLength() <= 3 &&
+            customPlot->axisRect()->rect().contains(position))
+            selectAt(position);
+    });
+
+    // Vector row: a change of row redraws at once
+    QObject::connect(vecRowSpin, QOverload<int>::of(&QSpinBox::valueChanged), win, [=](int) {
+        if (tabWidget->currentIndex() == 3)
+            doPlot();
+    });
+    QObject::connect(vecPrevBtn, &QPushButton::clicked, win, [=]() { stepVectorRow(false); });
+    QObject::connect(vecNextBtn, &QPushButton::clicked, win, [=]() { stepVectorRow(true); });
 
     // Epsilon only applies to float and double columns
     QObject::connect(categoryCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), win, [=](int index) {
@@ -2678,6 +3770,15 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         if (isCategoryColumn(*column)) {
             categoryCols->push_back(entry);
             categoryCombo->addItem(label);
+        }
+        if (computed->getNelem() > 1 && isPlottableAsY(column)) {
+            vectorYCols->push_back(entry);
+            vecYCombo->addItem(label);
+            tabWidget->setTabEnabled(3, true);
+        }
+        if (computed->getNelem() > 1 && isPlottableAsX(column)) {
+            vectorXCols->push_back(entry);
+            vecXCombo->addItem(label);
         }
 
         // Same row order as listColumns(), which the double click relies on.
