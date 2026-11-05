@@ -1,6 +1,6 @@
 # DeepSkyUtilities
 
-A collection of astronomical image processing utilities for the DeepSky Project. Provides star detection, morphological operators, FITS I/O, and optional GPU-accelerated processing.
+A collection of astronomical image processing utilities for the DeepSky Project. Provides star detection, morphological operators, FITS I/O, optional GPU-accelerated processing, and [FitsViewer](#fitsviewer), an interactive viewer for FITS images and tables.
 
 ---
 
@@ -10,8 +10,19 @@ A collection of astronomical image processing utilities for the DeepSky Project.
 
 - CMake >= 3.16
 - C++17 or later (C++23 preferred)
-- [DSTFits](../deepskyfits), [DSTMath](../deepskymath), [DSTDisplay](../deepskydisplay) libraries
+- The DeepSky libraries below, installed under `DeepSkyROOT` (the environment variable of that name, or by default the parent of this source directory)
 - cfitsio, Minuit2
+
+| Library | Project | Minimum version |
+|---|---|---|
+| DSTCore | [deepskysys](../deepskysys) | 2.0.1 |
+| DSTmath | [deepskymath](../deepskymath) | 0.1.3 |
+| DSTfits | [deepskyfits](../deepskyfits) | 1.5.0 |
+| DSTdisplay | [deepskydisplay](../deepskydisplay) | 1.2.4 |
+
+CMake only looks for them in `DeepSkyROOT` and stops if one is missing or too old. These versions must be installed from a source tree that provides the CMake package (`lib/cmake/<Library>`).
+
+Each installed library carries the version of its git tag, for example `libDSTools.2.2.0.dylib` with the links `libDSTools.2.dylib` and `libDSTools.dylib`. Installing a new version removes the older ones, so programs built against a previous major version must be rebuilt.
 
 The following system packages must be installed before running CMake:
 
@@ -47,6 +58,119 @@ mkdir build && cd build
 cmake ..
 make -j$(nproc)
 ```
+
+---
+
+## FitsViewer
+
+`FitsViewer` opens FITS images, data cubes and tables for interactive inspection. Its windows need Qt6, and `make install` places it in `<prefix>/exe`.
+
+```bash
+FitsViewer image.fits                 # list the HDUs of the file
+FitsViewer --hdu 2 image.fits         # also open HDU 2 directly
+FitsViewer -z 0 1000 image.fits       # start with this colour range
+FitsViewer red.fits green.fits blue.fits   # go straight to colour composition
+FitsViewer --nodraw --info image.fits # print statistics, no window
+```
+
+### Command line
+
+| Option | Effect |
+|---|---|
+| `--hdu N` | Open HDU `N` as soon as the list is shown. |
+| `--bins N`, `-b N` | Number of bins of the image histogram (default 100). |
+| `--zscale MIN MAX`, `-z MIN MAX` | Initial colour range, in pixel values. |
+| `--roi X0 NX Y0 NY` | Display only this region of a 2-D image, in pixels. |
+| `--nodraw`, `--draw` | Open no window. Both disable drawing, on one file and one image HDU (`--hdu`, HDU 1 by default). |
+| `--info`, `-i` | With `--nodraw`: print mean, median, quartiles, RMS, min, max and sum. |
+| `--print` | With `--nodraw`: print the pixel values. |
+
+The display scale is chosen in the viewer's toolbar: the former `--opt`/`++opt` option no longer exists.
+
+### HDU list
+
+The main window lists each HDU with its index, extension name and type. Double-click a line to open it. The viewer depends on the HDU:
+
+| HDU | Viewer |
+|---|---|
+| Header only | FITS header table |
+| 1-D or 2-D image | [Image viewer](#image-viewer) |
+| 3-D image | Image viewer with a layer slider |
+| ASCII or binary table | [Table viewer](#table-viewer) |
+
+Opening another HDU replaces the current viewer and keeps its window position. The **Color ▸ Compose color image…** menu opens the [colour composite](#colour-composite).
+
+### Image viewer
+
+The window shows the image with its colour bar, the X and Y profiles through the cursor's pixel, and the pixel histogram with its cumulative distribution, percentiles and statistics. The status bar gives the pixel, its value and, when the image has a WCS, its world coordinates.
+
+- **Navigate:** drag to pan and use the wheel to zoom. Dragging or zooming on the colour bar changes the colour range. Profiles and the status bar pause during a drag.
+- **Header**, **WCS Grid** and **Save** (PNG, PDF or JPEG) are in the toolbar. The WCS grid checkbox appears when the image has a grid to show.
+- **Scale:** Linear, Sqrt, Log10, Quadratic or Sinh. Changing the scale keeps the zoom and overlaid catalogues, and resets the colour range. Pixels a scale can't represent, such as the log of a negative value, take the lowest colour. Sinh is a normalised stretch, `sinh(3x)/sinh(3)` with `x` between the image's limits, so its colour bar runs from 0 to 1. The histogram and profiles always show raw pixel values.
+- **Palette:** Night (default), Grayscale, Viridis, Hot, Cold, Thermal, Ion, Candy, Geography, Polar, Spectrum, Jet or Hues.
+- **Layer slider (3-D only):** scale, palette, colour range and zoom are kept from one layer to the next.
+
+#### Catalogue overlay
+
+**Catalogue...** overlays the positions of a FITS table on a 2-D image or a colour composite. The dialog asks for:
+
+- the file and table HDU;
+- what the coordinates are: world coordinates, converted with the image's WCS, or pixels, either FITS (first pixel = 1) or array (first pixel = 0);
+- the X and Y columns. With Y on *(from X column)*, a complex column gives real = X and imaginary = Y, and a 2-element vector column gives `[0]` = X and `[1]` = Y;
+- an optional [row filter](#filters). The last filter used in the window is offered again.
+
+World coordinates are not converted to the WCS's units: a warning appears if the columns' units differ. Positions outside the image are not drawn.
+
+Tick **Keep previous** to add a catalogue over those already displayed, up to 100 at once. Each one gets its own colour and marker, and consecutive catalogues differ by both. Unticked, a new catalogue replaces the others. **Catalogues (n)** shows which marker belongs to which catalogue, **Clear catalogues** removes them all, and clicking a marker shows its table row.
+
+On a colour composite, world coordinates use the WCS of the first channel.
+
+### Table viewer
+
+The left panel lists the columns. Double-click one to open a window with its properties, statistics and values. Right-click a cell to copy it, or a column header to copy its name.
+
+Above the plot:
+
+- **Filter:** restricts what is plotted, with the [syntax below](#filters).
+- **New column:** `NAME = expression`, computed on every row and kept in memory until the table is reopened. The file is never changed. Operators are `+ - * / ^ ( )`, functions are `sqrt exp log log10 sin cos tan asin acos atan abs pow(x, y)`, and complex columns also take `real img abs arg`. Vector columns work element by element.
+
+The plot tabs are:
+
+| Tab | Plot |
+|---|---|
+| Scatter | Y against X or the row index |
+| Density | Heatmap of two columns or of a complex one, optionally weighted by a third, with log axes and colour scale |
+| Histogram | Distribution of a column, with log bins and log Y axis |
+| Vector row | The elements of a vector column for one row, with Previous and Next |
+
+- **Category:** splits Scatter and Histogram into one coloured series per category of a column. On float and double columns, each category spans value ± epsilon; an epsilon of 0 gives one category per distinct value.
+- **Retain plot:** adds the next plot to the current one instead of replacing it. In the Density tab it draws contours.
+- **Select region:** while on, dragging on a scatter plot or heatmap draws a box and lists the rows inside it.
+
+### Filters
+
+Table and catalogue filters share one syntax:
+
+```text
+(OBJNAME=~WD* || SCSID>0) && RA >= 10.5
+```
+
+- A condition reads `COLUMN operator value`, with `==`, `!=`, `<`, `<=`, `>`, `>=`. A single `=` means `==`.
+- `&&` and `||` combine conditions, `&&` binding tighter, and parentheses group them.
+- On string columns, `=~` and `!~` match a wildcard: `*` for any characters, `?` for exactly one.
+- Logical columns take `==` and `!=`, with `T`, `F`, `true`, `false`, `1` or `0`.
+- Quotes keep a value containing spaces or operators in one piece.
+- A value must fit its column's type: `1.5` on an integer column is an error. Numeric columns also accept hexadecimal, such as `0xFF`.
+- Vector and complex columns can't be filtered.
+
+### Colour composite
+
+Started from the **Color** menu, or by giving several files on the command line, with one file per channel by default.
+
+- **Model:** RGB (3 channels) or CMYK (4 channels).
+- **Source:** channels from any HDUs or files, or, in RGB, three layers of one 3-D cube. All channels must have the same pixel dimensions.
+
+Each channel has a colour bar beside the image and a group in the **Channels** panel with its minimum, maximum and Linear or Logarithmic stretch. In RGB it also has a gradient: Default hue, Viridis or Grayscale. **Reset levels** restores each channel's full range, the status bar gives every channel's value under the cursor, and the [catalogue overlay](#catalogue-overlay) is available in the toolbar.
 
 ---
 
