@@ -17,7 +17,7 @@
 //  The design mirrors CUDABackend.h exactly; only the API prefix changes
 //  from cuda* to hip*.
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #ifndef __DST_HIPBackend__
 #define __DST_HIPBackend__

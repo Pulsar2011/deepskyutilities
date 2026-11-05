@@ -2,7 +2,7 @@
 //  MPIBackend.cpp
 //
 //  MPI domain-decomposition backend implementation.
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #include "MPIBackend.h"
 #include "CPUBackend.h"

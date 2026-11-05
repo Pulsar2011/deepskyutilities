@@ -11,7 +11,7 @@
 //    2. The test vehicle for GPUContext before real GPU backends exist.
 //    3. The mandatory CPU path for float64 / int64 / uint64 / size_t images.
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #ifndef __DST_CPUBackend__
 #define __DST_CPUBackend__

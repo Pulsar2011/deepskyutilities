@@ -3,9 +3,10 @@
  * @brief Astrometric plate-solving interface for FITS images.
  * @author GILLARD William — Centre de Physique des Particules de Marseille
  *
- * @copyright Licensed under CC BY-NC 4.0.
- * You may share and adapt this code with attribution, but not for commercial
- * purposes.  Full licence text: https://creativecommons.org/licenses/by-nc/4.0/
+ * @copyright Licensed under PolyForm Noncommercial 1.0.0.
+ * You may use, share and adapt this code for noncommercial purposes.
+ * Commercial use requires a separate licence from the author.
+ * Full licence text: https://polyformproject.org/licenses/noncommercial/1.0.0/
  *
  * @details
  * This header defines the DST::astrometry::solver class, which provides a

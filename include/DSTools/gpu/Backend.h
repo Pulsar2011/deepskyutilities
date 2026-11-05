@@ -2,7 +2,7 @@
 //  Backend.h
 //
 //  Abstract GPU/CPU backend interface for morphological operations.
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 //
 //  Usage:
 //    auto b = Backend::create();      // factory — returns best available backend

@@ -345,5 +345,5 @@ Suites 4 and 5 are **automatically skipped** when `solve-field` is not present. 
 
 ## License
 
-Licensed under [Non-Commercial Polyform](https://polyformproject.org/licenses/noncommercial/1.0.0/).
-Centre de Physique des Particules de Marseille — GILLARD William.
+Licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/): free for noncommercial use. Commercial use requires a separate licence from the author. See [LICENSE.md](LICENSE.md).
+Copyright (c) 2026 William Gillard.

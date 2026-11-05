@@ -3,7 +3,7 @@
 //
 //  Backend::create() factory — selects the best available backend.
 //  Compile-time guards control which backends are compiled in.
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #include "Backend.h"
 #include "CPUBackend.h"

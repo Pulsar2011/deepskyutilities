@@ -20,7 +20,7 @@
 //    • Tests are backend-agnostic: they pass whether Vulkan, CUDA, HIP, or
 //      the CPUBackend is active (the CPU backend is always available).
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #include <gtest/gtest.h>
 

@@ -26,7 +26,7 @@
 //        -DDST_VULKAN_SPIRV_PATH=\"/path/to/morpho.spv\"
 //    Default: looks for morpho.spv in the same directory as the executable.
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #ifndef __DST_VulkanBackend__
 #define __DST_VulkanBackend__

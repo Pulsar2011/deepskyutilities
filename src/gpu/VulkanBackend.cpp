@@ -2,7 +2,7 @@
 //  VulkanBackend.cpp
 //
 //  Vulkan Compute backend implementation.
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #include "VulkanBackend.h"
 

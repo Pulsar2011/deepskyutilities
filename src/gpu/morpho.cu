@@ -27,7 +27,7 @@
 //    are rejected by cuda_launch_kernel() — the caller (GPUContext::run) must
 //    fall back to CPU for oversized MEDIAN kernels.
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #include "../include/DSTools/DSTmorph_ops.h"
 #include "CUDABackend.h"

@@ -28,7 +28,7 @@
 //  Compile guard: #ifdef USE_MPI.  MPI must be initialised by the caller
 //  (MPI_Init) before constructing this object.
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #ifndef __DST_MPIBackend__
 #define __DST_MPIBackend__

@@ -23,7 +23,7 @@
 //    • The kernel weights are uploaded as float32 before each run().
 //
 //  Template parameter T: image pixel type. Must satisfy is_gpu_eligible_type_v<T>.
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #ifndef __DST_GPUContext__
 #define __DST_GPUContext__

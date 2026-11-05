@@ -16,7 +16,7 @@
 // PixelType enum values (matching Backend.h):
 //   UInt8=0 Int8=1 UInt16=2 Int16=3 UInt32=4 Int32=5 Float32=6
 //
-// Licensed under CC BY-NC 4.0
+// Licensed under PolyForm Noncommercial 1.0.0
 
 #version 450
 #extension GL_KHR_shader_subgroup_basic : enable

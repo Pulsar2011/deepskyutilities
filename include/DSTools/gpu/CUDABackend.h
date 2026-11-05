@@ -16,7 +16,7 @@
 //  the __global__ kernels in a separate translation unit compiled by nvcc,
 //  while this header file can be #included by the Backend::create() factory.
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #ifndef __DST_CUDABackend__
 #define __DST_CUDABackend__

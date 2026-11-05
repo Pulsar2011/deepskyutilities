@@ -13,7 +13,7 @@
 //  of cuda*), the include of <hip/hip_runtime.h>, and the function name
 //  hip_launch_kernel instead of cuda_launch_kernel.
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #include "../include/DSTools/DSTmorph_ops.h"
 #include "HIPBackend.h"

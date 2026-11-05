@@ -25,7 +25,7 @@
 //    GPU for the morphological passes; pixel arithmetic done on the host
 //    after a single download.
 //
-//  Licensed under CC BY-NC 4.0
+//  Licensed under PolyForm Noncommercial 1.0.0
 
 #ifndef __DST_morph_gpu__
 #define __DST_morph_gpu__
