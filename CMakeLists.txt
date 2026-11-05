@@ -274,34 +274,19 @@ endif(Qt6_FOUND)
 
 link_directories(${DeepSkyROOT}/lib)
 include_directories(${DeepSkyROOT}/include)
-find_library(DSTCore NAMES DSTCore HINTS ${DeepSkyROOT}/lib)
-if(DSTCore)
-    message("-- ${Green}Found${ColourReset} DSTCore: ${DSTCore}")
-else()
-    message(WARNING "libDSTCore not found; install the library")
-endif()
 
-find_library(DSTmath NAMES DSTmath HINTS ${DeepSkyROOT}/lib)
-if(DSTmath)
-    message("-- ${Green}Found${ColourReset} DSTmath: ${DSTmath}")
-else()
-    message(WARNING "libDSTmath not found; install the library")
-endif()
+# Minimum versions of the DeepSky libraries: the latest tag of each package.
+set(DSTCore_MIN_VERSION    2.0.1)
+set(DSTmath_MIN_VERSION    0.1.3)
+set(DSTfits_MIN_VERSION    1.5.0)
+set(DSTdisplay_MIN_VERSION 1.2.4)
 
-link_directories(${DeepSkyROOT}/lib)
-find_library(DSTfits NAMES DSTfits HINTS ${DeepSkyROOT}/lib)
-if(DSTfits)
-    message("-- ${Green}Found${ColourReset} DSTfits: ${DSTfits}")
-else()
-    message(WARNING "libDSTfits not found; install the library")
-endif()
-
-find_library(DSTdisplay NAMES DSTdisplay HINTS ${DeepSkyROOT}/lib)
-if(DSTdisplay)
-    message("-- ${Green}Found${ColourReset} DSTdysplay: ${DSTdisplay}")
-else()
-    message(WARNING "libDSTdisplay not found; install the library")
-endif()
+# Only look in DeepSkyROOT: the RPATH points there, and CMake would otherwise fall back on another
+# install (e.g. found through PATH) when the one in DeepSkyROOT is too old.
+foreach(_dst_pkg DSTCore DSTmath DSTfits DSTdisplay)
+    find_package(${_dst_pkg} ${${_dst_pkg}_MIN_VERSION} REQUIRED PATHS ${DeepSkyROOT} NO_DEFAULT_PATH)
+    message("-- ${Green}Found${ColourReset} ${_dst_pkg} ${${_dst_pkg}_VERSION}: ${${_dst_pkg}_DIR}")
+endforeach()
 
 find_library(cfitsio NAMES cfitsio HINTS ${DeepSkyROOT}/lib)
 if(cfitsio)
@@ -662,10 +647,22 @@ if(USE_VULKAN)
 endif()
 
 if(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath Minuit2 ${QT_LIBS} ${GPU_LIBS})
+    target_link_libraries( DSTools DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath Minuit2 ${QT_LIBS} ${GPU_LIBS})
 else(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTfits DSTCore DSTdisplay DSTmath Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} ${GPU_LIBS})
+    target_link_libraries( DSTools DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} ${GPU_LIBS})
 endif(COMPILER_SUPPORTS_CXX23)
+
+# Propagate the git tag to the library. A clone without a reachable tag (e.g. a shallow CI clone)
+# has no numeric version: the library stays unversioned and no CMake package is installed.
+if(VERSION MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+")
+    set(DSTools_NUMERIC_VERSION "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}")
+    set_target_properties(DSTools PROPERTIES
+        VERSION   "${DSTools_NUMERIC_VERSION}"
+        SOVERSION "${VERSION_MAJOR}"
+    )
+else()
+    message(WARNING "No version tag found (git describe gave '${VERSION}'): DSTools will not be versioned")
+endif()
 
 #-------------------- Astrometry test reference FITS (M11, DSS2 Red, 512x512, 0.5° FOV)
 # Downloaded from the CDS HiPS2FITS service — the REST API that ESA Sky uses internally.
@@ -747,9 +744,9 @@ foreach( test_source_file ${TEST_SRC} )
 	)
 
     if(COMPILER_SUPPORTS_CXX23)
-        target_link_libraries( ${tSRC} DSTools DSTfits DSTCore DSTdisplay DSTmath Minuit2 ${QT_LIBS} gtest gtest_main)
+        target_link_libraries( ${tSRC} DSTools DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath Minuit2 ${QT_LIBS} gtest gtest_main)
     else(COMPILER_SUPPORTS_CXX23)
-        target_link_libraries( ${tSRC} DSTools DSTfits DSTCore DSTdisplay DSTmath Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
+        target_link_libraries( ${tSRC} DSTools DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
     endif(COMPILER_SUPPORTS_CXX23)
 
     set_target_properties(${tSRC} PROPERTIES
@@ -788,7 +785,7 @@ add_executable(
     utilities/FitsViewer/DSTfitsViewer.cxx
 )
 
-target_link_libraries(FitsViewer DSTfits DSTCore DSTdisplay DSTools DSTmath Minuit2 ${QT_LIBS})
+target_link_libraries(FitsViewer DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTools DSTmath::DSTmath Minuit2 ${QT_LIBS})
 
 # Embed the install RPATH at build time so that install_name_tool does not
 # attempt to rewrite it on every subsequent "make install", which causes
@@ -815,6 +812,7 @@ CMakeFiles
 ./build/lib
 ./build/exe
 ./build/test
+./build/cmake
 ./doc
 ./build/scamp
 ./scamp/configure
@@ -866,4 +864,42 @@ if(CMAKE_INSTALL_PREFIX)
 		LIBRARY DESTINATION lib
 		ARCHIVE DESTINATION lib
 )
+
+    if(DSTools_NUMERIC_VERSION)
+        # CMake package, so that dependent projects can call find_package(DSTools <version>)
+        include(CMakePackageConfigHelpers)
+        set(DSTools_CMAKE_DIR lib/cmake/DSTools)
+        configure_package_config_file(
+            ${CMAKE_SOURCE_DIR}/modules/DSToolsConfig.cmake.in
+            ${CMAKE_CURRENT_BINARY_DIR}/build/cmake/DSToolsConfig.cmake
+            INSTALL_DESTINATION ${DSTools_CMAKE_DIR}
+        )
+        write_basic_package_version_file(
+            ${CMAKE_CURRENT_BINARY_DIR}/build/cmake/DSToolsConfigVersion.cmake
+            VERSION ${DSTools_NUMERIC_VERSION}
+            COMPATIBILITY AnyNewerVersion
+        )
+        INSTALL(FILES
+            ${CMAKE_CURRENT_BINARY_DIR}/build/cmake/DSToolsConfig.cmake
+            ${CMAKE_CURRENT_BINARY_DIR}/build/cmake/DSToolsConfigVersion.cmake
+            DESTINATION ${DSTools_CMAKE_DIR}
+        )
+
+        # CMake never removes files from the install directory: drop the versioned libraries
+        # (libDSTools.2.2.0.dylib, libDSTools.so.2.2.0, ...) left behind by previous installs.
+        install(CODE "set(DSTools_KEEP_VERSIONS \"${DSTools_NUMERIC_VERSION};${VERSION_MAJOR}\")")
+        install(CODE [[
+            file(GLOB _dst_libs "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/libDSTools.*")
+            foreach(_dst_lib ${_dst_libs})
+                get_filename_component(_dst_name "${_dst_lib}" NAME)
+                if(_dst_name MATCHES "^libDSTools\\.(so\\.)?([0-9.]*[0-9])(\\.dylib)?$")
+                    list(FIND DSTools_KEEP_VERSIONS "${CMAKE_MATCH_2}" _dst_keep)
+                    if(_dst_keep EQUAL -1)
+                        message(STATUS "Removing old library: ${_dst_lib}")
+                        file(REMOVE "${_dst_lib}")
+                    endif()
+                endif()
+            endforeach()
+        ]])
+    endif()
 endif(CMAKE_INSTALL_PREFIX)

@@ -1,0 +1,24 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(DSTCore @DSTCore_MIN_VERSION@ HINTS "${PACKAGE_PREFIX_DIR}")
+find_dependency(DSTmath @DSTmath_MIN_VERSION@ HINTS "${PACKAGE_PREFIX_DIR}")
+find_dependency(DSTfits @DSTfits_MIN_VERSION@ HINTS "${PACKAGE_PREFIX_DIR}")
+find_dependency(DSTdisplay @DSTdisplay_MIN_VERSION@ HINTS "${PACKAGE_PREFIX_DIR}")
+
+set(DSTools_QT_LIBS "@QT_LIBS@")
+if(DSTools_QT_LIBS)
+    find_dependency(Qt6 COMPONENTS Widgets Core Gui PrintSupport Concurrent)
+endif()
+
+if(NOT TARGET DSTools::DSTools)
+    add_library(DSTools::DSTools SHARED IMPORTED)
+    # The DSTools headers include Minuit2 relative to include/Minuit2
+    set_target_properties(DSTools::DSTools PROPERTIES
+        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/lib/libDSTools${CMAKE_SHARED_LIBRARY_SUFFIX}"
+        INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include;${PACKAGE_PREFIX_DIR}/include/Minuit2"
+        INTERFACE_LINK_LIBRARIES "DSTfits::DSTfits;DSTCore::DSTCore;DSTdisplay::DSTdisplay;DSTmath::DSTmath;${PACKAGE_PREFIX_DIR}/lib/libMinuit2${CMAKE_SHARED_LIBRARY_SUFFIX};${DSTools_QT_LIBS}"
+    )
+endif()
+
+check_required_components(DSTools)
