@@ -28,6 +28,8 @@
 #include <QListWidget>
 #include <QClipboard>
 #include <QMenu>
+#include <QGuiApplication>
+#include <QToolButton>
 #include <QKeyEvent>
 #include <QRadioButton>
 #include <QAbstractTableModel>
@@ -70,6 +72,7 @@
 #include <DSTCore/DSS_version.h>
 #include <DSTools/DST_version.h>
 #include <DSTdisplay/DSD_version.h>
+#include <DSTfits/DSF_version.h>
 #include <DSTfits/FITSmanager.h>
 #include <DSTfits/FITSimg.h>
 #include <DSTfits/FITShdu.h>
@@ -103,6 +106,11 @@ size_t histo_bins=100;
 double minZscale=std::numeric_limits<double>::quiet_NaN();
 double maxZscale=std::numeric_limits<double>::quiet_NaN();
 
+const std::string DSS_need = "v2.0.0";
+const std::string DSD_need = "v1.2.4";
+const std::string DSF_need = "v1.5.0";
+const std::string ThisVersion = "v2.2.1";
+
 class UOption : public DOption
 {
 public:
@@ -117,16 +125,12 @@ public:
     enum drawing_mode
     {
         LINEAR=0x0,
-        LOG   =0x1,
-        QUAD  =0x2,
-        SQRT  =0x3,
         OFF   =0xF,
     };
     
 private:
     int16_t HDU;
     size_t RBIN;
-    std::string opt_string;
     rmode MODE;
     bool do_Print;
     bool a_info;
@@ -137,11 +141,10 @@ public:
     static drawing_mode ddraw;
     roi ROI;
     
-    UOption():DOption(),HDU(1),RBIN(0),opt_string(),MODE(rmode::NONE), do_Print(false),a_info(false),hdu_explicit(false),ROI()
+    UOption():DOption(),HDU(1),RBIN(0),MODE(rmode::NONE), do_Print(false),a_info(false),hdu_explicit(false),ROI()
     {
         AddDescription("Open a FITS header block and display data.");
         AddOption("--hdu",DParam::fparameter::uint8,"Header block to be open. If not given, the primary header will be opened");
-        AddOption("--opt/++opt",DParam::fparameter::string,"Define the color ramp used to display the image. Possible value are \033[34m'sqrtz'\033[0m, \033[34m'logz'\033[0m, \033[34m'quadz'\033[0m or \033[34m'linearz'\033[32m (default)\033[0m.");
         AddOption("--bins/-b",DParam::fparameter::uint16,"Number of bin to display the histograms of the images.");
         AddOption("--roi",{DParam::fparameter::xoffset,DParam::fparameter::xsize,DParam::fparameter::yoffset,DParam::fparameter::ysize},"Define a refgion of interest to be ploted. Other data outside this ROI are disregarded. The ROI shall be given in pixel not in WCS");
         AddOption("--print","Print pixel content to stdout.");
@@ -150,12 +153,14 @@ public:
         AddOption("--zscale/-z",{DParam::fparameter::min,DParam::fparameter::max},"Select the min and max value for the color scale.");
         AddParam("Fits_Filename","FITS file URL and name that will be opened for analyses.");    
         
-        DOption::prg_name += "FitsViewer -- "+DST::gGIT::version();
+        DOption::prg_name += "FitsViewer -- "+ThisVersion;
 
-        if(DSS::gGIT::version() < "v2.0.0")
-            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSS version, please update your DSS installation to v2.0.0 at minimum.");
-        if(DSD::gGIT::version() < "v1.2.2")
-            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSD version, please update your DSD installation to v1.2.2 at minimum.");
+        if(DSS::gGIT::version() < DSS_need)
+            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSS version, please update your DSS installation to "+DSS_need+" at minimum.");
+        if(DSD::gGIT::version() < DSD_need)
+            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSD version, please update your DSD installation to "+DSS_need+" at minimum.");
+        if(DSF::gGIT::version() < DSF_need)
+            throw std::runtime_error("[ERROR] UOption::UOption: Incompatible DSF version, please update your DSF installation to "+DSF_need+" at minimum.");
     }
     
     virtual ~UOption(){};
@@ -179,22 +184,6 @@ public:
         {
             if(std::next(it) != arg.cend()){it++;}else{return false;}
             histo_bins = std::stoi(*it);
-        }
-        else if(!it->compare("++opt"))
-        {
-            opt_string.clear();
-            if(std::next(it) != arg.cend()){it++;}else{return false;}
-            opt_string = std::string(*it);
-            
-            if(opt_string.find("sqrtz") != std::string::npos)
-                ddraw = drawing_mode::SQRT;
-            else if(opt_string.find("logz") != std::string::npos)
-                ddraw = drawing_mode::LOG;
-            else if(opt_string.find("quadz") != std::string::npos)
-                ddraw = drawing_mode::QUAD;
-            else
-                ddraw = drawing_mode::LINEAR;
-            
         }
         else if(!it->compare("--draw"))
         {
@@ -228,7 +217,6 @@ public:
         }
         else if(!it->compare("--roi"))
         {
-            opt_string.clear();
             if(std::next(it) != arg.cend()){it++;}else{return false;}
             ROI.insert(std::pair<char,std::pair<size_t,size_t> >('x',std::pair<size_t,size_t>(0,0)));
             ROI.find('x')->second.first = static_cast<size_t>(std::stoi(*it));
@@ -260,7 +248,6 @@ public:
     inline const size_t&       Rebin() const {return RBIN;}
     inline const rmode&        Mode()  const {return MODE;}
     inline const int16_t&      Header()const {return HDU;}
-    inline const std::string&  draw()  const {return opt_string;}
     inline bool doPrint() const {return do_Print;}
     inline bool ArrayInfo() const {return a_info;}
     inline bool HduExplicit() const {return hdu_explicit;}
@@ -299,7 +286,11 @@ std::pair<double,double> getYDataRange(const QCPGraph *plt)
 
 void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QCPGraph *x,QCPGraph *y)
 {
-    
+    // Each profile below replots the whole window: while a drag pans the image, that is two more
+    // full redraws per mouse move for a pixel the cursor doesn't stay on.
+    if (QGuiApplication::mouseButtons() != Qt::NoButton)
+        return;
+
     QCPAxisRect* img = dynamic_cast<QCPAxisRect*>(plt->plotLayout()->element(0,0));
     if (!img) return;
 
@@ -858,7 +849,7 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
     });
 }
 
-QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
+QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in)
 {
     if(UOption::ddraw == UOption::drawing_mode::OFF)
         return NULL;
@@ -872,7 +863,7 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
 
     QCustomPlot *customPlot = mw->GetPlot();
     
-    QtFITSviewer::QtDisplay(customPlot,in,opt);
+    QtFITSviewer::QtDisplay(customPlot,in);
     
     customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes );
     QCPAxisRect *image = customPlot->axisRect(0);
@@ -990,6 +981,8 @@ QCustomPlot* Draw(const std::shared_ptr<const FITScube>& in, std::string opt)
     customPlot->connect(image->axis(QCPAxis::atLeft), SIGNAL(rangeChanged(QCPRange)), yproj->axis(QCPAxis::atRight), SLOT(setRange(QCPRange)));
     
     customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes | QCP::iSelectOther);
+    customPlot->setNoAntialiasingOnDrag(true);
+    customPlot->setPlottingHint(QCP::phImmediateRefresh, false);
     //customPlot->replot();
     
     auto f = std::bind(mouseHasMove,customPlot,in,x_projection,y_projection);
@@ -1225,6 +1218,202 @@ static QWidget* makeHeaderOnlyViewer(const HduInfo& hdu, const std::string& fits
 static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
                               const std::shared_ptr<const FITScube>& img, const std::string& fitsPath);
 
+static double scaledPixel(double value, QtFITS::zScale scale)
+{
+    switch (scale)
+    {
+        case QtFITS::fLOG:  return std::log10(value);
+        case QtFITS::fSQRT: return std::sqrt(value);
+        case QtFITS::fQUAD: return value * value;
+        default:            return value;
+    }
+}
+
+// The pixel values the colour range starts from when it isn't the image's whole range: --zscale if
+// given, else the percentiles if the image's dynamic is large, as QtFITSviewer::Overlay does.
+static bool chosenPixelLimits(const std::shared_ptr<const FITScube>& img, double& lower, double& upper)
+{
+    if (minZscale == minZscale && maxZscale == maxZscale) {
+        lower = minZscale;
+        upper = maxZscale;
+        return true;
+    }
+    if (std::abs(img->GetMaximum() / img->GetMinimum()) > 100) {
+        lower = img->Get5thpercentil();
+        upper = img->Get95thpercentil();
+        return true;
+    }
+    return false;
+}
+
+// Sinh stretch of a pixel, from 0 at lower to 1 at upper. sinh(pixel) itself overflows from a pixel
+// value of about 710, so the value is first brought to [0, 1]. The factor 3 is the one DS9 uses.
+static double sinhStretch(double value, double lower, double upper)
+{
+    const double position = std::min(1.0, std::max(0.0, (value - lower) / (upper - lower)));
+    return std::sinh(3.0 * position) / std::sinh(3.0);
+}
+
+// Rewrites the map's cells from the pixels [iMin, iMax[ of the image, through the scale, and names
+// the scale on the colour bar. The map is kept rather than redrawn: a new one would hide what is
+// overlaid and reset the zoom. A value the scale leaves undefined, such as the log of a negative
+// pixel, takes the end of the range it fell off. Returns the range of the cells.
+static QCPRange fillScaledImage(QCPColorMap* map, QCPColorScale* colorScale, const std::shared_ptr<const FITScube>& img,
+                                size_t iMin, size_t iMax, QtFITS::zScale scale)
+{
+    const std::valarray<bool> mask = img->GetMask();
+    std::vector<double> values(iMax - iMin);
+
+    double sinhLower = 0.0, sinhUpper = 0.0;
+    if (scale == QtFITS::fSINH && (!chosenPixelLimits(img, sinhLower, sinhUpper) || !(sinhLower < sinhUpper))) {
+        sinhLower = img->GetMinimum();
+        sinhUpper = img->GetMaximum();
+    }
+
+    double lowest  =  std::numeric_limits<double>::max();
+    double highest = -std::numeric_limits<double>::max();
+    for (size_t ik = iMin; ik < iMax; ++ik) {
+        if (mask[ik])
+            continue;
+        const double value = (scale == QtFITS::fSINH) ? sinhStretch(img->at(ik), sinhLower, sinhUpper)
+                                                      : scaledPixel(img->at(ik), scale);
+        values[ik - iMin] = value;
+        if (std::isfinite(value)) {
+            lowest  = std::min(lowest, value);
+            highest = std::max(highest, value);
+        }
+    }
+    if (lowest > highest) {
+        lowest  = 0.0;
+        highest = 1.0;
+    } else if (lowest == highest) {
+        highest = lowest + 1.0;
+    }
+
+    for (size_t ik = iMin; ik < iMax; ++ik) {
+        if (mask[ik])
+            continue;
+        double value = values[ik - iMin];
+        if (!std::isfinite(value))
+            value = (value == std::numeric_limits<double>::infinity()) ? highest : lowest;
+        const std::vector<size_t> pixel = img->PixelCoordinates(ik);
+        map->data()->setCell(static_cast<int>(pixel[0]), static_cast<int>(pixel[1]), value);
+    }
+
+    const std::string units = img->HDU().Exists("UNITS") ? img->HDU().GetValueForKey("UNITS") : "ARB. UNIT";
+    switch (scale)
+    {
+        case QtFITS::fLOG:  colorScale->axis()->setLabel(QString::fromStdString("log10(" + units + ")")); break;
+        case QtFITS::fSQRT: colorScale->axis()->setLabel(QString::fromStdString(units + "^(1/2)"));       break;
+        case QtFITS::fQUAD: colorScale->axis()->setLabel(QString::fromStdString(units + "^2"));           break;
+        case QtFITS::fSINH: colorScale->axis()->setLabel(QString::fromStdString("sinh(" + units + "), normalised")); break;
+        default:            colorScale->axis()->setLabel(QString::fromStdString(units));                  break;
+    }
+    return QCPRange(lowest, highest);
+}
+
+// The colour range to start from under a scale: the chosen limits if there are any, else the cells'
+// whole range. The limits are in pixel values, so they go through the scale too, and fall back on
+// the cells' range if the scale leaves them undefined. The sinh stretch has already used them.
+static QCPRange initialScaleRange(const std::shared_ptr<const FITScube>& img, QtFITS::zScale scale, const QCPRange& cells)
+{
+    if (scale == QtFITS::fSINH)
+        return QCPRange(0.0, 1.0);
+
+    double lower, upper;
+    if (!chosenPixelLimits(img, lower, upper))
+        return cells;
+
+    const bool crossesZero = lower < 0.0 && upper > 0.0;
+    const double a = scaledPixel(lower, scale);
+    const double b = scaledPixel(upper, scale);
+    if (!std::isfinite(a) || !std::isfinite(b) || a == b)
+        return cells;
+    if (scale == QtFITS::fQUAD && crossesZero)
+        return QCPRange(0.0, std::max(a, b));
+    return QCPRange(std::min(a, b), std::max(a, b));
+}
+
+// Adds to the image's toolbar a choice of the display scale, shared through scale with whatever
+// redraws the image. pixels gives the pixels of the image displayed, [first, last[.
+static void addScaleTool(QMainWindow* win, QCustomPlot* plot, const std::shared_ptr<const FITScube>& img,
+                         const std::shared_ptr<QtFITS::zScale>& scale,
+                         const std::function<std::pair<size_t, size_t>()>& pixels)
+{
+    auto* toolbar = win->findChild<QToolBar*>();
+    if (!toolbar || !plot->plotLayout()->hasElement(0, 1))
+        return;
+    auto* colorScale = dynamic_cast<QCPColorScale*>(plot->plotLayout()->element(0, 1));
+    if (!colorScale)
+        return;
+
+    auto* scaleCombo = new QComboBox(toolbar);
+    scaleCombo->setToolTip("Scale the pixel values go through to be displayed");
+    scaleCombo->addItem("Linear",    static_cast<int>(QtFITS::fLIN));
+    scaleCombo->addItem("Sqrt",      static_cast<int>(QtFITS::fSQRT));
+    scaleCombo->addItem("Log10",     static_cast<int>(QtFITS::fLOG));
+    scaleCombo->addItem("Quadratic", static_cast<int>(QtFITS::fQUAD));
+    scaleCombo->addItem("Sinh",      static_cast<int>(QtFITS::fSINH));
+
+    toolbar->addSeparator();
+    toolbar->addWidget(new QLabel("Scale:", toolbar));
+    toolbar->addWidget(scaleCombo);
+
+    QObject::connect(scaleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), win, [=](int) {
+        const QList<QCPColorMap*> maps = colorScale->colorMaps();
+        if (maps.isEmpty())
+            return;
+        *scale = static_cast<QtFITS::zScale>(scaleCombo->currentData().toInt());
+        const std::pair<size_t, size_t> range = pixels();
+        const QCPRange cells = fillScaledImage(maps.last(), colorScale, img, range.first, range.second, *scale);
+        colorScale->setDataRange(initialScaleRange(img, *scale, cells));
+        plot->replot();
+    });
+}
+
+// Adds to the image's toolbar a choice of the colour palette the image is drawn with. The colour
+// scale holds the palette and passes it on to the image. The first entry is QtDisplay's default.
+static void addPaletteTool(QMainWindow* win, QCustomPlot* plot)
+{
+    auto* toolbar = win->findChild<QToolBar*>();
+    if (!toolbar || !plot->plotLayout()->hasElement(0, 1))
+        return;
+    auto* colorScale = dynamic_cast<QCPColorScale*>(plot->plotLayout()->element(0, 1));
+    if (!colorScale)
+        return;
+
+    struct Palette { const char* name; QCPColorGradient gradient; };
+    const std::vector<Palette> palettes = {
+        {"Night",     QCPColorGradient::gpNight},
+        {"Grayscale", QCPColorGradient::gpGrayscale},
+        {"Viridis",   QtFITS::makeViridisGradient()},
+        {"Hot",       QCPColorGradient::gpHot},
+        {"Cold",      QCPColorGradient::gpCold},
+        {"Thermal",   QCPColorGradient::gpThermal},
+        {"Ion",       QCPColorGradient::gpIon},
+        {"Candy",     QCPColorGradient::gpCandy},
+        {"Geography", QCPColorGradient::gpGeography},
+        {"Polar",     QCPColorGradient::gpPolar},
+        {"Spectrum",  QCPColorGradient::gpSpectrum},
+        {"Jet",       QCPColorGradient::gpJet},
+        {"Hues",      QCPColorGradient::gpHues}
+    };
+
+    auto* paletteCombo = new QComboBox(toolbar);
+    paletteCombo->setToolTip("Colour palette of the image");
+    for (const auto& palette : palettes)
+        paletteCombo->addItem(palette.name);
+
+    toolbar->addSeparator();
+    toolbar->addWidget(new QLabel("Palette:", toolbar));
+    toolbar->addWidget(paletteCombo);
+
+    QObject::connect(paletteCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), win, [=](int index) {
+        colorScale->setGradient(palettes[static_cast<size_t>(index)].gradient);
+        plot->replot();
+    });
+}
+
 static QWidget* make2DViewer(const HduInfo& hdu,
                               const std::string& fitsPath,
                               const UOption& opt)
@@ -1250,12 +1439,15 @@ static QWidget* make2DViewer(const HduInfo& hdu,
     }
 
     auto c_img = std::const_pointer_cast<const FITScube>(img);
-    QCustomPlot* plt = Draw(c_img, opt.draw());
+    QCustomPlot* plt = Draw(c_img);
     if (!plt) return nullptr;
 
     QMainWindow* mainWin = qobject_cast<QMainWindow*>(plt->window());
     if (mainWin) {
         addCommandBar(mainWin, img->HDU(), plt);
+        addScaleTool(mainWin, plt, c_img, std::make_shared<QtFITS::zScale>(QtFITS::fLIN),
+                     [c_img]() { return std::make_pair(size_t(0), static_cast<size_t>(c_img->Nelements())); });
+        addPaletteTool(mainWin, plt);
         addCatalogueTools(mainWin, plt, c_img, fitsPath);
     }
     return mainWin ? mainWin : dynamic_cast<QWidget*>(plt->window());
@@ -1263,13 +1455,13 @@ static QWidget* make2DViewer(const HduInfo& hdu,
 
 static QWidget* make3DViewer(const HduInfo& hdu,
                               const std::string& fitsPath,
-                              const UOption& opt)
+                              const UOption&)
 {
     FITSmanager fm(fitsPath);
     std::shared_ptr<FITScube> cube = fm.GetImageAtIndex(hdu.index);
     auto c_cube = std::const_pointer_cast<const FITScube>(cube);
     int nLayers = hdu.naxis3;
-    std::string drawOpt = opt.draw();
+    auto scale = std::make_shared<QtFITS::zScale>(QtFITS::fLIN);
 
     auto* win = new QMainWindow;
     win->setWindowTitle(QString("HDU %1 - %2 (%3 layers)")
@@ -1287,7 +1479,7 @@ static QWidget* make3DViewer(const HduInfo& hdu,
     customPlot->axisRect()->setupFullAxesBox(true);
     vlay->addWidget(customPlot, 1);
 
-    QtFITSviewer::QtDisplayLayer(customPlot, c_cube, 1, drawOpt);
+    QtFITSviewer::QtDisplayLayer(customPlot, c_cube, 1);
 
     QCPAxisRect* image = customPlot->axisRect(0);
     image->setBackgroundScaledMode(Qt::AspectRatioMode::KeepAspectRatioByExpanding);
@@ -1377,6 +1569,8 @@ static QWidget* make3DViewer(const HduInfo& hdu,
                         yproj->axis(QCPAxis::atRight), SLOT(setRange(QCPRange)));
 
     customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes | QCP::iSelectOther);
+    customPlot->setNoAntialiasingOnDrag(true);
+    customPlot->setPlottingHint(QCP::phImmediateRefresh, false);
     image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
     QObject::connect(customPlot, &QCustomPlot::beforeReplot, [image]() {
         image->axis(QCPAxis::atLeft)->setScaleRatio(image->axis(QCPAxis::atBottom), 1.0);
@@ -1395,7 +1589,9 @@ static QWidget* make3DViewer(const HduInfo& hdu,
     slider->setValue(0);
     slider->setTickPosition(QSlider::TicksBelow);
     slider->setTickInterval(std::max(1, nLayers / 20));
-    auto* arrowStyle = new ArrowSliderStyle(slider->style());
+    // No base style: QProxyStyle takes ownership of the one it is given, and slider->style() is the
+    // application's, which would be deleted with the slider and crash every window left.
+    auto* arrowStyle = new ArrowSliderStyle();
     arrowStyle->setParent(slider);
     slider->setStyle(arrowStyle);
     auto* layerLabel = new QLabel(QString("1 / %1").arg(nLayers), strip);
@@ -1409,29 +1605,45 @@ static QWidget* make3DViewer(const HduInfo& hdu,
     win->resize(1200, 950);
 
     QObject::connect(slider, &QSlider::valueChanged,
-                     [customPlot, c_cube, px_pdf, px_cdf, layerLabel, nLayers, nx, ny, drawOpt](int layer0) {
+                     [customPlot, c_cube, px_pdf, px_cdf, layerLabel, nLayers, nx, ny, scale](int layer0) {
                          int layer1 = layer0 + 1;
 
-                         // Preserve current color scale range and axis limits across layer changes
+                         // Preserve current color scale range, palette and axis limits across layer
+                         // changes: QtDisplayLayer resets the palette to its default
                          QCPRange savedRange, savedXRange, savedYRange;
+                         QCPColorGradient savedGradient;
                          bool hasRange = false;
                          if (customPlot->plotLayout()->hasElement(0, 1)) {
                              auto* cs = dynamic_cast<QCPColorScale*>(
                                  customPlot->plotLayout()->element(0, 1));
-                             if (cs) { savedRange = cs->dataRange(); hasRange = true; }
+                             if (cs) { savedRange = cs->dataRange(); savedGradient = cs->gradient(); hasRange = true; }
                          }
                          QCPAxisRect* imageRect = customPlot->axisRect(0);
                          savedXRange = imageRect->axis(QCPAxis::atBottom)->range();
                          savedYRange = imageRect->axis(QCPAxis::atLeft)->range();
 
-                         QtFITSviewer::QtDisplayLayer(customPlot, c_cube, static_cast<size_t>(layer1), drawOpt);
+                         QtFITSviewer::QtDisplayLayer(customPlot, c_cube, static_cast<size_t>(layer1));
 
-                         // Restore color scale range
+                         // Apply the scale chosen and restore color scale range and palette
                          if (hasRange) {
                              if (customPlot->plotLayout()->hasElement(0, 1)) {
                                  auto* cs = dynamic_cast<QCPColorScale*>(
                                      customPlot->plotLayout()->element(0, 1));
-                                 if (cs) cs->setDataRange(savedRange);
+                                 // QtDisplayLayer adds a map per call: the older ones are hidden
+                                 // but would still be drawn at every zoom and pan.
+                                 if (cs) {
+                                     const QList<QCPColorMap*> maps = cs->colorMaps();
+                                     for (int i = 0; i + 1 < maps.size(); ++i)
+                                         customPlot->removePlottable(maps[i]);
+                                 }
+                                 if (cs && *scale != QtFITS::fLIN && !cs->colorMaps().isEmpty())
+                                     fillScaledImage(cs->colorMaps().last(), cs, c_cube,
+                                                     static_cast<size_t>(layer0) * nx * ny,
+                                                     static_cast<size_t>(layer1) * nx * ny, *scale);
+                                 if (cs) {
+                                     cs->setDataRange(savedRange);
+                                     cs->setGradient(savedGradient);
+                                 }
                              }
                          }
                          // Restore axis limits
@@ -1447,6 +1659,11 @@ static QWidget* make3DViewer(const HduInfo& hdu,
                      });
 
     addCommandBar(win, cube->HDU(), customPlot);
+    addScaleTool(win, customPlot, c_cube, scale, [slider, nx, ny]() {
+        const size_t layer = static_cast<size_t>(slider->value());
+        return std::make_pair(layer * nx * ny, (layer + 1) * nx * ny);
+    });
+    addPaletteTool(win, customPlot);
     return win;
 }
 
@@ -2421,11 +2638,13 @@ struct CatalogueChoice
     std::string    yCol;   // empty: both coordinates come from xCol
     CatalogueFrame frame = CatalogueFrame::PixelFITS;
     std::string    filter;
+    QString        label;  // names the catalogue to the user
 };
 
 struct CataloguePoint { size_t row; double x; double y; };
 
-// Asks which table and columns to overlay. The table is only read, into memory.
+// Asks which table and columns to overlay, offering choice.filter as the row filter.
+// The table is only read, into memory.
 static bool askCatalogue(QWidget* parent, const std::string& fitsPath, bool imageHasWCS, CatalogueChoice& choice)
 {
     QDialog dialog(parent);
@@ -2463,7 +2682,7 @@ static bool askCatalogue(QWidget* parent, const std::string& fitsPath, bool imag
     form->addRow("X column:", xCombo);
     form->addRow("Y column:", yCombo);
 
-    auto* filterEdit = new QLineEdit;
+    auto* filterEdit = new QLineEdit(QString::fromStdString(choice.filter));
     filterEdit->setPlaceholderText("Optional row filter, e.g. phot_g_mean_mag < 18");
     form->addRow("Filter:", filterEdit);
 
@@ -2547,6 +2766,9 @@ static bool askCatalogue(QWidget* parent, const std::string& fitsPath, bool imag
                   : fitsRadio->isChecked()  ? CatalogueFrame::PixelFITS
                                             : CatalogueFrame::PixelArray;
     choice.filter = filterEdit->text().trimmed().toStdString();
+    choice.label  = QFileInfo(fileEdit->text()).fileName() + ", " + hduCombo->currentText();
+    if (!choice.filter.empty())
+        choice.label += " [" + filterEdit->text().trimmed() + "]";
     return true;
 }
 
@@ -2657,7 +2879,44 @@ static bool confirmCatalogueUnits(QWidget* parent, const CatalogueChoice& choice
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
 }
 
-// Adds to the image's toolbar what overlays a catalogue, and clicking a circle to see its row.
+// Ten colours by ten markers: as many distinct styles as catalogues can be overlaid at once.
+static constexpr size_t kMaxCatalogues = 100;
+
+// The style of the index-th catalogue overlaid. Consecutive catalogues differ by both colour and
+// marker, and each colour and marker pair comes once in kMaxCatalogues.
+static QCPScatterStyle catalogueStyle(size_t index)
+{
+    static const QColor colours[] = {
+        QColor(0, 255, 0),     QColor(255, 60, 60),   QColor(0, 230, 255),  QColor(255, 0, 255),
+        QColor(255, 255, 0),   QColor(255, 150, 0),   QColor(90, 140, 255), QColor(255, 255, 255),
+        QColor(255, 170, 200), QColor(170, 110, 255)
+    };
+    static const QCPScatterStyle::ScatterShape markers[] = {
+        QCPScatterStyle::ssCircle,    QCPScatterStyle::ssSquare,
+        QCPScatterStyle::ssDiamond,   QCPScatterStyle::ssTriangle,
+        QCPScatterStyle::ssTriangleInverted, QCPScatterStyle::ssCross,
+        QCPScatterStyle::ssPlus,      QCPScatterStyle::ssStar,
+        QCPScatterStyle::ssCrossCircle, QCPScatterStyle::ssPlusSquare
+    };
+    const size_t colour = index % 10;
+    const size_t marker = (colour + index / 10) % 10;
+    return QCPScatterStyle(markers[marker], QPen(colours[colour], 1.2), Qt::NoBrush, 9);
+}
+
+// The marker alone, on a dark background so that the light colours show in a menu.
+static QIcon catalogueIcon(const QCPScatterStyle& style)
+{
+    QPixmap pixmap(16, 16);
+    pixmap.fill(QColor(40, 40, 40));
+    QCPPainter painter(&pixmap);
+    painter.setAntialiasing(true);
+    style.applyTo(&painter, QPen());
+    style.drawShape(&painter, 8.0, 8.0);
+    painter.end();
+    return QIcon(pixmap);
+}
+
+// Adds to the image's toolbar what overlays catalogues, and clicking a marker to see its row.
 static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
                               const std::shared_ptr<const FITScube>& img, const std::string& fitsPath)
 {
@@ -2667,14 +2926,26 @@ static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
 
     auto* catalogueBtn = new QPushButton("Catalogue...", toolbar);
     catalogueBtn->setFlat(true);
-    auto* clearBtn = new QPushButton("Clear catalogue", toolbar);
+    auto* keepCheck = new QCheckBox("Keep previous", toolbar);
+    keepCheck->setToolTip(QString("Overlay the next catalogue over those displayed, with its own "
+                                  "colour and marker (up to %1 catalogues).").arg(kMaxCatalogues));
+    auto* clearBtn = new QPushButton("Clear catalogues", toolbar);
     clearBtn->setFlat(true);
     clearBtn->setEnabled(false);
+    auto* keyBtn = new QToolButton(toolbar);
+    keyBtn->setText("Catalogues");
+    keyBtn->setToolTip("Which colour and marker each catalogue has");
+    keyBtn->setPopupMode(QToolButton::InstantPopup);
+    keyBtn->setEnabled(false);
+    auto* keyMenu = new QMenu(keyBtn);
+    keyBtn->setMenu(keyMenu);
     auto* countLabel = new QLabel(toolbar);
 
     toolbar->addSeparator();
     toolbar->addWidget(catalogueBtn);
+    toolbar->addWidget(keepCheck);
     toolbar->addWidget(clearBtn);
+    toolbar->addWidget(keyBtn);
     toolbar->addWidget(countLabel);
 
     struct Overlay
@@ -2682,26 +2953,37 @@ static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
         QCPGraph* graph = nullptr;
         std::shared_ptr<const FITStable> table;
         std::vector<CataloguePoint> points;
+        QString label;
     };
-    auto overlay = std::make_shared<Overlay>();
+    auto overlays = std::make_shared<std::vector<Overlay>>();
+    auto lastFilter = std::make_shared<std::string>();
     QCPAxisRect* image = plot->axisRect(0);
 
-    const auto clearOverlay = [=]() {
-        if (overlay->graph)
-            plot->removeGraph(overlay->graph);
-        overlay->graph = nullptr;
-        overlay->table.reset();
-        overlay->points.clear();
+    const auto clearOverlays = [=]() {
+        for (const auto& overlay : *overlays)
+            plot->removeGraph(overlay.graph);
+        overlays->clear();
+        keyMenu->clear();
+        keyBtn->setText("Catalogues");
+        keyBtn->setEnabled(false);
         countLabel->clear();
         clearBtn->setEnabled(false);
         plot->replot();
     };
-    QObject::connect(clearBtn, &QPushButton::clicked, win, [=]() { clearOverlay(); });
+    QObject::connect(clearBtn, &QPushButton::clicked, win, [=]() { clearOverlays(); });
 
     QObject::connect(catalogueBtn, &QPushButton::clicked, win, [=]() {
+        if (keepCheck->isChecked() && overlays->size() >= kMaxCatalogues) {
+            QMessageBox::warning(win, "Catalogue",
+                QString("%1 catalogues are already displayed: clear them, or untick Keep previous.").arg(kMaxCatalogues));
+            return;
+        }
+
         CatalogueChoice choice;
+        choice.filter = *lastFilter;
         if (!askCatalogue(win, fitsPath, img->getNumberOfWCS() > 0, choice))
             return;
+        *lastFilter = choice.filter;
 
         std::vector<CataloguePoint> positions, pixels;
         try {
@@ -2720,7 +3002,8 @@ static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
             return !(p.x >= -0.5 && p.x < nx - 0.5 && p.y >= -0.5 && p.y < ny - 0.5);
         }), pixels.end());
 
-        clearOverlay();
+        if (!keepCheck->isChecked())
+            clearOverlays();
 
         QVector<double> xs, ys;
         xs.reserve(static_cast<int>(pixels.size()));
@@ -2730,14 +3013,25 @@ static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
             ys.push_back(p.y);
         }
 
-        overlay->graph = plot->addGraph(image->axis(QCPAxis::atBottom), image->axis(QCPAxis::atLeft));
-        overlay->graph->setLineStyle(QCPGraph::lsNone);
-        overlay->graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(QColor(0, 255, 0), 1.2), Qt::NoBrush, 9));
-        overlay->graph->setData(xs, ys);
-        overlay->table  = choice.table;
-        overlay->points = std::move(pixels);
+        const QCPScatterStyle style = catalogueStyle(overlays->size());
 
-        countLabel->setText(QString(" %1 of %2 sources in image").arg(overlay->points.size()).arg(positions.size()));
+        Overlay overlay;
+        overlay.graph = plot->addGraph(image->axis(QCPAxis::atBottom), image->axis(QCPAxis::atLeft));
+        overlay.graph->setLineStyle(QCPGraph::lsNone);
+        overlay.graph->setScatterStyle(style);
+        overlay.graph->setData(xs, ys);
+        overlay.table  = choice.table;
+        overlay.points = std::move(pixels);
+        overlay.label  = choice.label;
+
+        const QString sources = QString("%1 of %2 sources in image").arg(overlay.points.size()).arg(positions.size());
+        QString keyText = overlay.label + " - " + sources;
+        keyMenu->addAction(catalogueIcon(style), keyText.replace("&", "&&"));
+        overlays->push_back(std::move(overlay));
+
+        keyBtn->setText(QString("Catalogues (%1)").arg(overlays->size()));
+        keyBtn->setEnabled(true);
+        countLabel->setText(" " + sources);
         clearBtn->setEnabled(true);
         plot->replot();
     });
@@ -2749,7 +3043,7 @@ static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
     });
     QObject::connect(plot, &QCustomPlot::mouseRelease, win, [=](QMouseEvent* event) {
         const QPoint position = plot->mapFromGlobal(QCursor::pos());
-        if (event->button() != Qt::LeftButton || !overlay->graph ||
+        if (event->button() != Qt::LeftButton || overlays->empty() ||
             (position - *pressedAt).manhattanLength() > 3 || plot->axisRectAt(position) != image)
             return;
 
@@ -2757,19 +3051,23 @@ static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
         QCPAxis* yAxis = image->axis(QCPAxis::atLeft);
 
         double best = 10.0 * 10.0;
+        const Overlay* nearestOverlay = nullptr;
         const CataloguePoint* nearest = nullptr;
-        for (const auto& p : overlay->points) {
-            const double dx = xAxis->coordToPixel(p.x) - position.x();
-            const double dy = yAxis->coordToPixel(p.y) - position.y();
-            const double distance = dx * dx + dy * dy;
-            if (distance <= best) {
-                best = distance;
-                nearest = &p;
+        for (const auto& overlay : *overlays) {
+            for (const auto& p : overlay.points) {
+                const double dx = xAxis->coordToPixel(p.x) - position.x();
+                const double dy = yAxis->coordToPixel(p.y) - position.y();
+                const double distance = dx * dx + dy * dy;
+                if (distance <= best) {
+                    best = distance;
+                    nearestOverlay = &overlay;
+                    nearest = &p;
+                }
             }
         }
         if (nearest)
-            showSelectedRows(win, overlay->table, RowSet(std::vector<size_t>{nearest->row}),
-                             QString("catalogue, row %1").arg(nearest->row + 1));
+            showSelectedRows(win, nearestOverlay->table, RowSet(std::vector<size_t>{nearest->row}),
+                             nearestOverlay->label + QString(", row %1").arg(nearest->row + 1));
     });
 }
 
@@ -3876,6 +4174,7 @@ struct ComposeResult {
     std::vector<std::shared_ptr<const FITScube>> channels;
     std::vector<QCPColorGradient>                gradients;   // per channel (RGB)
     std::vector<std::string>                     labels;      // per channel, for the dock
+    std::string          file;                                 // of channel 0, offered for catalogues
     bool                 cmyk      = false;
     QCPAxis::ScaleType   scaleType = QCPAxis::stLinear;        // initial, per channel
 };
@@ -4176,6 +4475,7 @@ private:
                 std::shared_ptr<FITScube> cube = fm.GetImageAtIndex(hduIndex);
                 if (cube->GetDimension() < 3)
                     throw std::runtime_error("Selected HDU is not a 3-D cube.");
+                res.file = m_currentFile;
                 for (int ch = 0; ch < 3; ++ch) {
                     auto layer = cube->Layer(static_cast<size_t>(m_cubeLayer[ch]->value()));
                     res.channels.push_back(std::const_pointer_cast<const FITScube>(layer));
@@ -4192,6 +4492,8 @@ private:
                     const int hduIndex = r.hduCombo->currentData().toInt();
                     const int layer = r.layerSpin->isEnabled() ? r.layerSpin->value() : -1;
                     res.channels.push_back(resolveChannelCube(file, hduIndex, layer));
+                    if (ch == 0)
+                        res.file = file;
                     res.gradients.push_back(
                         gradientFor(static_cast<GradPreset>(r.gradCombo->currentIndex()),
                                     static_cast<int>(ch)));
@@ -4484,6 +4786,10 @@ static QWidget* makeColorViewer(const ComposeResult& res)
         });
     toolbar->addWidget(resetBtn);
     mw->addToolBar(Qt::TopToolBarArea, toolbar);
+
+    // Channels only have to share their pixel grid: catalogues use the WCS of the first one.
+    addCatalogueTools(mw, plot, res.channels[0], res.file);
+    plot->setNoAntialiasingOnDrag(true);
 
     // --- status-bar pixel readout ----------------------------------------
     // Connect a no-arg lambda to mouseMove (the QMouseEvent* arg is discarded);
