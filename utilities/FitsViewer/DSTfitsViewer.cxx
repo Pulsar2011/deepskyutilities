@@ -61,6 +61,7 @@
 #include <QDoubleValidator>
 #include <QLocale>
 #include <QFontDatabase>
+#include <QPointer>
 #include <DSTdisplay/QCustomContours.h>
 #include <DSTdisplay/QtFitsPloting.h>
 
@@ -1694,10 +1695,17 @@ static bool isPlottableAsX(const std::unique_ptr<FITSform>& col)
 }
 
 // Rows of a table sharing one category of the column chosen to split a plot.
-struct TableCategory { QString label; RowSet rows; };
+struct TableCategory { QString label; RowSet rows; QColor color{}; };
 
-// Above this, colors stop being distinguishable.
-static const size_t kMaxTableCategories = 32;
+// Keeps a continuous column from giving one graph per row. Colors can't identify this many
+// categories by eye: clicking one in the plot's category list highlights it.
+static const size_t kMaxTableCategories = 512;
+
+// Above this, evenly spaced hues stop being distinguishable.
+static const size_t kMaxHueCategories = 32;
+
+// Above this, a color ramp no longer separates neighbouring numeric categories.
+static const size_t kMaxRampCategories = 360;
 
 // Returns true if the column can split a plot: any scalar column except complex, or a multi-bit column.
 static bool isCategoryColumn(const FITSform& col)
@@ -1812,7 +1820,7 @@ static std::vector<TableCategory> categoriesOfBits(const FITSform& col, const Ro
 }
 
 // Splits rows by the column's values, in ascending order. Throws above kMaxTableCategories.
-static std::vector<TableCategory> buildCategories(const FITSform& col, const RowSet& rows, double epsilon)
+static std::vector<TableCategory> groupByColumn(const FITSform& col, const RowSet& rows, double epsilon)
 {
     const std::type_index payload = col.payloadType();
 
@@ -1833,10 +1841,41 @@ static std::vector<TableCategory> buildCategories(const FITSform& col, const Row
     throw std::invalid_argument("Column '" + col.getName() + "' can't be used as a category.");
 }
 
-// Evenly spaced hues: the fixed palettes are too short for a whole set of categories.
-static QColor categoryColor(size_t index, size_t count)
+// Numeric categories get evenly spaced hues while these can still tell them apart, then follow
+// Viridis in ascending order, so that the colors show the trend. Others, and numeric ones above
+// kMaxRampCategories, step by the golden angle, so that neighbouring categories get clearly different hues.
+static QColor categoryColor(size_t index, size_t count, bool numeric)
 {
-    return QColor::fromHsv(static_cast<int>(360 * index / count), 230, 200);
+    if (numeric && count <= kMaxHueCategories)
+        return QColor::fromHsvF(static_cast<float>(index) / static_cast<float>(count), 0.90f, 0.78f);
+
+    if (numeric && count <= kMaxRampCategories) {
+        static QCPColorGradient ramp = [] {
+            QCPColorGradient gradient = QtFITS::makeViridisGradient();
+            gradient.setLevelCount(1024); // the default 350 levels would merge categories
+            return gradient;
+        }();
+        // Stops short of Viridis' last yellows, too faint on the plot's white background.
+        const double position = count > 1 ? 0.9 * static_cast<double>(index) / static_cast<double>(count - 1) : 0.0;
+        return QColor::fromRgb(ramp.color(position, QCPRange(0.0, 1.0)));
+    }
+
+    const double goldenAngleInTurns = 0.381966011250105;
+    const double hue = std::fmod(static_cast<double>(index) * goldenAngleInTurns, 1.0);
+    return QColor::fromHsvF(static_cast<float>(hue), 0.90f, 0.78f);
+}
+
+// Splits rows by the column's values and gives each category its color.
+static std::vector<TableCategory> buildCategories(const FITSform& col, const RowSet& rows, double epsilon)
+{
+    std::vector<TableCategory> categories = groupByColumn(col, rows, epsilon);
+
+    const std::type_index payload = col.payloadType();
+    const bool numeric = payload != typeid(std::string) && payload != typeid(bool)
+                      && payload != typeid(FITSform::boolVector);
+    for (size_t i = 0; i < categories.size(); ++i)
+        categories[i].color = categoryColor(i, categories.size(), numeric);
+    return categories;
 }
 
 // ---------------------------------------------------------------------------
@@ -3153,6 +3192,9 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     customPlot->axisRect()->setupFullAxesBox(true);
     customPlot->legend->setVisible(false);  // axis labels identify columns; legend causes layout crash on first show
     customPlot->setMinimumWidth(200);
+    // A highlighted category is drawn over the other plots, and the selection rings over it.
+    customPlot->addLayer("categoryHighlight", customPlot->layer("main"), QCustomPlot::limAbove);
+    customPlot->addLayer("selectionMarks", customPlot->layer("categoryHighlight"), QCustomPlot::limAbove);
 
     // Row filter above the plot, with the count of rows displayed beside it
     auto* filterEdit = new QLineEdit;
@@ -3343,6 +3385,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
     // Plain list rather than customPlot->legend, which crashes on first show (see above).
     auto* categoryKey = new QListWidget;
     categoryKey->setSelectionMode(QAbstractItemView::NoSelection);
+    categoryKey->setToolTip("Click a category to highlight it on the plot, and again to show them all.");
     categoryKey->setVisible(false);
 
     auto* categoryBox    = new QGroupBox("Category");
@@ -3381,17 +3424,56 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         showRowCount(rows ? rows->size() : nRows);
     };
 
+    // The graphs drawn for each category of the latest plot, in the order of its list.
+    // QPointer: the plot owns them and may delete them.
+    using CategoryGraphs = std::vector<QPointer<QCPGraph>>;
+    struct KeyedCategory { QColor color; CategoryGraphs graphs; };
+    auto keyedCategories     = std::make_shared<std::vector<KeyedCategory>>();
+    auto highlightedCategory = std::make_shared<int>(-1);
+
     // Lists the categories of the latest plot with their color; hidden when it has none.
-    auto showCategoryKey = [=](const std::vector<TableCategory>& categories) {
+    auto showCategoryKey = [=](const std::vector<TableCategory>& categories, const std::vector<CategoryGraphs>& graphs) {
         categoryKey->clear();
+        keyedCategories->clear();
+        *highlightedCategory = -1;
         for (size_t i = 0; i < categories.size(); ++i) {
             QPixmap swatch(12, 12);
-            swatch.fill(categoryColor(i, categories.size()));
+            swatch.fill(categories[i].color);
             categoryKey->addItem(new QListWidgetItem(QIcon(swatch),
                 QString("%1 (%2 rows)").arg(categories[i].label, QString::number(categories[i].rows.size()))));
+            keyedCategories->push_back({categories[i].color, graphs[i]});
         }
         categoryKey->setVisible(!categories.empty());
     };
+
+    // Draws one category in its color above the others, dimmed; -1 gives all of them their color back.
+    auto highlightCategory = [=](int category) {
+        if (category == *highlightedCategory)
+            return;
+        *highlightedCategory = category;
+
+        const QColor dimmed(215, 215, 215);
+        for (int i = 0; i < static_cast<int>(keyedCategories->size()); ++i) {
+            const KeyedCategory& keyed = (*keyedCategories)[static_cast<size_t>(i)];
+            for (const auto& graph : keyed.graphs) {
+                if (!graph)
+                    continue;
+                graph->setPen(QPen(category < 0 || i == category ? keyed.color : dimmed));
+                // In list order, which restores the drawing order after a highlight.
+                graph->setLayer(i == category ? "categoryHighlight" : "main");
+            }
+            QListWidgetItem* item = categoryKey->item(i);
+            QFont font = item->font();
+            font.setBold(i == category);
+            item->setFont(font);
+        }
+        customPlot->replot(QCustomPlot::rpQueuedReplot);
+    };
+
+    QObject::connect(categoryKey, &QListWidget::itemClicked, win, [=](QListWidgetItem* item) {
+        const int category = categoryKey->row(item);
+        highlightCategory(category == *highlightedCategory ? -1 : category);
+    });
 
     // What the latest plot used, to find the rows behind a click or a box, and the
     // ring marking the points selected on it. No plotted value is kept here.
@@ -3435,7 +3517,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         *contourColorIdx = 0;
         *scatterColorIdx = 0;
         showRowCount(0);
-        showCategoryKey({});
+        showCategoryKey({}, {});
         customPlot->replot();
     };
 
@@ -3450,6 +3532,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
             (*plottableY)[static_cast<size_t>(yScatterCombo->currentIndex())].name;
 
         std::vector<std::shared_ptr<QCPGraph>> graphs;
+        std::vector<CategoryGraphs> categoryGraphs(categories.size());
         try {
             if (!categories.empty()) {
                 for (size_t i = 0; i < categories.size(); ++i) {
@@ -3458,7 +3541,8 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
                         ? QtFITSviewer::QtScatter(customPlot, tab, yKey, catRows)
                         : QtFITSviewer::QtScatter(customPlot, tab, xKey, yKey, catRows);
                     for (auto& g : catGraphs) {
-                        g->setPen(QPen(categoryColor(i, categories.size())));
+                        g->setPen(QPen(categories[i].color));
+                        categoryGraphs[i].push_back(g.get());
                         graphs.push_back(g);
                     }
                 }
@@ -3492,7 +3576,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         customPlot->rescaleAxes();
         customPlot->replot(QCustomPlot::rpQueuedReplot);
         markPlotted(rows);
-        showCategoryKey(categories);
+        showCategoryKey(categories, categoryGraphs);
         rememberPlot(PlotSource::Kind::Scatter, xKey, yKey, rows);
     };
 
@@ -3533,8 +3617,12 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         customPlot->yAxis->setScaleType(logY    ? QCPAxis::stLogarithmic : QCPAxis::stLinear);
 
         const QColor col = scatterPalette[(*scatterColorIdx)++ % nScatterColors];
-        for (size_t i = 0; i < graphs.size(); ++i)
-            graphs[i]->setPen(QPen(categories.empty() ? col : categoryColor(i, categories.size())));
+        std::vector<CategoryGraphs> categoryGraphs(categories.size());
+        for (size_t i = 0; i < graphs.size(); ++i) {
+            graphs[i]->setPen(QPen(categories.empty() ? col : categories[i].color));
+            if (!categories.empty())
+                categoryGraphs[i].push_back(graphs[i].get());
+        }
 
         customPlot->xAxis->setLabel(colLabel((*plottableX)[static_cast<size_t>(histCombo->currentIndex())]));
         customPlot->yAxis->setLabel("count");
@@ -3542,7 +3630,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         customPlot->rescaleAxes();
         customPlot->replot(QCustomPlot::rpQueuedReplot);
         markPlotted(rows);
-        showCategoryKey(categories);
+        showCategoryKey(categories, categoryGraphs);
     };
 
     // --- doDensity lambda ---
@@ -3778,7 +3866,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         customPlot->replot(QCustomPlot::rpQueuedReplot);
         *hasContent = true;
         showRowCount(1);
-        showCategoryKey({});
+        showCategoryKey({}, {});
     };
 
     // --- Right panel: tab widget + Plot/Clear/Retain below it ---
@@ -3847,6 +3935,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
         }
 
         const bool retain = retainBox->isChecked();
+        highlightCategory(-1); // a retained plot must not stay dimmed
         if (!retain) clearCanvas();
 
         // A selection belongs to the plot it was made on.
@@ -3884,6 +3973,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
             }
             *selectionMarks = customPlot->addGraph(customPlot->xAxis, customPlot->yAxis);
             (*selectionMarks)->removeFromLegend();
+            (*selectionMarks)->setLayer("selectionMarks");
             (*selectionMarks)->setLineStyle(QCPGraph::lsNone);
             (*selectionMarks)->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(QColor(255, 140, 0), 1.5), Qt::NoBrush, 10));
             (*selectionMarks)->setData(xs, ys);
