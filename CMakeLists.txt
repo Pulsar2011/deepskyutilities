@@ -305,6 +305,23 @@ else()
     message(WARNING "libMinuit2 not found; install the library")
 endif()
 
+# Optional: without asdf2fits, FitsViewer is built for FITS files only. A package file left behind
+# by a removed install must not break the link, so the files themselves are checked too. The exact
+# directory is given because a search from DeepSkyROOT also looks into the asdf2fits source folder,
+# where an in-source build leaves a package file with a wrong prefix.
+unset(asdf2fits_DIR CACHE)
+find_package(asdf2fits QUIET PATHS ${DeepSkyROOT}/lib/cmake/asdf2fits NO_DEFAULT_PATH)
+set(ASDF2FITS_USABLE OFF)
+if(asdf2fits_FOUND
+   AND EXISTS ${DeepSkyROOT}/lib/libasdf2fits${CMAKE_SHARED_LIBRARY_SUFFIX}
+   AND EXISTS ${DeepSkyROOT}/lib/libasdf${CMAKE_SHARED_LIBRARY_SUFFIX}
+   AND EXISTS ${DeepSkyROOT}/include/asdf2fits/ASDFmanager.h)
+    set(ASDF2FITS_USABLE ON)
+    message("-- ${Green}Found${ColourReset} asdf2fits ${asdf2fits_VERSION}: FitsViewer will read ASDF files")
+else()
+    message("${Yellow}-- asdf2fits not found: FitsViewer will read FITS files only${ColourReset}")
+endif()
+
 #-------------------- Detect astrometry.net solve-field
 # The detected path is written into DSTastrometry_config.h (generated header,
 # installed alongside DSTastrometry.h) so downstream consumers get the same
@@ -786,6 +803,11 @@ add_executable(
 )
 
 target_link_libraries(FitsViewer DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTools DSTmath::DSTmath Minuit2 ${QT_LIBS})
+
+if(ASDF2FITS_USABLE)
+    target_compile_definitions(FitsViewer PRIVATE __WITH_ASDF__)
+    target_link_libraries(FitsViewer asdf2fits::asdf2fits)
+endif()
 
 # Embed the install RPATH at build time so that install_name_tool does not
 # attempt to rewrite it on every subsequent "make install", which causes

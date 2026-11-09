@@ -79,6 +79,12 @@
 #include <DSTfits/FITSnumeric.h>
 #include <DSTmath/DSTmath.h>
 
+#ifdef __WITH_ASDF__
+#include <cstring>
+#include <memory>
+#include <asdf2fits/ASDFmanager.h>
+#endif
+
 
 #include <functional>
 #include <thread>
@@ -98,6 +104,68 @@ std::thread _print_;
 static std::atomic<bool> _cancel_wcs{false};
 
 using namespace DSL;
+
+#ifdef __WITH_ASDF__
+
+// Opens a FITS or an ASDF file and hands out the same DeepSkyFits objects for both. The format is
+// taken from the file content, not its name; anything that isn't ASDF (including the CFITSIO
+// extended file names, which can't be opened as a plain path) goes to FITSmanager.
+class DataFile
+{
+    std::unique_ptr<FITSmanager> fits;
+    std::unique_ptr<ASDFmanager> asdf;
+
+    static bool isASDF(const std::string& path)
+    {
+        char magic[5] = {};
+        std::ifstream in(path, std::ios::binary);
+        in.read(magic, sizeof(magic));
+        return in.gcount() == sizeof(magic) && std::memcmp(magic, "#ASDF", sizeof(magic)) == 0;
+    }
+
+public:
+    explicit DataFile(const std::string& path)
+    {
+        if (isASDF(path))
+            asdf = std::make_unique<ASDFmanager>(path);
+        else
+            fits = std::make_unique<FITSmanager>(path);
+    }
+
+    FITSmanager* fitsFile() { return fits.get(); }      //!< nullptr when the file is ASDF
+
+    int NumberOfHeader() { return asdf ? asdf->NumberOfHeader() : fits->NumberOfHeader(); }
+
+    std::shared_ptr<FITShdu> GetHeaderAtIndex(const int& i)
+    {
+        if (asdf) return asdf->GetHeaderAtIndex(i);
+        return fits->GetHeaderAtIndex(i);
+    }
+
+    std::shared_ptr<FITScube> GetImageAtIndex(const int& i)
+    {
+        if (asdf) return asdf->GetImageAtIndex(i);
+        return fits->GetImageAtIndex(i);
+    }
+
+    std::shared_ptr<FITStable> GetTableAtIndex(const int& i)
+    {
+        if (asdf) return asdf->GetTableAtIndex(i);
+        return fits->GetTableAtIndex(i);
+    }
+
+    void Close()
+    {
+        if (asdf) asdf->Close();
+        else      fits->Close();
+    }
+};
+
+#else
+
+using DataFile = FITSmanager;
+
+#endif
 
 typedef const std::vector<std::string> flist;
 typedef std::map<char,std::pair<size_t,size_t> > roi;
@@ -143,7 +211,11 @@ public:
     
     UOption():DOption(),HDU(1),RBIN(0),MODE(rmode::NONE), do_Print(false),a_info(false),hdu_explicit(false),ROI()
     {
+#ifdef __WITH_ASDF__
+        AddDescription("Open a FITS or ASDF header block and display data.");
+#else
         AddDescription("Open a FITS header block and display data.");
+#endif
         AddOption("--hdu",DParam::fparameter::uint8,"Header block to be open. If not given, the primary header will be opened");
         AddOption("--bins/-b",DParam::fparameter::uint16,"Number of bin to display the histograms of the images.");
         AddOption("--roi",{DParam::fparameter::xoffset,DParam::fparameter::xsize,DParam::fparameter::yoffset,DParam::fparameter::ysize},"Define a refgion of interest to be ploted. Other data outside this ROI are disregarded. The ROI shall be given in pixel not in WCS");
@@ -151,7 +223,11 @@ public:
         AddOption("--info","Print statistical information on the array distribution.");
         AddOption("--draw","Disable drawing!");
         AddOption("--zscale/-z",{DParam::fparameter::min,DParam::fparameter::max},"Select the min and max value for the color scale.");
-        AddParam("Fits_Filename","FITS file URL and name that will be opened for analyses.");    
+#ifdef __WITH_ASDF__
+        AddParam("Fits_Filename","FITS file URL and name, or ASDF file name, that will be opened for analyses.");
+#else
+        AddParam("Fits_Filename","FITS file URL and name that will be opened for analyses.");
+#endif
         
         DOption::prg_name += "FitsViewer -- "+ThisVersion;
 
@@ -257,6 +333,41 @@ public:
 UOption::drawing_mode UOption::ddraw = UOption::drawing_mode::LINEAR;
 
 #ifdef __WITH_QT__
+
+#ifdef __WITH_ASDF__
+
+// enumerateHDUs(FITSmanager&) for a file of either format. Unlike a FITS file, the first HDU of an
+// ASDF file can be a table, so XTENSION is what decides the type here, whatever the index.
+static std::vector<HduInfo> enumerateHDUs(DataFile& file)
+{
+    if (FITSmanager* fits = file.fitsFile())
+        return enumerateHDUs(*fits);
+
+    std::vector<HduInfo> result;
+    const int n = file.NumberOfHeader();
+    for (int i = 1; i <= n; ++i) {
+        try {
+            const std::shared_ptr<FITShdu> hdr = file.GetHeaderAtIndex(i);
+
+            HduInfo info;
+            info.index   = i;
+            info.extname = hdr->Exists("EXTNAME") ? hdr->GetValueForKey("EXTNAME") : "HDU" + std::to_string(i);
+            info.type    = HduInfo::Type::IMG;
+            if (hdr->Exists("XTENSION") && hdr->GetValueForKey("XTENSION").find("BINTABLE") != std::string::npos)
+                info.type = HduInfo::Type::BTBL;
+            info.naxis   = hdr->Exists("NAXIS")  ? (int)hdr->GetUInt64ValueForKey("NAXIS")  : 0;
+            info.naxis3  = hdr->Exists("NAXIS3") ? (int)hdr->GetUInt64ValueForKey("NAXIS3") : 0;
+
+            result.push_back(info);
+        }
+        catch (const FITSexception& e) {
+            std::cerr << "[WARNING] enumerateHDUs: HDU " << i << ": " << e.what() << std::endl;
+        }
+    }
+    return result;
+}
+
+#endif
 
 std::pair<double,double> getYDataRange(const QCPGraph *plt)
 {
@@ -1202,7 +1313,7 @@ static void addCommandBar(QMainWindow* win, const FITShdu& hdu, QCustomPlot* cus
 // Viewer for HDUs that carry no image data (NAXIS=0): shows the header table directly.
 static QWidget* makeHeaderOnlyViewer(const HduInfo& hdu, const std::string& fitsPath)
 {
-    FITSmanager fm(fitsPath);
+    DataFile fm(fitsPath);
     const FITShdu fitshdu = *fm.GetHeaderAtIndex(hdu.index);
 
     auto* win = new QMainWindow;
@@ -1420,7 +1531,7 @@ static QWidget* make2DViewer(const HduInfo& hdu,
 {
     // Thread cleanup is now handled by makeViewer before dispatching here.
 
-    FITSmanager fm(fitsPath);
+    DataFile fm(fitsPath);
     std::shared_ptr<FITScube> img = fm.GetImageAtIndex(hdu.index);
 
     if (opt.ROI.size() > 1) {
@@ -1457,7 +1568,7 @@ static QWidget* make3DViewer(const HduInfo& hdu,
                               const std::string& fitsPath,
                               const UOption&)
 {
-    FITSmanager fm(fitsPath);
+    DataFile fm(fitsPath);
     std::shared_ptr<FITScube> cube = fm.GetImageAtIndex(hdu.index);
     auto c_cube = std::const_pointer_cast<const FITScube>(cube);
     int nLayers = hdu.naxis3;
@@ -2703,7 +2814,7 @@ static bool askCatalogue(QWidget* parent, const std::string& fitsPath, bool imag
         if (hduCombo->currentIndex() < 0)
             return;
         try {
-            FITSmanager fm(fileEdit->text().toStdString());
+            DataFile fm(fileEdit->text().toStdString());
             table = std::const_pointer_cast<const FITStable>(fm.GetTableAtIndex(hduCombo->currentData().toInt()));
         } catch (const std::exception& e) {
             QMessageBox::warning(&dialog, "Catalogue", QString::fromStdString(e.what()));
@@ -2726,7 +2837,7 @@ static bool askCatalogue(QWidget* parent, const std::string& fitsPath, bool imag
         const QSignalBlocker block(hduCombo);
         hduCombo->clear();
         try {
-            FITSmanager fm(fileEdit->text().toStdString());
+            DataFile fm(fileEdit->text().toStdString());
             const std::vector<HduInfo> hdus = enumerateHDUs(fm);
             fm.Close();
             for (const auto& hdu : hdus)
@@ -3074,7 +3185,7 @@ static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
 static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsPath)
 {
     // --- Load the table ---
-    FITSmanager fm(fitsPath);
+    DataFile fm(fitsPath);
     // A copy in memory: the file is opened read-only and nothing here writes to it. Only
     // computeColumn() goes through the non-const pointer, and it stays in this copy too.
     auto table = fm.GetTableAtIndex(hdu.index);
@@ -4120,7 +4231,7 @@ static std::vector<ImageHduItem> imageHdusOf(const std::string& path)
 {
     std::vector<ImageHduItem> out;
     try {
-        FITSmanager fm(path);
+        DataFile fm(path);
         std::vector<HduInfo> hdus = enumerateHDUs(fm);
         fm.Close();
         for (const auto& h : hdus) {
@@ -4138,7 +4249,7 @@ static std::vector<ImageHduItem> imageHdusOf(const std::string& path)
 static std::shared_ptr<const FITScube>
 resolveChannelCube(const std::string& file, int hduIndex, int layer)
 {
-    FITSmanager fm(file);
+    DataFile fm(file);
     std::shared_ptr<FITScube> img = fm.GetImageAtIndex(hduIndex);
     if (img->GetDimension() == 3 && layer >= 0)
         img = img->Layer(static_cast<size_t>(layer));
@@ -4359,6 +4470,9 @@ private:
         fd.setAcceptMode(QFileDialog::AcceptOpen);
         fd.setNameFilters({
             tr("FITS files (*.fits *.fit *.fts *.fz *.fits.gz *.fit.gz *.fts.gz)"),
+#ifdef __WITH_ASDF__
+            tr("ASDF files (*.asdf)"),
+#endif
             tr("All files (*)")
         });
 
@@ -4471,7 +4585,7 @@ private:
                 if (m_cubeCombo->count() == 0)
                     throw std::runtime_error("No 3-D image HDU found in this file.");
                 const int hduIndex = m_cubeCombo->currentData().toInt();
-                FITSmanager fm(m_currentFile);
+                DataFile fm(m_currentFile);
                 std::shared_ptr<FITScube> cube = fm.GetImageAtIndex(hduIndex);
                 if (cube->GetDimension() < 3)
                     throw std::runtime_error("Selected HDU is not a 3-D cube.");
@@ -4921,7 +5035,7 @@ int main(int argc, char **argv)
                 throw std::runtime_error("Headless mode (--draw) handles a single file. "
                     "Provide one file, or drop --draw to compose a colour image from several.");
 
-            FITSmanager ffile(in_file[0]);
+            DataFile ffile(in_file[0]);
             std::shared_ptr<FITScube> img = ffile.GetImageAtIndex(fOPT.Header());
 
             if (fOPT.ROI.size() > 1)
@@ -5017,7 +5131,7 @@ int main(int argc, char **argv)
             return ret;
         }
 
-        FITSmanager ffile(in_file[0]);
+        DataFile ffile(in_file[0]);
         std::vector<HduInfo> hdus = enumerateHDUs(ffile);
         ffile.Close();
 

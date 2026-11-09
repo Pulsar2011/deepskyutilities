@@ -65,6 +65,8 @@ make -j$(nproc)
 
 `FitsViewer` opens FITS images, data cubes and tables for interactive inspection. Its windows need Qt6, and `make install` places it in `<prefix>/exe`.
 
+If [asdf2fits](../asdf2fits) is installed under `DeepSkyROOT` when CMake runs, `FitsViewer` also opens ASDF files, recognised by their content. This dependency is optional: without it, the build goes on and `FitsViewer` reads FITS files only.
+
 ```bash
 FitsViewer image.fits                 # list the HDUs of the file
 FitsViewer --hdu 2 image.fits         # also open HDU 2 directly
