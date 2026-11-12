@@ -8,7 +8,7 @@ A collection of astronomical image processing utilities for the DeepSky Project.
 
 ### Requirements
 
-- CMake >= 3.16
+- CMake >= 3.24
 - C++17 or later (C++23 preferred)
 - The DeepSky libraries below, installed under `DeepSkyROOT` (the environment variable of that name, or by default the parent of this source directory)
 - cfitsio, Minuit2
@@ -29,7 +29,7 @@ The following system packages must be installed before running CMake:
 **Debian/Ubuntu:**
 ```bash
 sudo apt install \
-  cmake make git curl wget \
+  cmake make git curl wget clang \
   pkg-config build-essential \
   libgsl-dev \
   libblas-dev liblapack-dev libopenblas-dev liblapacke-dev \
@@ -38,32 +38,44 @@ sudo apt install \
   astrometry.net \
   qt6-base-dev \
   doxygen graphviz \
-  gnuplot-nox libcairo2 libpango-1.0-0 libpangocairo-1.0-0 \
-  libboost-filesystem-dev libboost-chrono-dev libboost-thread-dev libboost-regex-dev
+  gnuplot-nox libcairo2 libpango-1.0-0 libpangocairo-1.0-0
 ```
 
 **macOS (Homebrew):**
 ```bash
-brew install cmake git fftw openblas automake astrometry-net qt doxygen boost gnuplot
+brew install cmake git fftw openblas automake astrometry-net qt doxygen gnuplot
 ```
 
-> **Note:** `nlohmann/json` and `scamp` are included as Git submodules and built automatically by CMake — no separate installation is needed.  
+> **Note:** `nlohmann/json` and `scamp` are included as Git submodules and built automatically by CMake — no separate installation is needed. scamp is built from a copy of its submodule in `build/external`, so that its `autogen.sh` never writes into the submodule.  
 > Run `git submodule update --init --recursive` after cloning.
 
 ### Basic build (CPU only)
 
+Everything is built out of source: configuring in the source directory (`cmake .`) is refused.
+
 ```bash
 git submodule update --init --recursive
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
+cmake --preset default        # Release, in build/      (or: cmake -B build)
+cmake --build build -j
+cmake --build build --target install
 ```
+
+Other presets: `debug` (Debug, in `build-debug/`) and `asan` (Debug + AddressSanitizer, in `build-asan/`):
+`cmake --preset asan && cmake --build --preset asan -j`.
+
+Options: `-DCMAKE_INSTALL_PREFIX=<path>` (default: `$DeepSkyROOT`, or the parent directory), `-DWITH_ASAN=ON`,
+`-DBUILD_TESTS=OFF`, and the GPU backends below. `-DWITH_DEBUG=ON` is deprecated: it means Debug + AddressSanitizer.
+Executables (FitsViewer, scamp, the tests) are in `build/bin`, the library in `build/lib`.
+
+Former in-source builds left files in the sources (`CMakeCache.txt`, `Makefile`, `lib/`, the generated
+`include/DSTools/DSTastrometry_config.h`, scamp's autotools files, ...); remove them once with
+`cmake -P cmake/CleanInSourceBuild.cmake`.
 
 ---
 
 ## FitsViewer
 
-`FitsViewer` opens FITS images, data cubes and tables for interactive inspection. Its windows need Qt6, and `make install` places it in `<prefix>/exe`.
+`FitsViewer` opens FITS images, data cubes and tables for interactive inspection. Its windows need Qt6, and the install places it in `<prefix>/exe`.
 
 If [asdf2fits](../asdf2fits) is installed under `DeepSkyROOT` when CMake runs, `FitsViewer` also opens ASDF files, recognised by their content. This dependency is optional: without it, the build goes on and `FitsViewer` reads FITS files only.
 
@@ -255,8 +267,8 @@ The library ships a multi-backend GPU dispatch layer for morphological operators
 **Prerequisites:** Install the [Vulkan SDK](https://vulkan.lunarg.com) (provides `glslc` or `glslangValidator` for shader compilation).
 
 ```bash
-cmake .. -DUSE_VULKAN=ON
-make -j$(nproc)
+cmake --preset default -DUSE_VULKAN=ON
+cmake --build build -j
 ```
 
 CMake will automatically compile the GLSL compute shader (`gpu/shaders/morpho.comp`) to SPIR-V at build time. If neither `glslc` nor `glslangValidator` is found, CMake will abort with an informative error.
@@ -272,8 +284,8 @@ sudo apt install vulkan-tools glslang-tools libvulkan-dev
 ### Enabling MPI (experimental, not yet validated)
 
 ```bash
-cmake .. -DUSE_MPI=ON
-make -j$(nproc)
+cmake --preset default -DUSE_MPI=ON
+cmake --build build -j
 ```
 
 Requires an MPI implementation (`OpenMPI`, `MPICH`, etc.) installed and findable by `find_package(MPI)`.
@@ -281,7 +293,7 @@ Requires an MPI implementation (`OpenMPI`, `MPICH`, etc.) installed and findable
 ### Combining backends
 
 ```bash
-cmake .. -DUSE_VULKAN=ON -DUSE_MPI=ON
+cmake --preset default -DUSE_VULKAN=ON -DUSE_MPI=ON
 ```
 
 ### Runtime behaviour
@@ -306,16 +318,19 @@ if (finder.isGPUEnabled())
 
 ## Running the tests
 
+All the tests: `ctest --preset default` (or `asan`, `debug`). They run from the build directory, read their
+data in `build/testdata` and write their files there.
+
 ### CPU regression tests
 
 ```bash
-./build/exe/gTest_findStars
+cd build && ./bin/gTest_findStars
 ```
 
 ### GPU tests (requires `USE_VULKAN=ON`)
 
 ```bash
-./build/exe/gTest_findStars-GPU
+cd build && ./bin/gTest_findStars-GPU
 ```
 
 The GPU test suite covers:
@@ -328,7 +343,7 @@ The GPU test suite covers:
 ### Astrometry tests
 
 ```bash
-./build/exe/gTest_astrometry
+cd build && ./bin/gTest_astrometry
 ```
 
 Tests are organised in five suites:
@@ -341,7 +356,7 @@ Tests are organised in five suites:
 | 4 — Live Astrometry.net solve | Full blind solve + WCS keywords | `solve-field` binary + index file |
 | 5 — WCS accuracy | RA/Dec error < 1 arcsec vs. reference WCS | `solve-field` + M11 DSS2 reference FITS |
 
-Suites 4 and 5 are **automatically skipped** when `solve-field` is not present. The M11 reference FITS and the astrometry.net index file (`index-5206-30.fits`) are downloaded at build time by CMake.
+Suites 4 and 5 are **automatically skipped** when `solve-field` is not present. The M11 reference FITS and the astrometry.net index file (`index-5206-30.fits`) are downloaded at build time into `build/testdata` (a failed download is not retried until its `.stamp` file is deleted).
 
 ---
 

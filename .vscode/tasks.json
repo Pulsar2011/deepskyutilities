@@ -4,23 +4,23 @@
         {
             "label": "make FitsViewer",
             "type": "shell",
-            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make FitsViewer",
+            "command": "cmake --preset asan && cmake --build --preset asan --target FitsViewer",
             "group": "build",
             "problemMatcher": []
         },
         {
             "label": "make gTest_morpho",
             "type": "shell",
-            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_morpho",
+            "command": "cmake --preset asan && cmake --build --preset asan --target gTest_morpho",
             "group": "build",
             "problemMatcher": []
         },
         {
             "label": "make gTest_findStars",
             "type": "shell",
-            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_findStars",
+            "command": "cmake --preset asan && cmake --build --preset asan --target gTest_findStars",
             "linux": {
-                "command": "eval \"$(pixi shell-hook --manifest-path ${workspaceFolder}/../pixi.toml --shell zsh)\" && export CONDA_BUILD_SYSROOT=\"${CONDA_PREFIX}/x86_64-conda-linux-gnu/sysroot\" && export DeepSkyROOT=\"${CONDA_PREFIX}\" && export LD_LIBRARY_PATH=\"${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}\" && export ASAN_OPTIONS=\"detect_odr_violation=0:detect_leaks=0\" && cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug && make DSTools gTest_findStars"
+                "command": "eval \"$(pixi shell-hook --manifest-path ${workspaceFolder}/../pixi.toml --shell zsh)\" && export CONDA_BUILD_SYSROOT=\"${CONDA_PREFIX}/x86_64-conda-linux-gnu/sysroot\" && export DeepSkyROOT=\"${CONDA_PREFIX}\" && export LD_LIBRARY_PATH=\"${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}\" && export ASAN_OPTIONS=\"detect_odr_violation=0:detect_leaks=0\" && cmake --preset asan && cmake --build --preset asan --target DSTools gTest_findStars"
             },
             "group": "build",
             "problemMatcher": []
@@ -28,21 +28,21 @@
         {
             "label": "make gTest_version",
             "type": "shell",
-            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_version",
+            "command": "cmake --preset asan && cmake --build --preset asan --target gTest_version",
             "group": "build",
             "problemMatcher": []
         },
         {
             "label": "make gTest_imageStacking",
             "type": "shell",
-            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_imageStacking",
+            "command": "cmake --preset asan && cmake --build --preset asan --target gTest_imageStacking",
             "group": "build",
             "problemMatcher": []
         },
         {
             "label": "make gTest_astrometry",
             "type": "shell",
-            "command": "cmake -DWITH_DEBUG=YES -DCMAKE_BUILD_TYPE=Debug ; make gTest_astrometry",
+            "command": "cmake --preset asan && cmake --build --preset asan --target gTest_astrometry",
             "group": "build",
             "problemMatcher": []
         }

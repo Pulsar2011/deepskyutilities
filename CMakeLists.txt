@@ -1,19 +1,30 @@
-#-------------------- Configuration du projet
 #-------------------- CMAKE Configuration
-CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
+cmake_minimum_required(VERSION 3.24)
 
-project(DeepSkyProject CXX)
-message("${Green}-- Project source directory :" ${CMAKE_SOURCE_DIR} "${ColourReset}")
-
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-set(CMAKE_BUILD_DIRECTORY ${CMAKE_BINARY_DIR}/build)
-
-if(DEFINED ENV{DeepSkyROOT})
-    set(DeepSkyROOT $ENV{DeepSkyROOT})
-else()
-    set(DeepSkyROOT ${CMAKE_SOURCE_DIR}/..)
+# -Wno-dev by default (developer and deprecation warnings, mostly from the submodules): no need to
+# pass it, nor to alias cmake with it, which breaks 'cmake --build' and 'cmake --install'.
+# 'cmake -Wdev ...' shows them again.
+if(NOT DEFINED CACHE{CMAKE_SUPPRESS_DEVELOPER_WARNINGS})
+    set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE INTERNAL "Suppress developer warnings (-Wno-dev)")
 endif()
+
+# Everything is generated in a build directory, never in the sources: from the project directory,
+# 'cmake --preset default' (or 'cmake -B build'); from a build directory, 'cmake <path to project>'.
+get_filename_component(_src "${CMAKE_SOURCE_DIR}" REALPATH)
+get_filename_component(_bin "${CMAKE_BINARY_DIR}" REALPATH)
+if(_src STREQUAL _bin)
+    message(FATAL_ERROR
+        "In-source builds are not allowed. Remove what this run (and any former in-source build) created:\n"
+        "    cmake -P cmake/CleanInSourceBuild.cmake\n"
+        "then, from the project directory:\n"
+        "    cmake --preset default        (or: cmake -B build)\n"
+        "    cmake --build build -j\n"
+        "    cmake --build build --target install\n"
+        "Other presets: debug (build-debug/), asan (build-asan/).\n"
+        "Or from a build directory: mkdir build && cd build && cmake .. && make")
+endif()
+
+project(DeepSkyUtilities LANGUAGES C CXX)
 
 if(NOT WIN32)
     string(ASCII 27 Esc)
@@ -35,246 +46,143 @@ if(NOT WIN32)
     set(BoldWhite   "${Esc}[1;37m")
 endif()
 
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-    set(CMAKE_INSTALL_PREFIX ${CMAKE_SOURCE_DIR}/../. CACHE PATH "default install path" FORCE)
-endif()
+message("${BoldCyan}----------- DeepSkyUtilities (DSTools) -----------${ColourReset}")
+message("${Green}-- Project source directory :${ColourReset} ${CMAKE_SOURCE_DIR}")
+message("${Green}-- Project build directory  :${ColourReset} ${CMAKE_BINARY_DIR}")
 
-set(EXECUTABLE_OUTPUT_PATH ./build/exe/)
-set(LIBRARY_OUTPUT_PATH ./build/lib/)
+if(DEFINED ENV{DeepSkyROOT})
+    set(DeepSkyROOT $ENV{DeepSkyROOT})
+else()
+    set(DeepSkyROOT ${CMAKE_SOURCE_DIR}/..)
+endif()
+get_filename_component(DeepSkyROOT "${DeepSkyROOT}" ABSOLUTE)
+
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX ${DeepSkyROOT} CACHE PATH "default install path" FORCE)
+endif()
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/modules")
 
-message("${BoldYellow}-- CMAKE INSTALL PREFIX : ${ColourReset}" ${CMAKE_INSTALL_PREFIX})
+#-------------------- Options
+option(WITH_ASAN   "Build DSTools and its tests with AddressSanitizer" OFF)
+option(BUILD_TESTS "Build the GoogleTest suite" ON)
+option(WITH_DEBUG  "Deprecated: same as CMAKE_BUILD_TYPE=Debug and WITH_ASAN=ON (use the asan preset)" OFF)
 
-# Add macOS RPATH configuration
-if(APPLE)
-    set(CMAKE_MACOSX_RPATH ON)
-    set(CMAKE_SKIP_BUILD_RPATH FALSE)
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
-
-    # RPATH when installed: DeepSkyProject/exe -> DeepSkyProject/lib
-    set(CMAKE_INSTALL_RPATH "@executable_path/../lib;@loader_path/../lib")
-    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-
-    # RPATH when running from the build tree
-    list(APPEND CMAKE_BUILD_RPATH
-        "${CMAKE_CURRENT_BINARY_DIR}/build/lib"
-        "${DeepSkyROOT}/lib"
-    )
+if(WITH_DEBUG)
+    message(WARNING "WITH_DEBUG is deprecated: use 'cmake --preset asan' (Debug + AddressSanitizer, in build-asan/)")
+    set(CMAKE_BUILD_TYPE Debug)
+    set(WITH_ASAN ON)
 endif()
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Products of this build: executables in bin/, libraries in lib/ (objects stay in CMakeFiles/)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+# The highest standard the compiler supports, from C++23 down
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED OFF)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# compile_commands.json in the build directory, for clangd / IntelliSense
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 #-------------------- COMPILER
-include(CheckCXXCompilerFlag)
-CHECK_CXX_COMPILER_FLAG("-std=c++23" COMPILER_SUPPORTS_CXX23)
-CHECK_CXX_COMPILER_FLAG("-std=c++20" COMPILER_SUPPORTS_CXX20)
-CHECK_CXX_COMPILER_FLAG("-std=c++17" COMPILER_SUPPORTS_CXX17)
-CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
-CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
+# These flags apply to every C++ target of this directory, the googletest submodule included
+# (not to the C of scamp, built apart).
+set(_release "$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>")
+set(_debug   "$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>")
 
-if(COMPILER_SUPPORTS_CXX23)
-    message("-- USE CXX23 STANDARD")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++23")
-    set(CMAKE_CXX_STANDARD "23")
-elseif(COMPILER_SUPPORTS_CXX20)
-    message("-- USE CXX20 STANDARD")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20")
-    set(CMAKE_CXX_STANDARD "20")
-elseif(COMPILER_SUPPORTS_CXX17)
-    message("-- USE CXX17 STANDARD")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
-    set(CMAKE_CXX_STANDARD "17")
-elseif(COMPILER_SUPPORTS_CXX11)
-    message("-- USE CXX11 STANDARD")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-    set(CMAKE_CXX_STANDARD "11")
-elseif(COMPILER_SUPPORTS_CXX0X)
-    message("-- USE CX0X STANDARD")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
-else()
-	message(STATUS "The compiler ${CMAKE_CXX_COMPILER} has no C++17 nor C++11 nor C++0x support. Please use a different C++ compiler.")
-endif()
-
-set(BUILD_SHARED_LIBS "YES")
-
-#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -v")
-
-#-------------------- GCC specifics
-IF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-    cmake_policy(SET CMP0069 NEW)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -pipe -pthread -fexceptions -fPIC -Wno-unknown-pragmas -Wmisleading-indentation -flto -mtune=native -ffp-contract=on -fomit-frame-pointer")
+if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    set(OperatingSystem "Linux")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wall;-pipe;-pthread;-fexceptions;-Wno-unknown-pragmas;-Wmisleading-indentation;-mtune=native;-ffp-contract=on>")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64")
-        ADD_DEFINITIONS(-DLinuxx86_64)
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-m64>")
+        add_compile_definitions(Linuxx86_64)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-        ADD_DEFINITIONS(-DLinuxaarch64)
+        add_compile_definitions(Linuxaarch64)
     endif()
-
+    add_compile_options("$<${_release}:-flto>")
+    add_link_options(-pthread "$<$<CONFIG:Release>:-flto>")
+    # Interprocedural optimization (LTO) of the release build, when supported
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
     if(ipo_supported)
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
     endif()
-
-    set(OperatingSystem "Linux")
-    set(CMAKE_CXX_STANDARD_REQUIRED ON)
-    set(CMAKE_CXX_EXTENSIONS OFF)
-
-    # ---- RPATH Linux ----
-    set(CMAKE_SKIP_BUILD_RPATH FALSE)
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
-    set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib:${DeepSkyROOT}/lib")
-    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-    set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} -Wl,--disable-new-dtags")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--disable-new-dtags")
-    list(APPEND CMAKE_BUILD_RPATH
-        "${CMAKE_CURRENT_BINARY_DIR}/build/lib"
-        "${DeepSkyROOT}/lib"
-    )
-
-ENDIF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-
-#-------------------- DARWIN specifics
-IF(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    # macOS specific code with architecture distinction
+elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+    set(OperatingSystem "Mac OS X")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wall;-mcpu=native;-mtune=native;-ffp-contract=on>")
+    add_compile_definitions(Darwin)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
-        # Apple Silicon (ARM64)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -fPIC -mcpu=native -mtune=native -ffp-contract=on")
-        set(OperatingSystem "Mac OS X")
-        ADD_DEFINITIONS(-DDarwin -DDarwinarm64)
+        add_compile_definitions(Darwinarm64)
         set(CMAKE_OSX_ARCHITECTURES "arm64")
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
-        # Apple Intel (x86_64)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -m64 -fPIC -mcpu=native -mtune=native -ffp-contract=on")
-        set(OperatingSystem "Mac OS X")
-        ADD_DEFINITIONS(-DDarwin -DDarwinx86_64)
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-m64>")
+        add_compile_definitions(Darwinx86_64)
         set(CMAKE_OSX_ARCHITECTURES "x86_64")
-    else()
-        # Fallback
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -fPIC -mcpu=native -mtune=native -ffp-contract=on")
-        set(OperatingSystem "Mac OS X")
-        ADD_DEFINITIONS(-DDarwin)
     endif()
-ENDIF(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    add_compile_options("$<${_release}:-flto=thin>")
+    add_link_options("$<$<CONFIG:Release>:-flto=thin>")
+endif()
 
-option(WITH_DEBUG "Activate debug mode" OFF)
-if(WITH_DEBUG)
-	message("${Blue}-- DEBUG MODE ACTIVATED${ColourReset}")
-	add_definitions(-D__DEBUG__)
-	# Ensure proper CMake build type name and debug flags so lldb can see symbols.
-	# Use -g3 for maximum debug info, -O0 to avoid optimization and -fno-omit-frame-pointer
-	# Avoid adding any -s/--strip flags here.
-	# Disable LTO in debug mode to preserve debug symbols
-	set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
-	set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
-	# Populate the Debug-specific vars used by CMake and toolchains
-	set(CMAKE_C_FLAGS_DEBUG   "${CMAKE_C_FLAGS_DEBUG} -g3 -O0 -fno-omit-frame-pointer -fsanitize=address")
-	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g3 -O0 -fno-omit-frame-pointer -fsanitize=address")
-	# Ensure linker doesn't strip in debug mode (leave linker flags untouched or add explicit)
-	set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG}")
-	# Also append to global flags (keeps behaviour consistent with rest of file)
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_DEBUG}")
-else(WITH_DEBUG)
-	# For non-debug keep release-style optimizations but avoid automatic stripping here.
-	# Re-enable LTO for Release builds on macOS
-	if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin -fomit-frame-pointer")
-	endif()
-	set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
-	set(CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE} -O3")
-	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_RELEASE}")
-endif(WITH_DEBUG)
+add_compile_options("$<${_release}:-O3;-fomit-frame-pointer>")
+# No LTO in debug: on macOS it replaces the .o files with LLVM bitcode, leaving the debug map with
+# empty OSO entries that LLDB cannot follow.
+add_compile_options("$<${_debug}:-O0;-g>")
+add_compile_definitions("$<$<CONFIG:Debug>:__DEBUG__>")
 
-message("${Green}-- CXX COMPILER:${ColourReset} ${CMAKE_CXX_COMPILER}")
-message("${Green}-- DEFAULT CXX FLAGS:${ColourReset} ${CMAKE_CXX_FLAGS}")
-message("${Green}-- CMAKE_BUILD_TYPE:${ColourReset} ${CMAKE_BUILD_TYPE}")
-message("${Green}-- CMAKE_CXX_FLAGS_DEBUG:${ColourReset} ${CMAKE_CXX_FLAGS_DEBUG}")
-message("${Green}-- CMAKE_EXE_LINKER_FLAGS_DEBUG:${ColourReset} ${CMAKE_EXE_LINKER_FLAGS_DEBUG}")
+if(WITH_ASAN)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address;-fno-omit-frame-pointer;-g>")
+    add_link_options(-fsanitize=address)
+endif()
 
-#-------------------- APPEND GIT VERSION TAG
-# Make a version file containing the current version from git.
+message("${BoldYellow}-- CMAKE INSTALL PREFIX : ${ColourReset}${CMAKE_INSTALL_PREFIX}")
+message("${Green}-- DeepSkyROOT :${ColourReset} ${DeepSkyROOT}")
+message("${Green}-- BUILD TYPE :${ColourReset} ${CMAKE_BUILD_TYPE}")
+message("${Green}-- CXX COMPILER :${ColourReset} ${CMAKE_CXX_COMPILER}")
+message("${Green}-- USE CXX STANDARD :${ColourReset} ${CMAKE_CXX_STANDARD}")
+if(WITH_ASAN)
+    message("${Blue}-- AddressSanitizer ACTIVATED${ColourReset}")
+endif()
+
+#-------------------- VERSION FROM THE GIT TAG
 find_package(Git)
 include(GetGitRevisionDescription)
 git_describe(VERSION --always --tags --long)
 
-#parse the version information into pieces.
 string(REGEX REPLACE "^v([0-9]+)\\..*" "\\1" VERSION_MAJOR "${VERSION}")
 string(REGEX REPLACE "^v[0-9]+\\.([0-9]+).*" "\\1" VERSION_MINOR "${VERSION}")
 string(REGEX REPLACE "^v[0-9]+\\.[0-9]+\\.([0-9]+).*" "\\1" VERSION_PATCH "${VERSION}")
 string(REGEX REPLACE "^v[0-9]+\\.[0-9]+\\.[0-9]+.(-*)" "\\1" VERSION_SHA1 "${VERSION}")
 set(VERSION_SHORT "v${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}")
-message("-- PKG VERSION : " ${VERSION})
-message("-- PKG VERSION : " ${VERSION_SHORT})
-message("-- PKG MAJOR   : " ${VERSION_MAJOR})
-message("-- PKG MINOR   : " ${VERSION_MINOR})
-message("-- PKG PATCH   : " ${VERSION_PATCH})
-message("-- PKG SHA1    : " ${VERSION_SHA1})
+message("-- PKG VERSION : ${VERSION} (${VERSION_SHORT}, sha1 ${VERSION_SHA1})")
 
-set(CMAKE_PROJECT_VERSION "${VERSION}")
+set(CMAKE_PROJECT_VERSION       "${VERSION}")
 set(CMAKE_PROJECT_VERSION_MAJOR "${VERSION_MAJOR}")
 set(CMAKE_PROJECT_VERSION_MINOR "${VERSION_MINOR}")
 set(CMAKE_PROJECT_VERSION_PATCH "${VERSION_PATCH}")
 
-configure_file(${CMAKE_MODULE_PATH}/DST_version.cxx.in ${CMAKE_CURRENT_BINARY_DIR}/src/DST_version.cxx)
-set(version_file "${CMAKE_CURRENT_BINARY_DIR}/src/DST_version.cxx")
+# A clone without a reachable tag (e.g. a shallow CI clone) has no numeric version: the library
+# stays unversioned and no CMake package is installed.
+if(VERSION MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+")
+    set(DSTools_NUMERIC_VERSION "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}")
+    set(PROJECT_VERSION "${DSTools_NUMERIC_VERSION}")
+else()
+    message(WARNING "No version tag found (git describe gave '${VERSION}'): DSTools will not be versioned")
+endif()
 
-configure_file(${CMAKE_MODULE_PATH}/gTest_version.h.in ${CMAKE_CURRENT_BINARY_DIR}/test/gTest_version.h)
+# Generated sources stay in the build directory
+set(GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
+configure_file(${CMAKE_SOURCE_DIR}/modules/DST_version.cxx.in ${GENERATED_DIR}/src/DST_version.cxx)
+configure_file(${CMAKE_SOURCE_DIR}/modules/gTest_version.h.in ${GENERATED_DIR}/test/gTest_version.h)
 
-#-------------------- Inclusion des en-têtes publics
-# The generated DSTastrometry_config.h lives in the build tree; add it first
-# so both the library and downstream test executables find it automatically.
-INCLUDE_DIRECTORIES(
-    ${CMAKE_CURRENT_BINARY_DIR}/include/DSTools
-    ${CMAKE_CURRENT_BINARY_DIR}/include
-    ${CMAKE_CURRENT_BINARY_DIR}/test
-    ./include
-    ./include/DSTools
-)
-
-#-------------------- nlohmann/json (header-only submodule)
-include_directories(${CMAKE_SOURCE_DIR}/json/include)
-message("${Green}-- nlohmann/json headers:${ColourReset} ${CMAKE_SOURCE_DIR}/json/include")
-
-message("-- PROJECT DIR: " ${CMAKE_SOURCE_DIR})
-message("-- PROJECT BINARY DIR: " ${PROJECT_BINARY_DIR})
-message("-- CURRENT BINARY DIR: " ${CMAKE_CURRENT_BINARY_DIR})
-message("-- CMAKE SOURCE DIR  : " ${CMAKE_SOURCE_DIR})
-
-
-#-------------------- Find Boost dependencies
-if(!${COMPILER_SUPPORTS_CXX17})
-    message("${Red}----------- SEARCH BOOST Framework -----------${ColourReset}")
-    find_package(Boost REQUIRED COMPONENTS filesystem chrono)
-    if(${Boost_FOUND})
-        message("${Blue}-- Boost INC DIR ${ColourReset} ${Boost_INCLUDE_DIRS}")
-        message("${Blue}-- Boost LIBRARY DIR ${ColourReset} ${Boost_LIBRARY_DIRS}")
-        message("${Blue}-- Boost LIB ${ColourReset} ${Boost_LIBRARIES}")
-    endif(${Boost_FOUND})
-    set(Boost_USE_MULTITHREADED ON)
-endif(!${COMPILER_SUPPORTS_CXX17})
-
-#-------------------- Find QT dependencies. NOTE THAT Qt is optional package
-find_package(Qt6 COMPONENTS Widgets Core Gui PrintSupport Concurrent)
-if(Qt6_FOUND)
-    message("${Blue}-- Qt6 FOUND : ${ColourReset} ${Qt6_VERSION}")
-    include_directories(${Qt6Widgets_INCLUDE_DIRS} ${Qt6Core_INCLUDE_DIRS} ${Qt6Gui_INCLUDE_DIRS} ${Qt6PrintSupport_INCLUDE_DIRS} ${Qt6Concurrent_INCLUDE_DIRS})
-    add_definitions(${Qt6Widgets_DEFINITIONS} ${Qt6Core_DEFINITIONS} ${Qt6Gui_DEFINITIONS} ${Qt6PrintSupport_DEFINITIONS} ${Qt6Concurrent_DEFINITIONS})
-    set(QT_LIBS Qt6::Widgets Qt6::Core Qt6::Gui Qt6::PrintSupport Qt6::Concurrent)
-    add_definitions(-D__WITH_QT__)
-
-    # Enable Qt's code generators
-    set(CMAKE_AUTOMOC ON)
-    set(CMAKE_AUTOUIC ON)
-    set(CMAKE_AUTORCC ON)
-
-else(Qt6_FOUND)
-    message("${Red}-- Qt6 NOT FOUND. GUI will be disabled${ColourReset}")
-    set(QT_LIBS "")
-endif(Qt6_FOUND)
-
-link_directories(${DeepSkyROOT}/lib)
-include_directories(${DeepSkyROOT}/include)
-
+#-------------------- DeepSky libraries (installed in DeepSkyROOT)
+message("${Red}----------- SEARCH DeepSky libraries -----------${ColourReset}")
 # Minimum versions of the DeepSky libraries: the latest tag of each package.
 set(DSTCore_MIN_VERSION    2.0.1)
 set(DSTmath_MIN_VERSION    0.1.3)
@@ -292,22 +200,17 @@ foreach(_dst_pkg DSTCore DSTmath DSTfits DSTdisplay)
     message("-- ${Green}Found${ColourReset} ${_dst_pkg} ${${_dst_pkg}_VERSION}: ${${_dst_pkg}_DIR}")
 endforeach()
 
-find_library(cfitsio NAMES cfitsio HINTS ${DeepSkyROOT}/lib)
-if(cfitsio)
-    include_directories(${DeepSkyROOT}/include/cfitsio)
-    message("-- ${Green}Found${ColourReset} cfitsio: ${cfitsio}")
-else()
-    message(WARNING "libcfitsio not found; install the library")
-endif()
-
-
-find_library(Minuit2 NAMES Minuit2 HINTS ${DeepSkyROOT}/lib)
-if(Minuit2)
-    include_directories(${DeepSkyROOT}/include/Minuit2)
-    message("-- ${Green}Found${ColourReset} Minuit2: ${Minuit2}")
-else()
-    message(WARNING "libMinuit2 not found; install the library")
-endif()
+# The DSTfits headers include cfitsio and Minuit2 headers, installed beside them by deepskyfits
+find_library(MINUIT2_LIBRARY Minuit2 PATHS ${DeepSkyROOT}/lib NO_DEFAULT_PATH REQUIRED)
+foreach(_dir cfitsio Minuit2)
+    if(NOT EXISTS ${DeepSkyROOT}/include/${_dir})
+        message(FATAL_ERROR "${DeepSkyROOT}/include/${_dir} not found: install deepskyfits first")
+    endif()
+endforeach()
+message("-- ${Green}Found${ColourReset} Minuit2: ${MINUIT2_LIBRARY}")
+add_library(deepsky_externals INTERFACE)
+target_include_directories(deepsky_externals INTERFACE ${DeepSkyROOT}/include ${DeepSkyROOT}/include/cfitsio ${DeepSkyROOT}/include/Minuit2)
+target_link_libraries(deepsky_externals INTERFACE ${MINUIT2_LIBRARY})
 
 # Optional: without asdf2fits, FitsViewer is built for FITS files only. A package file left behind
 # by a removed install must not break the link, so the files themselves are checked too. The exact
@@ -326,10 +229,47 @@ else()
     message("${Yellow}-- asdf2fits not found: FitsViewer will read FITS files only${ColourReset}")
 endif()
 
-#-------------------- Detect astrometry.net solve-field
-# The detected path is written into DSTastrometry_config.h (generated header,
-# installed alongside DSTastrometry.h) so downstream consumers get the same
-# default.  DSTastrometry.h itself is never generated by CMake.
+#-------------------- nlohmann/json (header-only submodule)
+if(NOT EXISTS ${CMAKE_SOURCE_DIR}/json/include/nlohmann/json.hpp)
+    message(FATAL_ERROR "${BoldRed}json is missing: run 'git submodule update --init'${ColourReset}")
+endif()
+message("${Green}-- nlohmann/json headers:${ColourReset} ${CMAKE_SOURCE_DIR}/json/include")
+
+#-------------------- Qt6 (optional: without it, the GUI is disabled)
+find_package(Qt6 COMPONENTS Widgets Core Gui PrintSupport Concurrent)
+if(Qt6_FOUND)
+    message("${Blue}-- Qt6 FOUND : ${ColourReset} ${Qt6_VERSION}")
+    set(QT_LIBS Qt6::Widgets Qt6::Core Qt6::Gui Qt6::PrintSupport Qt6::Concurrent)
+    add_compile_definitions(__WITH_QT__)
+    # Qt's code generators
+    set(CMAKE_AUTOMOC ON)
+    set(CMAKE_AUTOUIC ON)
+    set(CMAKE_AUTORCC ON)
+else()
+    message("${Red}-- Qt6 NOT FOUND. GUI will be disabled${ColourReset}")
+    set(QT_LIBS "")
+endif()
+
+#-------------------- RPATH
+# This build comes first, then DeepSkyROOT: an installed copy must not replace what the tests are testing.
+set(CMAKE_BUILD_RPATH "${CMAKE_LIBRARY_OUTPUT_DIRECTORY};${DeepSkyROOT}/lib")
+# Installed: <prefix>/exe and <prefix>/lib find <prefix>/lib, then DeepSkyROOT
+if(APPLE)
+    set(CMAKE_INSTALL_RPATH "@loader_path/../lib;${DeepSkyROOT}/lib")
+else()
+    set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib;${DeepSkyROOT}/lib")
+endif()
+# Also the directories of the external libraries (Qt from Homebrew or conda, ...)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    # RPATH rather than RUNPATH: also used to find the dependencies of the DeepSky libraries
+    add_link_options(-Wl,--disable-new-dtags)
+endif()
+
+#-------------------- astrometry.net solve-field and scamp defaults
+# The detected path is written into DSTastrometry_config.h (generated header, installed alongside
+# DSTastrometry.h) so downstream consumers get the same default. DSTastrometry.h itself is never
+# generated by CMake.
 find_program(ASTROMETRY_NET_SOLVE_FIELD solve-field
     HINTS /opt/homebrew/bin
           /opt/homebrew/Cellar/astrometry-net/*/bin
@@ -339,67 +279,33 @@ find_program(ASTROMETRY_NET_SOLVE_FIELD solve-field
 if(ASTROMETRY_NET_SOLVE_FIELD)
     get_filename_component(ASTROMETRY_NET_DEFAULT_PATH "${ASTROMETRY_NET_SOLVE_FIELD}" DIRECTORY)
     message("${Green}-- astrometry.net solve-field:${ColourReset} ${ASTROMETRY_NET_SOLVE_FIELD}")
-    message("${Green}-- ASTROMETRY_NET_DEFAULT_PATH:${ColourReset} ${ASTROMETRY_NET_DEFAULT_PATH}")
-
-    # Download the index file needed by integration tests.
-    # The file lands in build/test_output/astrometry/ so it is co-located with
-    # other test artefacts and does not pollute the source tree.
-    # ASTROMETRY_NET_INDEX_FILE is passed as a compile-time macro so that
-    # writeMinimalConfig() in the test can inject it into the solver JSON config.
-    set(ASTROMETRY_INDEX_DIR  "${CMAKE_SOURCE_DIR}/build/astrometry_index")
-    set(ASTROMETRY_INDEX_FILE "${ASTROMETRY_INDEX_DIR}/index-5206-30.fits")
-    set(ASTROMETRY_INDEX_URL
-        "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-30.fits")
-
-    # Use a stamp file as the OUTPUT so CMake does not retry the download on every
-    # build invocation when the network is unavailable.  The actual index file may
-    # or may not be present after the stamp is written; the astrometry test checks
-    # at runtime and skips if the file is missing.
-    set(ASTROMETRY_INDEX_STAMP "${ASTROMETRY_INDEX_DIR}/download.stamp")
-    set(_DL_SCRIPT "${CMAKE_SOURCE_DIR}/modules/DownloadFile.cmake")
-    add_custom_command(
-        OUTPUT  "${ASTROMETRY_INDEX_STAMP}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${ASTROMETRY_INDEX_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E echo "[download_astrometry_index] cmake = ${CMAKE_COMMAND}"
-        COMMAND ${CMAKE_COMMAND} -E echo "[download_astrometry_index] script = ${_DL_SCRIPT}"
-        COMMAND ${CMAKE_COMMAND} -E echo "[download_astrometry_index] URL = ${ASTROMETRY_INDEX_URL}"
-        COMMAND ${CMAKE_COMMAND} -E echo "[download_astrometry_index] DEST = ${ASTROMETRY_INDEX_FILE}"
-        COMMAND ${CMAKE_COMMAND} --version
-        COMMAND ls -la "${_DL_SCRIPT}" || true
-        COMMAND head -5 "${_DL_SCRIPT}" || true
-        COMMAND ${CMAKE_COMMAND}
-            "-DURL=${ASTROMETRY_INDEX_URL}"
-            "-DDEST=${ASTROMETRY_INDEX_FILE}"
-            -DOPTIONAL=1
-            -P "${_DL_SCRIPT}"
-        COMMAND ${CMAKE_COMMAND} -E touch "${ASTROMETRY_INDEX_STAMP}"
-        COMMENT "Downloading astrometry.net index file index-5206-30.fits"
-        VERBATIM
-    )
-
-    add_custom_target(download_astrometry_index
-        DEPENDS "${ASTROMETRY_INDEX_STAMP}"
-        COMMENT "Astrometry.net index file ready"
-    )
-
-    add_definitions(-DASTROMETRY_NET_INDEX_FILE="${ASTROMETRY_INDEX_FILE}")
-    message("${Green}-- Astrometry index will be downloaded to:${ColourReset} ${ASTROMETRY_INDEX_FILE}")
 else()
     # Leave ASTROMETRY_NET_DEFAULT_PATH unset so #cmakedefine comments it out
     message("${Yellow}-- astrometry.net solve-field not found; ASTROMETRY_NET_DEFAULT_PATH will be undefined${ColourReset}")
 endif()
 
-# scamp install path (matches the DESTINATION in the install() command below)
+# scamp install path (matches the DESTINATION of its install() below)
 get_filename_component(SCAMP_DEFAULT_PATH "${CMAKE_INSTALL_PREFIX}/exe" ABSOLUTE)
-add_definitions(-DSCAMP_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/scamp/tests")
 
 configure_file(
     ${CMAKE_SOURCE_DIR}/modules/DSTastrometry_config.h.in
-    ${CMAKE_CURRENT_BINARY_DIR}/include/DSTools/DSTastrometry_config.h
+    ${GENERATED_DIR}/include/DSTools/DSTastrometry_config.h
 )
 
 #-------------------- scamp (Autotools, submodule)
+message("${Red}----------- scamp (submodule) -----------${ColourReset}")
+if(NOT EXISTS ${CMAKE_SOURCE_DIR}/scamp/configure.ac)
+    message(FATAL_ERROR "${BoldRed}scamp is missing: run 'git submodule update --init'${ColourReset}")
+endif()
 include(ExternalProject)
+set(EXTERNAL_DIR ${CMAKE_BINARY_DIR}/external)
+include(ProcessorCount)
+ProcessorCount(NCORES)
+if(NCORES EQUAL 0)
+    set(NCORES 4)
+endif()
+# The autotools build needs make, whatever the generator (CMAKE_MAKE_PROGRAM is ninja with Ninja)
+find_program(MAKE_EXECUTABLE NAMES gmake make REQUIRED)
 
 find_program(AUTOMAKE automake
     HINTS /opt/homebrew/opt/automake/bin   # macOS Apple Silicon (keg-only)
@@ -434,18 +340,17 @@ message("${Green}-- FFTW lib:    ${ColourReset} ${FFTW_LIB_DIR}")
 # are listed explicitly so NO_DEFAULT_PATH does not block them on Debian/Ubuntu CI runners.
 find_path(OPENBLAS_INCLUDE_DIR cblas.h
     HINTS $ENV{CONDA_PREFIX}/include
-        $ENV{CONDA_PREFIX}/include/openblas
-        $ENV{CONDA_PREFIX}/include 
-        /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
-        /usr/local/opt/openblas/include              # macOS Intel (keg-only)
-        /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}   # Debian/Ubuntu multiarch (arm64, x86_64 …)
-        /usr/include/openblas
-        /usr/include
+          $ENV{CONDA_PREFIX}/include/openblas
+          /opt/homebrew/opt/openblas/include          # macOS Apple Silicon (keg-only)
+          /usr/local/opt/openblas/include              # macOS Intel (keg-only)
+          /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}   # Debian/Ubuntu multiarch (arm64, x86_64 …)
+          /usr/include/openblas
+          /usr/include
     NO_DEFAULT_PATH
 )
 find_library(OPENBLAS_LIBRARY NAMES openblas
     HINTS $ENV{CONDA_PREFIX}/lib
-          $ENV{CONDA_PREFIX}/openblas/lib 
+          $ENV{CONDA_PREFIX}/openblas/lib
           /opt/homebrew/opt/openblas/lib
           /usr/local/opt/openblas/lib
           /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}       # Debian/Ubuntu multiarch
@@ -486,7 +391,7 @@ if(UNIX AND NOT APPLE)
             /usr/include
     )
     if(_LAPACKE_LIB)
-        set(_OB_WRAPPER_DIR "${CMAKE_BINARY_DIR}/_openblas_wrapper")
+        set(_OB_WRAPPER_DIR "${EXTERNAL_DIR}/openblas-wrapper")
 
         # -- Library wrapper (ld linker script) --
         file(MAKE_DIRECTORY "${_OB_WRAPPER_DIR}/lib")
@@ -499,101 +404,67 @@ if(UNIX AND NOT APPLE)
         # Only needed when lapacke.h and cblas.h are in different directories.
         if(_LAPACKE_INCLUDE_DIR AND NOT "${_LAPACKE_INCLUDE_DIR}" STREQUAL "${OPENBLAS_INCLUDE_DIR}")
             file(MAKE_DIRECTORY "${_OB_WRAPPER_DIR}/include")
-            # Symlink cblas.h from OpenBLAS include dir
             execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
-                "${OPENBLAS_INCLUDE_DIR}/cblas.h"
-                "${_OB_WRAPPER_DIR}/include/cblas.h")
-            # Symlink lapacke.h from lapacke-dev include dir
-            execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
-                "${_LAPACKE_INCLUDE_DIR}/lapacke.h"
-                "${_OB_WRAPPER_DIR}/include/lapacke.h")
-            # Also symlink lapacke_mangling.h if present (pulled in by lapacke.h)
-            if(EXISTS "${_LAPACKE_INCLUDE_DIR}/lapacke_mangling.h")
-                execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
-                    "${_LAPACKE_INCLUDE_DIR}/lapacke_mangling.h"
-                    "${_OB_WRAPPER_DIR}/include/lapacke_mangling.h")
-            endif()
-            # Also symlink lapacke_config.h if present
-            if(EXISTS "${_LAPACKE_INCLUDE_DIR}/lapacke_config.h")
-                execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
-                    "${_LAPACKE_INCLUDE_DIR}/lapacke_config.h"
-                    "${_OB_WRAPPER_DIR}/include/lapacke_config.h")
-            endif()
+                "${OPENBLAS_INCLUDE_DIR}/cblas.h" "${_OB_WRAPPER_DIR}/include/cblas.h")
+            # lapacke_mangling.h and lapacke_config.h are pulled in by lapacke.h, when present
+            foreach(_h lapacke.h lapacke_mangling.h lapacke_config.h)
+                if(EXISTS "${_LAPACKE_INCLUDE_DIR}/${_h}")
+                    execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+                        "${_LAPACKE_INCLUDE_DIR}/${_h}" "${_OB_WRAPPER_DIR}/include/${_h}")
+                endif()
+            endforeach()
             set(OPENBLAS_INCLUDE_DIR "${_OB_WRAPPER_DIR}/include")
             message("${Green}-- Created OpenBLAS+LAPACKE include wrapper: ${_OB_WRAPPER_DIR}/include/${ColourReset}")
         endif()
     endif()
 endif()
 
-# Step 1: run autogen.sh to generate the configure script from configure.ac.
-# Prepend the automake bin dir to PATH so autogen.sh can locate automake/aclocal
-# even when the package is keg-only and not linked into /opt/homebrew/bin.
-add_custom_command(
-    OUTPUT  ${CMAKE_SOURCE_DIR}/scamp/configure
-    COMMAND ${CMAKE_COMMAND} -E env PATH=${AUTOMAKE_BIN_DIR}:$ENV{PATH} bash -c "cd ${CMAKE_SOURCE_DIR}/scamp && ./autogen.sh"
-    DEPENDS ${CMAKE_SOURCE_DIR}/scamp/configure.ac
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/scamp
-    COMMENT "Running scamp/autogen.sh (generating configure script)"
-    VERBATIM
+# autogen.sh writes into its source tree: work on a copy, so that the submodule stays clean.
+# PATH gets the automake directory, so that autogen.sh finds automake/aclocal even when the package
+# is keg-only and not linked into /opt/homebrew/bin. MAKEFLAGS is emptied: the jobserver of the
+# calling make must not reach this independent build.
+set(SCAMP_COPY    ${EXTERNAL_DIR}/scamp-src)
+set(SCAMP_INSTALL ${EXTERNAL_DIR}/scamp-install)
+set(SCAMP_PROGRAM ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scamp)
+ExternalProject_Add(scamp_external
+    PREFIX            ${EXTERNAL_DIR}/scamp
+    DOWNLOAD_COMMAND  ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/scamp ${SCAMP_COPY}
+    COMMAND           ${CMAKE_COMMAND} -E rm -f ${SCAMP_COPY}/.git
+    SOURCE_DIR        ${SCAMP_COPY}
+    BUILD_IN_SOURCE   1
+    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env PATH=${AUTOMAKE_BIN_DIR}:$ENV{PATH} sh ./autogen.sh
+    COMMAND           ${CMAKE_COMMAND} -E env
+                      CC=${CMAKE_C_COMPILER}
+                      CFLAGS=-fPIC
+                      CPPFLAGS=-I${OPENBLAS_INCLUDE_DIR}
+                      ./configure
+                      --prefix=${SCAMP_INSTALL}
+                      --with-fftw-incdir=${FFTW_INCLUDE_DIR}
+                      --with-fftw-libdir=${FFTW_LIB_DIR}
+                      --enable-openblas
+                      --with-openblas-incdir=${OPENBLAS_INCLUDE_DIR}
+                      --with-openblas-libdir=${OPENBLAS_LIB_DIR}
+    BUILD_COMMAND     ${CMAKE_COMMAND} -E env MAKEFLAGS= ${MAKE_EXECUTABLE} -j ${NCORES} -C src
+    INSTALL_COMMAND   ${CMAKE_COMMAND} -E env MAKEFLAGS= ${MAKE_EXECUTABLE} -C src install
+    COMMAND           ${CMAKE_COMMAND} -E copy_if_different ${SCAMP_INSTALL}/bin/scamp ${SCAMP_PROGRAM}
+    BUILD_BYPRODUCTS  ${SCAMP_PROGRAM}
 )
-add_custom_target(autogen_scamp DEPENDS ${CMAKE_SOURCE_DIR}/scamp/configure)
-
-# Step 2: configure, build and install scamp.
-# Use bash -c to ensure env vars and all flags are forwarded correctly
-# (same pattern as autogen_scamp above).
-ExternalProject_Add(
-    scamp_external
-    SOURCE_DIR      ${CMAKE_SOURCE_DIR}/scamp
-    BINARY_DIR      ${CMAKE_SOURCE_DIR}/build/scamp
-    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env
-        CC=${CMAKE_C_COMPILER}
-        CFLAGS=-fPIC
-        CPPFLAGS=-I${OPENBLAS_INCLUDE_DIR}
-        ${CMAKE_SOURCE_DIR}/scamp/configure
-        --prefix=${CMAKE_SOURCE_DIR}/build
-        --with-fftw-incdir=${FFTW_INCLUDE_DIR}
-        --with-fftw-libdir=${FFTW_LIB_DIR}
-        --enable-openblas
-        --with-openblas-incdir=${OPENBLAS_INCLUDE_DIR}
-        --with-openblas-libdir=${OPENBLAS_LIB_DIR}
-    BUILD_COMMAND     ${CMAKE_COMMAND} -E env MAKEFLAGS= ${CMAKE_MAKE_PROGRAM} -j ${CMAKE_BUILD_PARALLEL_LEVEL} -C src
-    INSTALL_COMMAND   ${CMAKE_COMMAND} -E env MAKEFLAGS= ${CMAKE_MAKE_PROGRAM} -C src install
-    BUILD_BYPRODUCTS  ${CMAKE_SOURCE_DIR}/build/bin/scamp
-)
-
-add_dependencies(scamp_external autogen_scamp)
-message("${Green}-- scamp will be built from submodule${ColourReset}")
+message("${Green}-- scamp will be built from a copy of the submodule:${ColourReset} ${SCAMP_PROGRAM}")
 
 # Helper target: run 'scamp --help' once to observe its options and output format.
-# Usage: make scamp_probe
+# Usage: cmake --build build --target scamp_probe
 add_custom_target(scamp_probe
-    COMMAND ${CMAKE_SOURCE_DIR}/build/bin/scamp --help || true
+    COMMAND ${SCAMP_PROGRAM} --help || true
     DEPENDS scamp_external
     COMMENT "Running scamp --help so you can observe its output format"
     VERBATIM
 )
 
-
-GET_DIRECTORY_PROPERTY(include_dir_list INCLUDE_DIRECTORIES)
-MESSAGE("${Green}INCLUDE DIRS${ColourReset} ${include_dir_list}")
-
-#-------------------- LIST SOURCE FILE
-
-file(GLOB CORE_SRC "src/*.cxx")
-file(GLOB GEN_SRC "${CMAKE_CURRENT_BINARY_DIR}/src/*.cxx")
-file(GLOB CORE_HEADER "include/DSTools/*.h")
-file(GLOB GEN_HEADER "${CMAKE_CURRENT_BINARY_DIR}/test/*.h")
-file(GLOB TEST_SRC "test/*.cxx")
-
-set(HEADER_FILES ${CORE_HEADER})
-
-
 #-------------------- GPU backends (optional)
-
 # Backend.cpp is always compiled (contains the Backend::create() factory)
-include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include/DSTools/gpu")
-set(GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/Backend.cpp")
+set(GPU_SRC "${CMAKE_SOURCE_DIR}/src/gpu/Backend.cpp")
 set(GPU_LIBS "")
+set(GPU_DEFINITIONS "")
 
 # ---- Vulkan Compute backend ----
 option(USE_VULKAN "Enable Vulkan Compute GPU backend" OFF)
@@ -602,8 +473,8 @@ if(USE_VULKAN)
     message("${Green}-- Vulkan FOUND:${ColourReset} ${Vulkan_LIBRARIES}")
 
     # Compile GLSL compute shader to SPIR-V at build time
-    set(SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/shaders/morpho.comp")
-    set(SHADER_SPV "${CMAKE_CURRENT_BINARY_DIR}/morpho.spv")
+    set(SHADER_SRC "${CMAKE_SOURCE_DIR}/src/gpu/shaders/morpho.comp")
+    set(SHADER_SPV "${CMAKE_BINARY_DIR}/morpho.spv")
 
     find_program(GLSLC        glslc)
     find_program(GLSLANG_VAL  glslangValidator)
@@ -632,11 +503,9 @@ if(USE_VULKAN)
 
     add_custom_target(morpho_spv DEPENDS ${SHADER_SPV})
 
-    list(APPEND GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/VulkanBackend.cpp")
-    include_directories(${Vulkan_INCLUDE_DIRS})
+    list(APPEND GPU_SRC "${CMAKE_SOURCE_DIR}/src/gpu/VulkanBackend.cpp")
     list(APPEND GPU_LIBS Vulkan::Vulkan)
-    add_definitions(-DUSE_VULKAN)
-    add_definitions(-DDST_VULKAN_SPIRV_PATH="${SHADER_SPV}")
+    list(APPEND GPU_DEFINITIONS USE_VULKAN DST_VULKAN_SPIRV_PATH="${SHADER_SPV}")
     message("${Green}-- USE_VULKAN enabled.  SPIR-V -> ${SHADER_SPV}${ColourReset}")
 endif()
 
@@ -645,287 +514,218 @@ option(USE_MPI "Enable MPI domain-decomposition backend" OFF)
 if(USE_MPI)
     find_package(MPI REQUIRED)
     message("${Green}-- MPI FOUND:${ColourReset} ${MPI_CXX_LIBRARIES}")
-    list(APPEND GPU_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/MPIBackend.cpp")
-    include_directories(${MPI_CXX_INCLUDE_DIRS})
+    list(APPEND GPU_SRC "${CMAKE_SOURCE_DIR}/src/gpu/MPIBackend.cpp")
     list(APPEND GPU_LIBS MPI::MPI_CXX)
-    add_definitions(-DUSE_MPI)
+    list(APPEND GPU_DEFINITIONS USE_MPI)
     message("${Green}-- USE_MPI enabled${ColourReset}")
 endif()
 
-#-------------------- Configuration de la bibliothèque
-
-add_library(
-    DSTools
-    SHARED
-    ${CORE_SRC}
-    ${GPU_SRC}
-    ${CORE_HEADER}
-    ${version_file}
+#-------------------- libDSTools
+message("${Red}----------- libDSTools -----------${ColourReset}")
+set(DSTOOLS_SOURCES
+    src/DSTastrometry.cxx
+    src/DSTbackground.cxx
+    src/DSTimageStacking.cxx
+    src/DSTstarFinder.cxx
+    ${GENERATED_DIR}/src/DST_version.cxx
 )
+# DSTastrometry_config.h is generated: the copy an in-source build left in include/DSTools is not a source
+file(GLOB DSTOOLS_PUBLIC_HEADERS ${CMAKE_SOURCE_DIR}/include/DSTools/*.h)
+list(FILTER DSTOOLS_PUBLIC_HEADERS EXCLUDE REGEX "/DSTastrometry_config\\.h$")
+file(GLOB DSTOOLS_GPU_HEADERS ${CMAKE_SOURCE_DIR}/include/DSTools/gpu/*.h)
 
-if(USE_VULKAN)
-    add_dependencies(DSTools morpho_spv)
-endif()
-
-if(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath Minuit2 ${QT_LIBS} ${GPU_LIBS})
-else(COMPILER_SUPPORTS_CXX23)
-    target_link_libraries( DSTools DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} ${GPU_LIBS})
-endif(COMPILER_SUPPORTS_CXX23)
-
-# Propagate the git tag to the library. A clone without a reachable tag (e.g. a shallow CI clone)
-# has no numeric version: the library stays unversioned and no CMake package is installed.
-if(VERSION MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+")
-    set(DSTools_NUMERIC_VERSION "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}")
+add_library(DSTools SHARED ${DSTOOLS_SOURCES} ${GPU_SRC} ${DSTOOLS_PUBLIC_HEADERS})
+if(DSTools_NUMERIC_VERSION)
     set_target_properties(DSTools PROPERTIES
         VERSION   "${DSTools_NUMERIC_VERSION}"
         SOVERSION "${VERSION_MAJOR}"
     )
-else()
-    message(WARNING "No version tag found (git describe gave '${VERSION}'): DSTools will not be versioned")
+endif()
+# The generated DSTastrometry_config.h comes first: both the library and the tests find it there
+target_include_directories(DSTools PUBLIC
+    ${GENERATED_DIR}/include/DSTools ${GENERATED_DIR}/include
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/include/DSTools ${CMAKE_SOURCE_DIR}/include/DSTools/gpu
+    ${CMAKE_SOURCE_DIR}/json/include
+)
+target_link_libraries(DSTools PUBLIC
+    DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath deepsky_externals
+    ${QT_LIBS} ${GPU_LIBS}
+)
+target_compile_definitions(DSTools PUBLIC ${GPU_DEFINITIONS})
+if(USE_VULKAN)
+    add_dependencies(DSTools morpho_spv)
 endif()
 
-#-------------------- Astrometry test reference FITS (M11, DSS2 Red, 512x512, 0.5° FOV)
-# Downloaded from the CDS HiPS2FITS service — the REST API that ESA Sky uses internally.
-# The file is fetched once at configure time; re-run cmake to retry a failed download.
-# Use the 'download_astrometry_ref' target to force a fresh download at build time.
-set(ASTROMETRY_REF_FITS "${CMAKE_SOURCE_DIR}/test/data/astrometry_reference.fits")
-set(_HIPS2FITS_URL
-    "https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=CDS%2FP%2FDSS2%2Fred&width=512&height=512&fov=0.5&projection=TAN&coordsys=icrs&ra=282.7633&dec=-6.2717&format=fits"
-)
-
-file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/test/data")
-
-if(NOT EXISTS "${ASTROMETRY_REF_FITS}")
-    message("${Yellow}-- Downloading M11 reference FITS from HiPS2FITS (ESA Sky backend)...${ColourReset}")
-    file(DOWNLOAD
-        "${_HIPS2FITS_URL}"
-        "${ASTROMETRY_REF_FITS}"
-        STATUS _fits_download_status
-        SHOW_PROGRESS
-        TLS_VERIFY ON
-    )
-    list(GET _fits_download_status 0 _fits_status_code)
-    if(NOT _fits_status_code EQUAL 0)
-        list(GET _fits_download_status 1 _fits_error_msg)
-        message(WARNING
-            "Could not download M11 reference FITS: ${_fits_error_msg}\n"
-            "   Astrometry WCS accuracy tests (Suite 5) will be skipped.\n"
-            "   Run 'make download_astrometry_ref' to retry after network is available.")
-        file(REMOVE "${ASTROMETRY_REF_FITS}")
-    else()
-        message("${Green}-- M11 reference FITS saved: ${ASTROMETRY_REF_FITS}${ColourReset}")
-    endif()
-else()
-    message("${Green}-- M11 reference FITS already present: ${ASTROMETRY_REF_FITS}${ColourReset}")
-endif()
-
-# Build-time guard using a binary-tree stamp file.
-# The OUTPUT is inside CMAKE_BINARY_DIR so CMake can reliably track it.
-# SKIP_IF_EXISTS makes the script a no-op when the configure-time download
-# already saved the file — no redundant network request on every `make`.
-set(_ASTROMETRY_REF_STAMP "${CMAKE_BINARY_DIR}/astrometry_ref_download.stamp")
-set(_DL_SCRIPT_REF "${CMAKE_SOURCE_DIR}/modules/DownloadFile.cmake")
-add_custom_command(
-    OUTPUT  "${_ASTROMETRY_REF_STAMP}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/test/data"
-    COMMAND ${CMAKE_COMMAND} -E echo "[download_astrometry_ref] cmake = ${CMAKE_COMMAND}"
-    COMMAND ${CMAKE_COMMAND} -E echo "[download_astrometry_ref] script = ${_DL_SCRIPT_REF}"
-    COMMAND ${CMAKE_COMMAND} -E echo "[download_astrometry_ref] URL = ${_HIPS2FITS_URL}"
-    COMMAND ${CMAKE_COMMAND} -E echo "[download_astrometry_ref] DEST = ${ASTROMETRY_REF_FITS}"
-    COMMAND ${CMAKE_COMMAND} --version
-    COMMAND ls -la "${_DL_SCRIPT_REF}" || true
-    COMMAND head -5 "${_DL_SCRIPT_REF}" || true
-    COMMAND ${CMAKE_COMMAND}
-        "-DURL=${_HIPS2FITS_URL}"
-        "-DDEST=${ASTROMETRY_REF_FITS}"
-        -DSKIP_IF_EXISTS=1
-        -P "${_DL_SCRIPT_REF}"
-    COMMAND ${CMAKE_COMMAND} -E touch "${_ASTROMETRY_REF_STAMP}"
-    COMMENT "Ensuring M11 reference FITS is present"
-    VERBATIM
-)
-add_custom_target(download_astrometry_ref
-    DEPENDS "${_ASTROMETRY_REF_STAMP}"
-)
-
-#-------------------- Configuration des test
-add_subdirectory(googletest   EXCLUDE_FROM_ALL)
-# Make googletest headers available and enable GoogleTest helper which
-# provides the gtest_discover_tests() function.
-include_directories(${CMAKE_SOURCE_DIR}/googletest/googletest/include)
-include(GoogleTest)
-enable_testing()
-
-foreach( test_source_file ${TEST_SRC} )
-	get_filename_component( tSRC ${test_source_file} NAME_WE)
-	add_executable(
-		${tSRC}
-		${test_source_file}
-	)
-
-    if(COMPILER_SUPPORTS_CXX23)
-        target_link_libraries( ${tSRC} DSTools DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath Minuit2 ${QT_LIBS} gtest gtest_main)
-    else(COMPILER_SUPPORTS_CXX23)
-        target_link_libraries( ${tSRC} DSTools DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTmath::DSTmath Minuit2 ${QT_LIBS} ${Boost_LIBRARIES} gtest gtest_main)
-    endif(COMPILER_SUPPORTS_CXX23)
-
-    set_target_properties(${tSRC} PROPERTIES
-        BUILD_RPATH   "${CMAKE_CURRENT_BINARY_DIR}/build/lib;${DeepSkyROOT}/lib"
-        INSTALL_RPATH "${DeepSkyROOT}/lib"
-    )
-
-    add_dependencies(${tSRC} download_astrometry_ref)
-
-    if(ASTROMETRY_NET_SOLVE_FIELD)
-        add_dependencies(${tSRC} download_astrometry_index)
-    endif()
-
-endforeach( test_source_file ${TEST_SRC} )
-
-foreach( test_source_file ${TEST_SRC} )
-    get_filename_component( tSRC ${test_source_file} NAME_WE)
-    gtest_discover_tests(${tSRC})
-endforeach( test_source_file ${TEST_SRC} )
-
-#-------------------- CONFIGURATION OF DOXYGEN DOC GENERATION
-
-find_package(Doxygen)
-if(DOXYGEN_FOUND)
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/DST.Doxyfile ${CMAKE_CURRENT_BINARY_DIR}/DST.Doxyfile @ONLY)
-    add_custom_target(doc
-    ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/DST.Doxyfile
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Generating API documentation with Doxygen" VERBATIM
-)
-endif(DOXYGEN_FOUND)
-
-#######################
-add_executable(
-    FitsViewer
-    utilities/FitsViewer/DSTfitsViewer.cxx
-)
-
-target_link_libraries(FitsViewer DSTfits::DSTfits DSTCore::DSTCore DSTdisplay::DSTdisplay DSTools DSTmath::DSTmath Minuit2 ${QT_LIBS})
-
+#-------------------- FitsViewer
+add_executable(FitsViewer utilities/FitsViewer/DSTfitsViewer.cxx)
+target_link_libraries(FitsViewer PRIVATE DSTools)
 if(ASDF2FITS_USABLE)
     target_compile_definitions(FitsViewer PRIVATE __WITH_ASDF__)
-    target_link_libraries(FitsViewer asdf2fits::asdf2fits)
+    target_link_libraries(FitsViewer PRIVATE asdf2fits::asdf2fits)
 endif()
 
-# Embed the install RPATH at build time so that install_name_tool does not
-# attempt to rewrite it on every subsequent "make install", which causes
-# duplicate-path errors on macOS when the binary is already up to date.
-set_target_properties(FitsViewer PROPERTIES
-    BUILD_RPATH   "${CMAKE_CURRENT_BINARY_DIR}/build/lib;${DeepSkyROOT}/lib"
-    INSTALL_RPATH "${CMAKE_INSTALL_RPATH}"
-)
-
-#-------------------- ADD DISTCLEAN CUSTOM TARGET
-
-add_custom_target(distclean)
-set(DISTCLEANED
-cmake.depends
-cmake.check_depends
-CMakeCache.txt
-cmake.check_cache
-CMakeTmp
-${version_file}
-Makefile
-CMakeFiles
-*.cmake
-*_autogen
-./build/lib
-./build/exe
-./build/test
-./build/cmake
-./doc
-./build/scamp
-./scamp/configure
-./scamp/Makefile.in
-./scamp/aclocal.m4
-./googletest/CMakeFiles
-./googletest/Makefile
-./googletest/*.cmake
-./lib
-./bin
-)
-
-add_custom_target(
-    distclean_run
-    COMMENT "distribution clean"
-    COMMAND ${CMAKE_COMMAND} -E echo "distribution clean"
-    COMMAND rm -Rf ${DISTCLEANED}
-    COMMAND /usr/bin/env bash -c "test -e install_manifest.txt && xargs rm -f < install_manifest.txt || true"
-    COMMAND /usr/bin/env bash -c "test -e install_manifest.txt && rm -f install_manifest.txt || true"
-    VERBATIM
-)
-add_dependencies(distclean distclean_run)
-
-
-#-------------------- Installation proceedure
-if(CMAKE_INSTALL_PREFIX)
-    INSTALL(FILES ${CORE_HEADER} DESTINATION include/DSTools)
-    INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/DSTools/DSTastrometry_config.h
-            DESTINATION include/DSTools)
-    INSTALL(FILES
-        include/DSTools/gpu/Backend.h
-        include/DSTools/gpu/CPUBackend.h
-        include/DSTools/gpu/GPUContext.h
-        include/DSTools/gpu/VulkanBackend.h
-        include/DSTools/gpu/CUDABackend.h
-        include/DSTools/gpu/HIPBackend.h
-        include/DSTools/gpu/MPIBackend.h
-        DESTINATION include/DSTools/gpu
-    )
-    # nlohmann/json headers (header-only, installed for downstream consumers)
-    INSTALL(DIRECTORY ${CMAKE_SOURCE_DIR}/json/include/nlohmann
-        DESTINATION include
-        FILES_MATCHING PATTERN "*.hpp"
-    )
-    # scamp executable (built by ExternalProject, not a CMake target)
-    install(PROGRAMS ${CMAKE_SOURCE_DIR}/build/bin/scamp DESTINATION exe)
-    INSTALL(TARGETS DSTools FitsViewer
-		RUNTIME DESTINATION exe
-		LIBRARY DESTINATION lib
-		ARCHIVE DESTINATION lib
-)
-
-    if(DSTools_NUMERIC_VERSION)
-        # CMake package, so that dependent projects can call find_package(DSTools <version>)
-        include(CMakePackageConfigHelpers)
-        set(DSTools_CMAKE_DIR lib/cmake/DSTools)
-        configure_package_config_file(
-            ${CMAKE_SOURCE_DIR}/modules/DSToolsConfig.cmake.in
-            ${CMAKE_CURRENT_BINARY_DIR}/build/cmake/DSToolsConfig.cmake
-            INSTALL_DESTINATION ${DSTools_CMAKE_DIR}
-        )
-        write_basic_package_version_file(
-            ${CMAKE_CURRENT_BINARY_DIR}/build/cmake/DSToolsConfigVersion.cmake
-            VERSION ${DSTools_NUMERIC_VERSION}
-            COMPATIBILITY AnyNewerVersion
-        )
-        INSTALL(FILES
-            ${CMAKE_CURRENT_BINARY_DIR}/build/cmake/DSToolsConfig.cmake
-            ${CMAKE_CURRENT_BINARY_DIR}/build/cmake/DSToolsConfigVersion.cmake
-            DESTINATION ${DSTools_CMAKE_DIR}
-        )
-
-        # CMake never removes files from the install directory: drop the versioned libraries
-        # (libDSTools.2.2.0.dylib, libDSTools.so.2.2.0, ...) left behind by previous installs.
-        install(CODE "set(DSTools_KEEP_VERSIONS \"${DSTools_NUMERIC_VERSION};${VERSION_MAJOR}\")")
-        install(CODE [[
-            file(GLOB _dst_libs "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/libDSTools.*")
-            foreach(_dst_lib ${_dst_libs})
-                get_filename_component(_dst_name "${_dst_lib}" NAME)
-                if(_dst_name MATCHES "^libDSTools\\.(so\\.)?([0-9.]*[0-9])(\\.dylib)?$")
-                    list(FIND DSTools_KEEP_VERSIONS "${CMAKE_MATCH_2}" _dst_keep)
-                    if(_dst_keep EQUAL -1)
-                        message(STATUS "Removing old library: ${_dst_lib}")
-                        file(REMOVE "${_dst_lib}")
-                    endif()
-                endif()
-            endforeach()
-        ]])
+#-------------------- Tests
+if(BUILD_TESTS)
+    message("${Red}----------- GoogleTest -----------${ColourReset}")
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/googletest/CMakeLists.txt)
+        message(FATAL_ERROR "${BoldRed}googletest is missing: run 'git submodule update --init' (or configure with -DBUILD_TESTS=OFF)${ColourReset}")
     endif()
-endif(CMAKE_INSTALL_PREFIX)
+    set(DSTOOLS_TESTS ON)
+    enable_testing()
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK   OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF)
+    add_subdirectory(googletest EXCLUDE_FROM_ALL)
+    include(GoogleTest)
+
+    # Test data, downloaded once into the build directory. Both downloads are optional: the tests
+    # that need a missing file skip themselves. A stamp file is the output, so that a failed
+    # download (no network) is not retried on every build: delete the stamp to retry.
+    set(TESTDATA_DIR ${CMAKE_BINARY_DIR}/testdata)
+    file(MAKE_DIRECTORY ${TESTDATA_DIR})
+    set(_DL_SCRIPT "${CMAKE_SOURCE_DIR}/modules/DownloadFile.cmake")
+    set(TESTDATA_STAMPS "")
+
+    # Astrometry reference image: M11, DSS2 Red, 512x512, 0.5° FOV, from the CDS HiPS2FITS
+    # service (the REST API that ESA Sky uses internally).
+    set(ASTROMETRY_REF_FITS "${TESTDATA_DIR}/astrometry_reference.fits")
+    set(_HIPS2FITS_URL
+        "https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=CDS%2FP%2FDSS2%2Fred&width=512&height=512&fov=0.5&projection=TAN&coordsys=icrs&ra=282.7633&dec=-6.2717&format=fits")
+    add_custom_command(
+        OUTPUT  ${TESTDATA_DIR}/astrometry_reference.stamp
+        COMMAND ${CMAKE_COMMAND} "-DURL=${_HIPS2FITS_URL}" "-DDEST=${ASTROMETRY_REF_FITS}"
+                -DSKIP_IF_EXISTS=1 -DOPTIONAL=1 -P "${_DL_SCRIPT}"
+        COMMAND ${CMAKE_COMMAND} -E touch ${TESTDATA_DIR}/astrometry_reference.stamp
+        COMMENT "Downloading the M11 reference FITS (astrometry tests)"
+        VERBATIM
+    )
+    list(APPEND TESTDATA_STAMPS ${TESTDATA_DIR}/astrometry_reference.stamp)
+
+    # Index file for the astrometry.net integration tests, when solve-field is installed
+    if(ASTROMETRY_NET_SOLVE_FIELD)
+        set(ASTROMETRY_INDEX_DIR  "${TESTDATA_DIR}/astrometry_index")
+        set(ASTROMETRY_INDEX_FILE "${ASTROMETRY_INDEX_DIR}/index-5206-30.fits")
+        set(ASTROMETRY_INDEX_URL
+            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-30.fits")
+        add_custom_command(
+            OUTPUT  ${ASTROMETRY_INDEX_DIR}/download.stamp
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${ASTROMETRY_INDEX_DIR}"
+            COMMAND ${CMAKE_COMMAND} "-DURL=${ASTROMETRY_INDEX_URL}" "-DDEST=${ASTROMETRY_INDEX_FILE}"
+                    -DSKIP_IF_EXISTS=1 -DOPTIONAL=1 -P "${_DL_SCRIPT}"
+            COMMAND ${CMAKE_COMMAND} -E touch ${ASTROMETRY_INDEX_DIR}/download.stamp
+            COMMENT "Downloading astrometry.net index file index-5206-30.fits"
+            VERBATIM
+        )
+        list(APPEND TESTDATA_STAMPS ${ASTROMETRY_INDEX_DIR}/download.stamp)
+        message("${Green}-- Astrometry index will be downloaded to:${ColourReset} ${ASTROMETRY_INDEX_FILE}")
+    endif()
+    add_custom_target(testdata DEPENDS ${TESTDATA_STAMPS})
+
+    # The tests run from the build directory: they read testdata/ and whatever they write stays there
+    file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/gTest_*.cxx)
+    set(TEST_NAMES "")
+    foreach(test_source IN LISTS TEST_SOURCES)
+        get_filename_component(tname ${test_source} NAME_WE)
+        list(APPEND TEST_NAMES ${tname})
+        add_executable(${tname} ${test_source})
+        target_link_libraries(${tname} PRIVATE DSTools gtest gtest_main)
+        target_include_directories(${tname} PRIVATE ${GENERATED_DIR}/test)
+        target_compile_definitions(${tname} PRIVATE SCAMP_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/scamp/tests")
+        if(ASTROMETRY_NET_SOLVE_FIELD)
+            target_compile_definitions(${tname} PRIVATE ASTROMETRY_NET_INDEX_FILE="${ASTROMETRY_INDEX_FILE}")
+        endif()
+        add_dependencies(${tname} testdata)
+        gtest_discover_tests(${tname} WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+    endforeach()
+    message("${Blue}-- Test executables ${ColourReset} ${TEST_NAMES} (run with ctest)")
+else()
+    set(DSTOOLS_TESTS OFF)
+endif()
+
+#-------------------- Doxygen documentation (target: doc, written in build/doc)
+find_package(Doxygen)
+if(DOXYGEN_FOUND)
+    # The Doxyfile paths are relative to the sources: run there, but write in the build directory
+    file(READ ${CMAKE_SOURCE_DIR}/DST.Doxyfile _doxyfile)
+    string(APPEND _doxyfile "\nOUTPUT_DIRECTORY = ${CMAKE_BINARY_DIR}/doc\n")
+    file(WRITE ${GENERATED_DIR}/DST.Doxyfile "${_doxyfile}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/DST.Doxyfile)
+    add_custom_target(doc
+        COMMAND ${DOXYGEN_EXECUTABLE} ${GENERATED_DIR}/DST.Doxyfile
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Generating API documentation with Doxygen in ${CMAKE_BINARY_DIR}/doc"
+        VERBATIM
+    )
+endif()
+
+#-------------------- Installation
+install(FILES ${DSTOOLS_PUBLIC_HEADERS} ${GENERATED_DIR}/include/DSTools/DSTastrometry_config.h
+        DESTINATION include/DSTools)
+install(FILES ${DSTOOLS_GPU_HEADERS} DESTINATION include/DSTools/gpu)
+# nlohmann/json headers (header-only, installed for downstream consumers)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/json/include/nlohmann
+    DESTINATION include
+    FILES_MATCHING PATTERN "*.hpp"
+)
+# scamp executable (built by ExternalProject, not a CMake target)
+install(PROGRAMS ${SCAMP_PROGRAM} DESTINATION exe)
+install(TARGETS DSTools FitsViewer
+    RUNTIME DESTINATION exe
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+)
+
+if(DSTools_NUMERIC_VERSION)
+    # CMake package, so that dependent projects can call find_package(DSTools <version>)
+    include(CMakePackageConfigHelpers)
+    set(DSTools_CMAKE_DIR lib/cmake/DSTools)
+    configure_package_config_file(
+        ${CMAKE_SOURCE_DIR}/modules/DSToolsConfig.cmake.in
+        ${GENERATED_DIR}/DSToolsConfig.cmake
+        INSTALL_DESTINATION ${DSTools_CMAKE_DIR}
+    )
+    write_basic_package_version_file(
+        ${GENERATED_DIR}/DSToolsConfigVersion.cmake
+        VERSION ${DSTools_NUMERIC_VERSION}
+        COMPATIBILITY AnyNewerVersion
+    )
+    install(FILES
+        ${GENERATED_DIR}/DSToolsConfig.cmake
+        ${GENERATED_DIR}/DSToolsConfigVersion.cmake
+        DESTINATION ${DSTools_CMAKE_DIR}
+    )
+
+    # CMake never removes files from the install directory: drop the versioned libraries
+    # (libDSTools.2.2.0.dylib, libDSTools.so.2.2.0, ...) left behind by previous installs.
+    install(CODE "set(DSTools_KEEP_VERSIONS \"${DSTools_NUMERIC_VERSION};${VERSION_MAJOR}\")")
+    install(CODE [[
+        file(GLOB _dst_libs "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/libDSTools.*")
+        foreach(_dst_lib ${_dst_libs})
+            get_filename_component(_dst_name "${_dst_lib}" NAME)
+            if(_dst_name MATCHES "^libDSTools\\.(so\\.)?([0-9.]*[0-9])(\\.dylib)?$")
+                list(FIND DSTools_KEEP_VERSIONS "${CMAKE_MATCH_2}" _dst_keep)
+                if(_dst_keep EQUAL -1)
+                    message(STATUS "Removing old library: ${_dst_lib}")
+                    file(REMOVE "${_dst_lib}")
+                endif()
+            endif()
+        endforeach()
+    ]])
+endif()
+
+#-------------------- Summary
+message("${BoldGreen}----------- DeepSkyUtilities ${VERSION} configured -----------${ColourReset}")
+message("${Green}-- Build directory  :${ColourReset} ${CMAKE_BINARY_DIR}")
+message("${Green}-- Build type       :${ColourReset} ${CMAKE_BUILD_TYPE}")
+message("${Green}-- AddressSanitizer :${ColourReset} ${WITH_ASAN}")
+message("${Green}-- Tests            :${ColourReset} ${DSTOOLS_TESTS}")
+message("${Green}-- DSTools          :${ColourReset} ${DSTools_NUMERIC_VERSION}")
+message("${Green}-- Qt6              :${ColourReset} ${Qt6_FOUND} ${Qt6_VERSION}")
+message("${Green}-- asdf2fits        :${ColourReset} ${ASDF2FITS_USABLE}")
+message("${Green}-- solve-field      :${ColourReset} ${ASTROMETRY_NET_SOLVE_FIELD}")
+message("${Green}-- GPU backends     :${ColourReset} Vulkan ${USE_VULKAN}, MPI ${USE_MPI}")
+message("${Green}-- Install prefix   :${ColourReset} ${CMAKE_INSTALL_PREFIX}")
+if(WITH_ASAN)
+    message("${Yellow}--                    AddressSanitizer build: installing it replaces the release libDSTools${ColourReset}")
+endif()
+message("${BoldGreen}-------------------------------------------------${ColourReset}")

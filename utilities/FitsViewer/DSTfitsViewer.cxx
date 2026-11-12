@@ -460,12 +460,16 @@ void mouseHasMove(QCustomPlot *plt,const std::shared_ptr<const FITScube>& in, QC
             valStr = QString::number(pixVal, 'g', 6);
 
         QString wcs_msg = QString("");
-        if(in->getNumberOfWCS() > 0 && in->GetDimension() == 2)
+        if(in->HasWorldCoordinates() && in->GetDimension() == 2)
         {
             // ix, iy are 0-based (colour-map cells), the convention FITScube works in.
+            // The FITS WCS of the header, or another WCS of the image (the GWCS of an ASDF image).
             worldCoords wc = in->WorldCoordinates(std::vector<size_t>({ix, iy}));
-            std::vector< std::string > ctype = in->getWCS().CTYPE(0);
-            std::vector< std::string > cunit = in->getWCS().CUNIT(0);
+            std::vector< std::string > ctype = in->WorldAxisNames();
+            std::vector< std::string > cunit = in->WorldAxisUnits();
+            wc.resize(2, std::numeric_limits<double>::quiet_NaN());
+            ctype.resize(2);    // A WCS may leave its axes unnamed
+            cunit.resize(2);
 
             std::string xstr = (ctype[0].size() > 0)?ctype[0]:"\u03b1"; 
             if(xstr.find('-') != std::string::npos) xstr.resize(xstr.find_first_of('-'));
@@ -709,10 +713,13 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
     if(!in)
         return;
 
-    if(in->getNumberOfWCS() < 1)
+    if(!in->HasWorldCoordinates())
         return;
 
-    if( in->getWCS().CRPIX(0,1) == 0 && in->getWCS().CRPIX(0,2) == 0 &&
+    // A FITS WCS that is only the pixel grid has no sky to draw; checked only when it is the WCS in use (an
+    // ASDF image with a GWCS names its axes after the GWCS, whatever its header holds).
+    if( in->getNumberOfWCS() > 0 && in->WorldAxisNames() == in->getWCS().CTYPE(0) &&
+        in->getWCS().CRPIX(0,1) == 0 && in->getWCS().CRPIX(0,2) == 0 &&
         in->getWCS().CRVAL(0,1) == 0 && in->getWCS().CRVAL(0,2) == 0 &&
         in->getWCS().CDELT(0,1) == 1 && in->getWCS().CDELT(0,2) == 1)
         return;
@@ -2985,17 +2992,24 @@ static std::vector<CataloguePoint> cataloguePixels(const std::vector<CataloguePo
     if (world.empty())
         return pixels;
 
+    // A GWCS gives NaN for a position whose pixel is outside its bounding box: dropped too
+    const auto keep = [&](const CataloguePoint& from, const pixelCoords& p) {
+        if (p.size() >= 2 && std::isfinite(p[0]) && std::isfinite(p[1]))
+            pixels.push_back({from.row, p[0], p[1]});
+    };
+
     try {
         const pixelVectors converted = img.World2PixelVector(world);
         for (size_t i = 0; i < finite.size(); ++i)
-            pixels.push_back({finite[i].row, converted[i][0], converted[i][1]});
+            keep(finite[i], converted[i]);
     } catch (const std::exception&) {
         // wcslib refuses the whole list for a single invalid position, such as one on the far
         // side of the sky for this projection: convert one by one and drop those.
+        pixels.clear();
         for (size_t i = 0; i < finite.size(); ++i) {
             try {
                 const pixelVectors converted = img.World2PixelVector(worldVectors{world[i]});
-                pixels.push_back({finite[i].row, converted[0][0], converted[0][1]});
+                keep(finite[i], converted[0]);
             } catch (const std::exception&) {
             }
         }
@@ -3006,7 +3020,7 @@ static std::vector<CataloguePoint> cataloguePixels(const std::vector<CataloguePo
 // World coordinates go to the WCS as they are, so say so if a column's unit isn't the axis's.
 static bool confirmCatalogueUnits(QWidget* parent, const CatalogueChoice& choice, const FITScube& img)
 {
-    const auto units = img.getWCS().CUNIT(0);
+    const auto units = img.WorldAxisUnits();
     const std::string yCol = choice.yCol.empty() ? choice.xCol : choice.yCol;
     const std::string xUnit = choice.table->getColumn(choice.xCol)->getUnit();
     const std::string yUnit = choice.table->getColumn(yCol)->getUnit();
@@ -3131,7 +3145,7 @@ static void addCatalogueTools(QMainWindow* win, QCustomPlot* plot,
 
         CatalogueChoice choice;
         choice.filter = *lastFilter;
-        if (!askCatalogue(win, fitsPath, img->getNumberOfWCS() > 0, choice))
+        if (!askCatalogue(win, fitsPath, img->HasWorldCoordinates(), choice))
             return;
         *lastFilter = choice.filter;
 

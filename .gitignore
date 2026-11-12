@@ -33,3 +33,7 @@ DSTastrometry_config.h
 .gitlab-ci-local
 deepskyproject
 cmake_test*
+
+# Build trees of the CMake presets (build/ is ignored above), and personal presets
+build-*/
+CMakeUserPresets.json
