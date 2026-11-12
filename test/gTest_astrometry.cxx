@@ -22,7 +22,7 @@ static const std::filesystem::path kTestOutputDir = "./build/test_output/astrome
 // Drop a real astronomical FITS here to enable WCS accuracy tests.
 // It must have enough stars (~30+) and valid WCS keywords (CRVAL1/CRVAL2).
 // A 512x512 DSS or PanSTARRS cutout of a dense field (M11, M45…) works well.
-static const std::filesystem::path kReferenceFits  = "./test/data/astrometry_reference.fits";
+static const std::filesystem::path kReferenceFits  = "testdata/astrometry_reference.fits";
 
 // How far the solved RA/Dec may differ from the reference WCS (degrees)
 static constexpr double kWcsTolerance_deg = 1.0 / 3600.0;  // 1 arcsec
@@ -449,7 +449,7 @@ TEST_F(AstrometryIntegrationTest, ConcurrencyThrottleBlocksExcessThreads)
 
 // ===========================================================================
 // Suite 5 — WCS accuracy test
-// Requires: (a) solve-field installed, (b) test/data/astrometry_reference.fits
+// Requires: (a) solve-field installed, (b) testdata/astrometry_reference.fits (downloaded into the build directory)
 //
 // How to obtain the reference file:
 //   Option A — commit a small cutout:
@@ -461,7 +461,7 @@ TEST_F(AstrometryIntegrationTest, ConcurrencyThrottleBlocksExcessThreads)
 //   Option B — generate via astropy (Python, one-off):
 //     from astroquery.skyview import SkyView
 //     hdu = SkyView.get_images('M11','DSS')[0][0]
-//     hdu.writeto('test/data/astrometry_reference.fits')
+//     hdu.writeto('testdata/astrometry_reference.fits')
 //
 // ===========================================================================
 
