@@ -590,7 +590,7 @@ if(BUILD_TESTS)
     # service (the REST API that ESA Sky uses internally).
     set(ASTROMETRY_REF_FITS "${TESTDATA_DIR}/astrometry_reference.fits")
     set(_HIPS2FITS_URL
-        "https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=CDS%2FP%2FDSS2%2Fred&width=512&height=512&fov=0.5&projection=TAN&coordsys=icrs&ra=282.7633&dec=-6.2717&format=fits")
+        "https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl?Survey=DSS2+Red&Position=282.7633,-6.2717&Size=0.5&Pixels=512&Return=FITS")
     add_custom_command(
         OUTPUT  ${TESTDATA_DIR}/astrometry_reference.stamp
         COMMAND ${CMAKE_COMMAND} "-DURL=${_HIPS2FITS_URL}" "-DDEST=${ASTROMETRY_REF_FITS}"
