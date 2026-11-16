@@ -62,6 +62,7 @@
 #include <QLocale>
 #include <QFontDatabase>
 #include <QPointer>
+#include <QTreeWidget>
 #include <DSTdisplay/QCustomContours.h>
 #include <DSTdisplay/QtFitsPloting.h>
 
@@ -134,6 +135,7 @@ public:
     }
 
     FITSmanager* fitsFile() { return fits.get(); }      //!< nullptr when the file is ASDF
+    ASDFmanager* asdfFile() { return asdf.get(); }      //!< nullptr when the file is FITS
 
     int NumberOfHeader() { return asdf ? asdf->NumberOfHeader() : fits->NumberOfHeader(); }
 
@@ -1245,18 +1247,356 @@ static QTableWidget* makeFitsHeaderTable(const FITShdu& hdu, QWidget* parent)
     return table;
 }
 
-// Opens a non-modal window listing the FITS keywords of a given HDU.
+#ifdef __WITH_ASDF__
+
+// ---------------------------------------------------------------------------
+// ASDF header: the YAML tree of the file, folded by levels
+// ---------------------------------------------------------------------------
+
+// Sequences of scalars up to this length are written on one line, in YAML flow style.
+static const size_t kMaxInlineAsdfItems = 16;
+
+// A tag as the YAML of an ASDF file writes it: with the "!" handle for the tags of the ASDF
+// standard, as writeDocument() of asdf2fits does, and in full for the others.
+static QString asdfTagText(const std::string& tag)
+{
+    static const std::string kStandard = "tag:stsci.edu:asdf/";
+    if (tag.empty())
+        return QString();
+    if (tag.compare(0, kStandard.size(), kStandard) == 0)
+        return QString::fromStdString("!" + tag.substr(kStandard.size()));
+    return QString::fromStdString("!<" + tag + ">");
+}
+
+// A scalar as YAML writes it; null as "~".
+static QString asdfScalarText(const ASDFnode& node)
+{
+    return node.IsNull() ? QStringLiteral("~") : QString::fromStdString(node.Text());
+}
+
+// A short sequence of scalars, such as a shape, a CRVAL or a card of an astropy FITS header.
+static bool isInlineAsdfSequence(const ASDFnode& node)
+{
+    if (!node.IsSequence() || node.Size() > kMaxInlineAsdfItems)
+        return false;
+    for (const ASDFnode& item : node.Items())
+        if (!item.IsScalar())
+            return false;
+    return true;
+}
+
+// An item of a flow sequence: a string that YAML would read otherwise is quoted.
+static QString asdfFlowItemText(const ASDFnode& item)
+{
+    QString text = asdfScalarText(item);
+    if (!item.IsString())
+        return text;
+
+    bool quote = text.isEmpty() || text.trimmed() != text;
+    for (const QChar c : QStringLiteral(",[]{}#:'\"\n"))
+        quote = quote || text.contains(c);
+    if (quote)
+        text = "'" + text.replace("'", "''").replace("\n", "\\n") + "'";
+    return text;
+}
+
+// The key column of a node: "key:" in a mapping, "- [i]" in a sequence.
+static QString asdfKeyText(const ASDFnode& parent, size_t index)
+{
+    if (parent.IsMapping())
+        return QString::fromStdString(parent.Keys()[index]) + ':';
+    return QString("- [%1]").arg(index);
+}
+
+static void addAsdfRow(QTreeWidget* view, QTreeWidgetItem* parent, const QString& key, const ASDFnode& node,
+                       const std::string& path, QHash<QString, QTreeWidgetItem*>& byPath);
+
+// Adds the rows of the entries of a mapping or of the items of a sequence, under parent, or at the
+// top of the view if parent is null. A sequence written on one line has no rows below it.
+static void addAsdfChildren(QTreeWidget* view, QTreeWidgetItem* parent, const ASDFnode& node,
+                            const std::string& path, QHash<QString, QTreeWidgetItem*>& byPath)
+{
+    if (!node.IsMapping() && (!node.IsSequence() || isInlineAsdfSequence(node)))
+        return;
+
+    for (size_t i = 0; i < node.Size(); ++i) {
+        const std::string part = node.IsMapping() ? node.Keys()[i] : std::to_string(i);
+        addAsdfRow(view, parent, asdfKeyText(node, i), node.Items()[i], ASDFnode::ChildPath(path, part), byPath);
+    }
+}
+
+// Adds the row of a node, and the rows of everything below it; byPath gets the row of each path.
+static void addAsdfRow(QTreeWidget* view, QTreeWidgetItem* parent, const QString& key, const ASDFnode& node,
+                       const std::string& path, QHash<QString, QTreeWidgetItem*>& byPath)
+{
+    auto* row = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(view);
+    const QString qpath = QString::fromStdString(path);
+    const QBrush dimmed(view->palette().color(QPalette::PlaceholderText));
+
+    row->setText(0, key);
+    row->setData(0, Qt::UserRole, qpath);
+    row->setToolTip(0, qpath);
+
+    if (node.IsArray()) {
+        QStringList shape;
+        for (const uint64_t length : node.Array()->Shape())
+            shape << QString::number(length);
+        row->setText(1, QString("ndarray %1 [%2]").arg(QString::fromStdString(node.Array()->DataType()), shape.join(", ")));
+    } else if (isInlineAsdfSequence(node)) {
+        QStringList items;
+        for (const ASDFnode& item : node.Items())
+            items << asdfFlowItemText(item);
+        row->setText(1, "[" + items.join(", ") + "]");
+    } else if (node.IsMapping() && node.Size() == 0) {
+        row->setText(1, "{}");
+    } else if (node.IsSequence() || node.IsMapping()) {
+        // A hint only: the content is in the rows below
+        row->setText(1, node.IsMapping() ? QString("{%1}").arg(node.Size()) : QString("[%1]").arg(node.Size()));
+        row->setForeground(1, dimmed);
+    } else {
+        const QString text = asdfScalarText(node);
+        const auto newline = text.indexOf('\n');
+        row->setText(1, newline < 0 ? text : text.left(newline) + " …");
+        if (newline >= 0 || text.size() > 80)
+            row->setToolTip(1, text);
+    }
+
+    row->setText(2, asdfTagText(node.Tag()));
+    row->setForeground(2, dimmed);
+
+    byPath.insert(qpath, row);
+    addAsdfChildren(view, row, node, path, byPath);
+}
+
+// Shows row and every row below it.
+static void showAllAsdfRows(QTreeWidgetItem* row)
+{
+    row->setHidden(false);
+    for (int i = 0; i < row->childCount(); ++i)
+        showAllAsdfRows(row->child(i));
+}
+
+// Shows the rows that match text, everything below them, and the rows leading to them, which are
+// unfolded; hides the others. Returns true if row or a row below it matches.
+static bool filterAsdfRows(QTreeWidgetItem* row, const QString& text)
+{
+    bool below = false;
+    for (int i = 0; i < row->childCount(); ++i)
+        below = filterAsdfRows(row->child(i), text) || below;
+
+    const bool self = row->text(0).contains(text, Qt::CaseInsensitive)
+                   || row->text(1).contains(text, Qt::CaseInsensitive);
+    if (self)   // what a matching row holds stays reachable, folded
+        for (int i = 0; i < row->childCount(); ++i)
+            if (row->child(i)->isHidden())
+                showAllAsdfRows(row->child(i));
+
+    row->setHidden(!self && !below);
+    if (below)
+        row->setExpanded(true);
+    return self || below;
+}
+
+// Builds the YAML view of an ASDF tree for one HDU: the subtree the HDU is read from, with its
+// data selected, or the whole tree when the HDU has no subtree of its own. Rows fold and unfold;
+// the view can be filtered, and a row copied as a value, a path or YAML.
+static QWidget* makeAsdfTreeView(const std::shared_ptr<const ASDFnode>& tree, const ASDFhduPath& where, QWidget* parent)
+{
+    auto* widget = new QWidget(parent);
+    auto* layout = new QVBoxLayout(widget);
+    layout->setContentsMargins(4, 4, 4, 4);
+
+    auto* filterEdit = new QLineEdit(widget);
+    filterEdit->setPlaceholderText("Filter keys and values");
+    filterEdit->setClearButtonEnabled(true);
+    auto* wholeCheck  = new QCheckBox("Whole file", widget);
+    auto* expandBtn   = new QPushButton("Expand all", widget);
+    auto* collapseBtn = new QPushButton("Collapse all", widget);
+
+    auto* bar = new QHBoxLayout;
+    bar->addWidget(filterEdit, 1);
+    bar->addWidget(wholeCheck);
+    bar->addWidget(expandBtn);
+    bar->addWidget(collapseBtn);
+    layout->addLayout(bar);
+
+    auto* scopeLabel = new QLabel(widget);
+    scopeLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(scopeLabel);
+
+    auto* view = new QTreeWidget(widget);
+    view->setColumnCount(3);
+    view->setHeaderLabels({"Key", "Value", "Tag"});
+    view->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    view->setUniformRowHeights(true);
+    view->setAlternatingRowColors(true);
+    view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    view->setSelectionMode(QAbstractItemView::SingleSelection);
+    view->header()->setSectionResizeMode(QHeaderView::Interactive);
+    view->header()->setStretchLastSection(true);
+    layout->addWidget(view, 1);
+
+    // The subtree of the HDU, if it has one; otherwise only the whole tree can be shown
+    const ASDFnode* subtree = where.node.empty() ? nullptr : tree->FindPath(where.node);
+    wholeCheck->setChecked(subtree == nullptr);
+    wholeCheck->setEnabled(subtree != nullptr);
+    wholeCheck->setToolTip(subtree ? "Show the whole tree of the file, not only the subtree of this HDU"
+                                   : "This HDU has no subtree of its own: the whole tree of the file is shown");
+
+    auto byPath = std::make_shared<QHash<QString, QTreeWidgetItem*>>();
+    const QString dataPath = QString::fromStdString(where.data);
+
+    // Folding as the view opens: the first level only, then unfolded down to the data of the HDU.
+    // Signals are blocked while rows are folded and unfolded, so that each row unfolded doesn't
+    // fit the key column again: it is fitted once at the end.
+    auto foldAsOpened = [=]() {
+        const QSignalBlocker quiet(view);
+        view->collapseAll();
+        if (!wholeCheck->isChecked() && view->topLevelItemCount() > 0)
+            view->topLevelItem(0)->setExpanded(true);
+        if (QTreeWidgetItem* data = byPath->value(dataPath, nullptr)) {
+            for (QTreeWidgetItem* up = data->parent(); up; up = up->parent())
+                up->setExpanded(true);
+            view->setCurrentItem(data);
+            view->scrollToItem(data, QAbstractItemView::PositionAtCenter);
+        }
+        view->resizeColumnToContents(0);
+    };
+
+    auto applyFilter = [=]() {
+        const QSignalBlocker quiet(view);
+        const QString text = filterEdit->text().trimmed();
+        for (int i = 0; i < view->topLevelItemCount(); ++i) {
+            if (text.isEmpty())
+                showAllAsdfRows(view->topLevelItem(i));
+            else
+                filterAsdfRows(view->topLevelItem(i), text);
+        }
+        if (text.isEmpty())
+            foldAsOpened();
+        else
+            view->resizeColumnToContents(0);
+    };
+
+    auto populate = [=]() {
+        view->clear();
+        byPath->clear();
+        if (wholeCheck->isChecked()) {
+            addAsdfChildren(view, nullptr, *tree, std::string(), *byPath);
+            scopeLabel->setText("Whole tree of the file");
+        } else {
+            // Its row is named as in its parent: a key, or an index in a sequence
+            const std::string parentPath = ASDFnode::ParentPath(where.node);
+            const ASDFnode* up = tree->FindPath(parentPath);
+            const std::vector<std::string> parts = ASDFnode::SplitPath(where.node);
+            const QString key = (up && up->IsSequence()) ? QString("- [%1]").arg(QString::fromStdString(parts.back()))
+                                                         : QString::fromStdString(parts.back()) + ':';
+            addAsdfRow(view, nullptr, key, *subtree, where.node, *byPath);
+            scopeLabel->setText("Subtree of this HDU: " + QString::fromStdString(where.node));
+        }
+        view->setColumnWidth(1, view->fontMetrics().averageCharWidth() * 50);
+        applyFilter();
+    };
+
+    populate();
+
+    QObject::connect(filterEdit, &QLineEdit::textChanged, widget, [=](const QString&) { applyFilter(); });
+    QObject::connect(wholeCheck, &QCheckBox::toggled, widget, [=](bool) { populate(); });
+    QObject::connect(expandBtn, &QPushButton::clicked, widget, [=]() {
+        view->expandAll();
+        view->resizeColumnToContents(0);
+    });
+    QObject::connect(collapseBtn, &QPushButton::clicked, view, &QTreeWidget::collapseAll);
+    QObject::connect(view, &QTreeWidget::itemExpanded, widget, [=](QTreeWidgetItem*) { view->resizeColumnToContents(0); });
+
+    // --- Copying: the value, the path or the YAML of the current row ---
+    auto currentNode = [=]() -> const ASDFnode* {
+        QTreeWidgetItem* row = view->currentItem();
+        return row ? tree->FindPath(row->data(0, Qt::UserRole).toString().toStdString()) : nullptr;
+    };
+
+    auto* copyValue = new QAction("Copy value", view);
+    copyValue->setShortcut(QKeySequence::Copy);
+    copyValue->setShortcutContext(Qt::WidgetShortcut);
+    view->addAction(copyValue);
+    QObject::connect(copyValue, &QAction::triggered, view, [=]() {
+        QTreeWidgetItem* row = view->currentItem();
+        const ASDFnode* node = currentNode();
+        if (!row || !node)
+            return;
+        QApplication::clipboard()->setText(node->IsScalar() ? asdfScalarText(*node) : row->text(1));
+    });
+
+    auto* copyPath = new QAction("Copy path", view);
+    QObject::connect(copyPath, &QAction::triggered, view, [=]() {
+        if (QTreeWidgetItem* row = view->currentItem())
+            QApplication::clipboard()->setText(row->data(0, Qt::UserRole).toString());
+    });
+
+    auto* copyYaml = new QAction("Copy as YAML", view);
+    QObject::connect(copyYaml, &QAction::triggered, view, [=]() {
+        if (const ASDFnode* node = currentNode()) {
+            std::ostringstream yaml;
+            node->Dump(yaml);
+            QApplication::clipboard()->setText(QString::fromStdString(yaml.str()));
+        }
+    });
+
+    view->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(view, &QWidget::customContextMenuRequested, view, [=](const QPoint& position) {
+        QTreeWidgetItem* row = view->itemAt(position);
+        if (!row)
+            return;
+        view->setCurrentItem(row);
+        QMenu menu(view);
+        menu.addAction(copyValue);
+        menu.addAction(copyPath);
+        menu.addAction(copyYaml);
+        menu.exec(view->viewport()->mapToGlobal(position));
+    });
+
+    return widget;
+}
+
+#endif
+
+// The header of an HDU as its viewers show it: the FITS keyword table, or for an ASDF file its YAML tree.
+struct HeaderView
+{
+    QString title;                                  // names the view in the title of its window
+    QSize   size;                                   // of a window showing the view alone
+    std::function<QWidget*(QWidget* parent)> make;  // builds the view, owned by parent
+};
+
+// The header view of HDU index of an open file; hdu is its FITS header. For an ASDF file, the
+// tree is read now and kept for the view; its ndarray handles keep the file open meanwhile, as
+// an ASDF image does, but nothing of the arrays is read.
+static HeaderView headerViewOf([[maybe_unused]] DataFile& file, [[maybe_unused]] int index, const FITShdu& hdu)
+{
+#ifdef __WITH_ASDF__
+    if (ASDFmanager* asdf = file.asdfFile()) {
+        auto tree = std::make_shared<const ASDFnode>(asdf->GetTree());
+        const ASDFhduPath where = asdf->GetPathAtIndex(index);
+        return {"ASDF Header", QSize(800, 600),
+                [tree, where](QWidget* parent) -> QWidget* { return makeAsdfTreeView(tree, where, parent); }};
+    }
+#endif
+    return {"FITS Header", QSize(700, 400),
+            [hdu](QWidget* parent) -> QWidget* { return makeFitsHeaderTable(hdu, parent); }};
+}
+
+// Opens a non-modal window showing the header of an HDU.
 // The widget is Qt-parented to `parent` so it is destroyed when the viewer closes.
-static void showFitsHeaderWidget(const FITShdu& hdu, QWidget* parent)
+static void showHeaderWindow(const HeaderView& header, QWidget* parent)
 {
     auto* w = new QWidget(parent, Qt::Window);
-    w->setWindowTitle(QString("FITS Header — %1").arg(parent ? parent->windowTitle() : ""));
+    w->setWindowTitle(QString("%1 — %2").arg(header.title, parent ? parent->windowTitle() : QString()));
     w->setAttribute(Qt::WA_DeleteOnClose);
 
     auto* lay = new QVBoxLayout(w);
-    lay->addWidget(makeFitsHeaderTable(hdu, w));
+    lay->addWidget(header.make(w));
 
-    w->resize(700, 400);
+    w->resize(header.size);
     if (parent)
         parent->installEventFilter(new PopupCloseGuard(w, w));
     w->show();
@@ -1264,7 +1604,7 @@ static void showFitsHeaderWidget(const FITShdu& hdu, QWidget* parent)
 
 // Attaches a thin command bar (QToolBar) to any QMainWindow.
 // To add more buttons in the future: create a QPushButton, connect it, call toolbar->addWidget().
-static void addCommandBar(QMainWindow* win, const FITShdu& hdu, QCustomPlot* customPlot = nullptr)
+static void addCommandBar(QMainWindow* win, const HeaderView& header, QCustomPlot* customPlot = nullptr)
 {
     auto* toolbar = new QToolBar("Options", win);
     toolbar->setMovable(false);
@@ -1274,8 +1614,8 @@ static void addCommandBar(QMainWindow* win, const FITShdu& hdu, QCustomPlot* cus
     // --- Header button ---
     auto* headerBtn = new QPushButton("Header", toolbar);
     headerBtn->setFlat(true);
-    QObject::connect(headerBtn, &QPushButton::clicked, win, [hdu, win]() {
-        showFitsHeaderWidget(hdu, win);
+    QObject::connect(headerBtn, &QPushButton::clicked, win, [header, win]() {
+        showHeaderWindow(header, win);
     });
     toolbar->addWidget(headerBtn);
 
@@ -1318,19 +1658,21 @@ static void addCommandBar(QMainWindow* win, const FITShdu& hdu, QCustomPlot* cus
     win->addToolBar(Qt::TopToolBarArea, toolbar);
 }
 
-// Viewer for HDUs that carry no image data (NAXIS=0): shows the header table directly.
+// Viewer for HDUs that carry no image data (NAXIS=0): shows the header directly, as the FITS
+// keyword table or, for an ASDF file, as its YAML tree.
 static QWidget* makeHeaderOnlyViewer(const HduInfo& hdu, const std::string& fitsPath)
 {
     DataFile fm(fitsPath);
     const FITShdu fitshdu = *fm.GetHeaderAtIndex(hdu.index);
+    const HeaderView header = headerViewOf(fm, hdu.index, fitshdu);
 
     auto* win = new QMainWindow;
     win->setWindowTitle(QString("HDU %1 — %2 (header only)")
         .arg(hdu.index)
         .arg(QString::fromStdString(hdu.extname)));
 
-    win->setCentralWidget(makeFitsHeaderTable(fitshdu, win));
-    win->resize(700, 400);
+    win->setCentralWidget(header.make(win));
+    win->resize(header.size);
     return win;
 }
 
@@ -1563,7 +1905,7 @@ static QWidget* make2DViewer(const HduInfo& hdu,
 
     QMainWindow* mainWin = qobject_cast<QMainWindow*>(plt->window());
     if (mainWin) {
-        addCommandBar(mainWin, img->HDU(), plt);
+        addCommandBar(mainWin, headerViewOf(fm, hdu.index, img->HDU()), plt);
         addScaleTool(mainWin, plt, c_img, std::make_shared<QtFITS::zScale>(QtFITS::fLIN),
                      [c_img]() { return std::make_pair(size_t(0), static_cast<size_t>(c_img->Nelements())); });
         addPaletteTool(mainWin, plt);
@@ -1777,7 +2119,7 @@ static QWidget* make3DViewer(const HduInfo& hdu,
                          customPlot->replot(QCustomPlot::rpQueuedReplot);
                      });
 
-    addCommandBar(win, cube->HDU(), customPlot);
+    addCommandBar(win, headerViewOf(fm, hdu.index, cube->HDU()), customPlot);
     addScaleTool(win, customPlot, c_cube, scale, [slider, nx, ny]() {
         const size_t layer = static_cast<size_t>(slider->value());
         return std::make_pair(layer * nx * ny, (layer + 1) * nx * ny);
@@ -4319,7 +4661,7 @@ static QWidget* makeFITSTableViewer(const HduInfo& hdu, const std::string& fitsP
 
     // No auto-draw on combo change: the canvas stays blank until Plot is clicked.
 
-    addCommandBar(win, tab->HDU());
+    addCommandBar(win, headerViewOf(fm, hdu.index, tab->HDU()));
     return win;
 }
 

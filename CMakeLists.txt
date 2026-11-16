@@ -192,6 +192,9 @@ set(DSTdisplay_MIN_VERSION 1.2.4)
 # Only look in DeepSkyROOT: the RPATH points there, and CMake would otherwise fall back on another
 # install (e.g. found through PATH) when the one in DeepSkyROOT is too old.
 foreach(_dst_pkg DSTCore DSTmath DSTfits DSTdisplay)
+    # A <pkg>_DIR cached by an earlier configure is used as is, whatever PATHS and NO_DEFAULT_PATH say:
+    # forget it, so that a copy installed elsewhere (e.g. in /usr) cannot come back from the cache.
+    unset(${_dst_pkg}_DIR CACHE)
     find_package(${_dst_pkg} ${${_dst_pkg}_MIN_VERSION} REQUIRED PATHS ${DeepSkyROOT} NO_DEFAULT_PATH)
     # Imported targets are system targets by default, which turns ${DeepSkyROOT}/include into -isystem:
     # it then loses its -I priority over other installed copies and hides warnings from our own headers.
@@ -217,7 +220,8 @@ target_link_libraries(deepsky_externals INTERFACE ${MINUIT2_LIBRARY})
 # directory is given because a search from DeepSkyROOT also looks into the asdf2fits source folder,
 # where an in-source build leaves a package file with a wrong prefix.
 unset(asdf2fits_DIR CACHE)
-find_package(asdf2fits QUIET PATHS ${DeepSkyROOT}/lib/cmake/asdf2fits NO_DEFAULT_PATH)
+# 0.2 is the first version telling where an HDU is in the tree (ASDFmanager::GetPathAtIndex).
+find_package(asdf2fits 0.2 QUIET PATHS ${DeepSkyROOT}/lib/cmake/asdf2fits NO_DEFAULT_PATH)
 set(ASDF2FITS_USABLE OFF)
 if(asdf2fits_FOUND
    AND EXISTS ${DeepSkyROOT}/lib/libasdf2fits${CMAKE_SHARED_LIBRARY_SUFFIX}
@@ -226,7 +230,7 @@ if(asdf2fits_FOUND
     set(ASDF2FITS_USABLE ON)
     message("-- ${Green}Found${ColourReset} asdf2fits ${asdf2fits_VERSION}: FitsViewer will read ASDF files")
 else()
-    message("${Yellow}-- asdf2fits not found: FitsViewer will read FITS files only${ColourReset}")
+    message("${Yellow}-- asdf2fits >= 0.2 not found: FitsViewer will read FITS files only${ColourReset}")
 endif()
 
 #-------------------- nlohmann/json (header-only submodule)
