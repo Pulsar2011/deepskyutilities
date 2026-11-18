@@ -1,10 +1,15 @@
 @PACKAGE_INIT@
 
+# find_dependency() runs the config files of the dependencies in this scope, and those generated
+# with @PACKAGE_INIT@ (Qt6 installed in /usr by a Linux distribution, ...) overwrite PACKAGE_PREFIX_DIR:
+# keep our own copy, taken before any find_dependency().
+set(_DSTools_PREFIX "${PACKAGE_PREFIX_DIR}")
+
 include(CMakeFindDependencyMacro)
-find_dependency(DSTCore @DSTCore_MIN_VERSION@ HINTS "${PACKAGE_PREFIX_DIR}")
-find_dependency(DSTmath @DSTmath_MIN_VERSION@ HINTS "${PACKAGE_PREFIX_DIR}")
-find_dependency(DSTfits @DSTfits_MIN_VERSION@ HINTS "${PACKAGE_PREFIX_DIR}")
-find_dependency(DSTdisplay @DSTdisplay_MIN_VERSION@ HINTS "${PACKAGE_PREFIX_DIR}")
+find_dependency(DSTCore @DSTCore_MIN_VERSION@ HINTS "${_DSTools_PREFIX}")
+find_dependency(DSTmath @DSTmath_MIN_VERSION@ HINTS "${_DSTools_PREFIX}")
+find_dependency(DSTfits @DSTfits_MIN_VERSION@ HINTS "${_DSTools_PREFIX}")
+find_dependency(DSTdisplay @DSTdisplay_MIN_VERSION@ HINTS "${_DSTools_PREFIX}")
 
 set(DSTools_QT_LIBS "@QT_LIBS@")
 if(DSTools_QT_LIBS)
@@ -15,10 +20,11 @@ if(NOT TARGET DSTools::DSTools)
     add_library(DSTools::DSTools SHARED IMPORTED)
     # The DSTools headers include Minuit2 relative to include/Minuit2
     set_target_properties(DSTools::DSTools PROPERTIES
-        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/lib/libDSTools${CMAKE_SHARED_LIBRARY_SUFFIX}"
-        INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include;${PACKAGE_PREFIX_DIR}/include/Minuit2"
-        INTERFACE_LINK_LIBRARIES "DSTfits::DSTfits;DSTCore::DSTCore;DSTdisplay::DSTdisplay;DSTmath::DSTmath;${PACKAGE_PREFIX_DIR}/lib/libMinuit2${CMAKE_SHARED_LIBRARY_SUFFIX};${DSTools_QT_LIBS}"
+        IMPORTED_LOCATION "${_DSTools_PREFIX}/lib/libDSTools${CMAKE_SHARED_LIBRARY_SUFFIX}"
+        INTERFACE_INCLUDE_DIRECTORIES "${_DSTools_PREFIX}/include;${_DSTools_PREFIX}/include/Minuit2"
+        INTERFACE_LINK_LIBRARIES "DSTfits::DSTfits;DSTCore::DSTCore;DSTdisplay::DSTdisplay;DSTmath::DSTmath;${_DSTools_PREFIX}/lib/libMinuit2${CMAKE_SHARED_LIBRARY_SUFFIX};${DSTools_QT_LIBS}"
     )
 endif()
+unset(_DSTools_PREFIX)
 
 check_required_components(DSTools)

@@ -769,7 +769,7 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
     double dec_min = std::min({w00[1], w10[1], w01[1], w11[1], wMid[1]});
     double dec_max = std::max({w00[1], w10[1], w01[1], w11[1], wMid[1]});
 
-    // Pick a "nice" grid step that gives 4–6 lines per axis.
+    // Pick a "nice" grid step that gives 4 - 6 lines per axis.
     auto niceStep = [](double span) -> double {
         if (span <= 0.0) return 1.0;
         double raw = span / 5.0;
@@ -796,7 +796,8 @@ void DrawWCSgrid(QCustomPlot *plt, const std::shared_ptr<const FITScube>& in)
 
     // Each grid line stores its polyline plus the position of its label (midpoint
     // of the first valid segment) and the label text.
-    struct GridLine {
+    struct GridLine
+    {
         std::vector<double> xs, ys;
         double lx = std::numeric_limits<double>::quiet_NaN();
         double ly = std::numeric_limits<double>::quiet_NaN();
