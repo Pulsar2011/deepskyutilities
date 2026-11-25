@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="DeepSkyUtilitiesLogo.png" alt="DeepSkySys" width="150">
+</p>
+
 # DeepSkyUtilities
 
 A collection of astronomical image processing utilities for the DeepSky Project. Provides star detection, morphological operators, FITS I/O, optional GPU-accelerated processing, and [FitsViewer](#fitsviewer), an interactive viewer for FITS images and tables.
@@ -364,3 +368,5 @@ Suites 4 and 5 are **automatically skipped** when `solve-field` is not present. 
 
 Licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/): free for noncommercial use. Commercial use requires a separate licence from the author. See [LICENSE.md](LICENSE.md).
 Copyright (c) 2026 William Gillard.
+
+*The DeepSkyUtilities logo concept and artwork generated with assistance from Gemini, based on the DeepSkyProject visual identity.*
