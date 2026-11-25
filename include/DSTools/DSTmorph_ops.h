@@ -299,7 +299,8 @@ U pixel_erosion(const K*         in_data,
 // ---------------------------------------------------------------------------
 /// Weighted sum: out(p) = sum_x in(p+x) * k(x).
 /// If normalize=true, divides by sum(|w|) over valid samples.
-/// OOB and masked pixels are skipped.
+/// OOB and masked pixels are skipped, and so are null weights (before any index
+/// computation: a null weight only costs a comparison).
 /// Kernel decode: ascending (matches correlate in DSTmorpho.h).
 ///
 /// \tparam U  Promoted computation type
@@ -326,6 +327,9 @@ U pixel_correlate(const K*         in_data,
 
     for(size_t kj = 0; kj < kSize; ++kj)
     {
+        const U w = kernelWeights[kj];
+        if(w == U(0)) continue;   // adds nothing to acc nor to wsum
+
         size_t kIdx[MAX_KDIM];
         decode_kernel_idx_asc(kj, kSizes, kDim, kIdx);
 
@@ -335,7 +339,6 @@ U pixel_correlate(const K*         in_data,
 
         if(mask && mask[tgtIndex]) continue;
 
-        const U w = kernelWeights[kj];
         const U v = static_cast<U>(in_data[tgtIndex]);
         acc += v * w;
 
